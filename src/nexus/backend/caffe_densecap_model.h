@@ -1,8 +1,6 @@
 #ifndef NEXUS_BACKEND_CAFFE_DENSECAP_MODEL_H_
 #define NEXUS_BACKEND_CAFFE_DENSECAP_MODEL_H_
 
-#ifdef USE_CAFFE
-
 #include <boost/shared_ptr.hpp>
 
 #include "nexus/backend/model_ins.h"
@@ -73,7 +71,5 @@ class CaffeDenseCapModel : public ModelInstance {
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_CAFFE
 
 #endif // NEXUS_BACKEND_CAFFE_DENSECAP_MODEL_H_

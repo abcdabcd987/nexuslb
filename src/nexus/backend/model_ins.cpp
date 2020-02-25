@@ -1,11 +1,23 @@
-#include "nexus/backend/caffe_densecap_model.h"
-#include "nexus/backend/caffe_model.h"
-#include "nexus/backend/caffe2_model.h"
-#include "nexus/backend/darknet_model.h"
 #include "nexus/backend/model_ins.h"
 #include "nexus/backend/share_prefix_model.h"
+
+#ifdef USE_CAFFE
+#include "nexus/backend/caffe_densecap_model.h"
+#include "nexus/backend/caffe_model.h"
+#endif
+
+#ifdef USE_CAFFE2
+#include "nexus/backend/caffe2_model.h"
+#endif
+
+#ifdef USE_DARKNET
+#include "nexus/backend/darknet_model.h"
+#endif
+
+#ifdef USE_TENSORFLOW
 #include "nexus/backend/tensorflow_model.h"
 #include "nexus/backend/tf_share_model.h"
+#endif
 
 #include <glog/logging.h>
 

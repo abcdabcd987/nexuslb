@@ -1,5 +1,3 @@
-#ifdef USE_DARKNET
-
 #include <boost/filesystem.hpp>
 #include <fstream>
 #include <glog/logging.h>
@@ -319,5 +317,3 @@ void DarknetModel::MarshalDetectionResult(
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_DARKNET

@@ -5,8 +5,11 @@
 #include "nexus/backend/model_exec.h"
 #include "nexus/backend/model_ins.h"
 #include "nexus/backend/share_prefix_model.h"
-#include "nexus/backend/tf_share_model.h"
 #include "nexus/common/model_db.h"
+
+#ifdef USE_TENSORFLOW
+#include "nexus/backend/tf_share_model.h"
+#endif
 
 namespace nexus {
 namespace backend {
@@ -70,7 +73,11 @@ bool ModelExecutor::IsSharePrefixModel() const {
 }
 
 bool ModelExecutor::IsTFShareModel() const {
+#ifdef USE_TENSORFLOW
   return (dynamic_cast<TFShareModel*>(model_.get()) != nullptr);
+#else
+  return false;
+#endif
 }
 
 bool ModelExecutor::HasBackup() {

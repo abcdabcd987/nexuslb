@@ -1,5 +1,3 @@
-#ifdef USE_CAFFE2
-
 #include <boost/filesystem.hpp>
 #include <fstream>
 #include <glog/logging.h>
@@ -457,5 +455,3 @@ std::pair<uint32_t, caffe2::Blob*> Caffe2Model::NewInputBlob(float* ptr,
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_CAFFE2

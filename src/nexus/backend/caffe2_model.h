@@ -1,8 +1,6 @@
 #ifndef NEXUS_BACKEND_CAFFE2_MODEL_H_
 #define NEXUS_BACKEND_CAFFE2_MODEL_H_
 
-#ifdef USE_CAFFE2
-
 #include "nexus/backend/model_ins.h"
 // Caffe2 headers
 #include "caffe2/core/context_gpu.h"
@@ -82,7 +80,5 @@ class Caffe2Model : public ModelInstance {
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_CAFFE2
 
 #endif // NEXUS_BACKEND_CAFFE2_MODEL_H_

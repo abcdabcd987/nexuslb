@@ -13,16 +13,11 @@ list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/protobuf)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/yaml-cpp)
 
 # We don't support caffe2/caffe/darknet any more
-#option(USE_GPU        "Use GPU"        ON )
-#option(USE_TENSORFLOW "Use TensorFlow" ON )
-#option(USE_DARKNET    "Use Darknet"    ON )
-option(USE_CAFFE2     "Use Caffe2"     ON )
-#option(USE_CAFFE      "Use Caffe"      OFF)
-set(USE_GPU ON)
-set(USE_TENSORFLOW ON)
-set(USE_DARKNET OFF)
-#set(USE_CAFFE2 OFF)
-set(USE_CAFFE OFF)
+option(USE_GPU        "Use GPU"        ON )
+option(USE_TENSORFLOW "Use TensorFlow" ON )
+option(USE_DARKNET    "Use Darknet"    OFF)
+option(USE_CAFFE2     "Use Caffe2"     OFF)
+option(USE_CAFFE      "Use Caffe"      OFF)
 if(USE_CAFFE2 AND USE_CAFFE)
     message(FATAL_ERROR "`USE_CAFFE2` and `USE_CAFFE` cannot be set at the same time.")
 endif()
@@ -244,16 +239,20 @@ endif()
 
 
 ###### tools/profiler ######
-add_executable(profiler tools/profiler/profiler.cpp)
-target_compile_features(profiler PRIVATE cxx_std_11)
-target_link_libraries(profiler PRIVATE common backend_obj)
+if(USE_GPU)
+    add_executable(profiler tools/profiler/profiler.cpp)
+    target_compile_features(profiler PRIVATE cxx_std_11)
+    target_link_libraries(profiler PRIVATE common backend_obj)
+endif()
 
 
 
 ###### tools/test_pb ######
-add_executable(test_pb tools/profiler/test_pb.cpp)
-target_compile_features(test_pb PRIVATE cxx_std_11)
-target_link_libraries(test_pb PRIVATE common backend_obj)
+if(USE_GPU)
+    add_executable(test_pb tools/profiler/test_pb.cpp)
+    target_compile_features(test_pb PRIVATE cxx_std_11)
+    target_link_libraries(test_pb PRIVATE common backend_obj)
+endif()
 
 
 
@@ -268,9 +267,11 @@ target_link_libraries(test_complex_query PRIVATE common)
 
 
 ###### tools/bench_tfshare ######
-add_executable(bench_tfshare tools/bench_tfshare.cpp)
-target_compile_features(bench_tfshare PRIVATE cxx_std_11)
-target_link_libraries(bench_tfshare PRIVATE common backend_obj)
+if(USE_TENSORFLOW)
+    add_executable(bench_tfshare tools/bench_tfshare.cpp)
+    target_compile_features(bench_tfshare PRIVATE cxx_std_11)
+    target_link_libraries(bench_tfshare PRIVATE common backend_obj)
+endif()
 
 
 

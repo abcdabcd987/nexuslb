@@ -1,5 +1,3 @@
-#ifdef USE_TENSORFLOW
-
 #include <boost/filesystem.hpp>
 #include <opencv2/opencv.hpp>
 // #include <glog/logging.h>  // https://github.com/tensorflow/tensorflow/issues/25913
@@ -386,5 +384,3 @@ void TensorflowModel::set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst, c
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_TENSORFLOW

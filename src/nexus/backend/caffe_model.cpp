@@ -1,5 +1,3 @@
-#ifdef USE_CAFFE
-
 #include <boost/filesystem.hpp>
 #include <boost/make_shared.hpp>
 #include <fstream>
@@ -228,5 +226,3 @@ void CaffeModel::LoadClassnames(const std::string& filepath) {
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_CAFFE

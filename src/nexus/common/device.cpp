@@ -73,9 +73,9 @@ DeviceManager::DeviceManager() {
     int gpu_count;
 #ifdef USE_GPU
     NEXUS_CUDA_CHECK(cudaGetDeviceCount(&gpu_count));
-#endif
     for (int i = 0; i < gpu_count; ++i) {
         gpu_devices_.push_back(new GPUDevice(i));
     }
+#endif
 }
 }

@@ -132,7 +132,6 @@ add_library(backend_obj
         src/nexus/backend/backend_server.cpp
         src/nexus/backend/backup_client.cpp
         src/nexus/backend/batch_task.cpp
-        src/nexus/backend/gpu_executor.cpp
         src/nexus/backend/model_exec.cpp
         src/nexus/backend/model_ins.cpp
         src/nexus/backend/rpc_service.cpp
@@ -157,6 +156,8 @@ if(USE_GPU)
             ${CUDA_PATH}/lib64/stubs/libcuda.so
             ${CUDA_PATH}/lib64/libcudart.so
             ${CUDA_PATH}/lib64/libcurand.so)
+    target_sources(backend_obj PRIVATE
+            src/nexus/backend/gpu_executor.cpp)
 endif()
 
 ## backend: TensorFlow support ##

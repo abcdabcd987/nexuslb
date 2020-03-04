@@ -1,8 +1,6 @@
 #ifndef NEXUS_BACKEND_BASE_GPU_EXECUTOR_H_
 #define NEXUS_BACKEND_BASE_GPU_EXECUTOR_H_
 
-#ifdef USE_GPU
-
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -90,7 +88,5 @@ class GpuExecutorNoMultiBatching : public GpuExecutor {
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_GPU
 
 #endif // NEXUS_BACKEND_BASE_GPU_EXECUTOR_H_

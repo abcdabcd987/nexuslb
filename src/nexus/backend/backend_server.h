@@ -11,7 +11,6 @@
 #include <yaml-cpp/yaml.h>
 
 #include "nexus/backend/backup_client.h"
-#include "nexus/backend/gpu_executor.h"
 #include "nexus/backend/model_exec.h"
 #include "nexus/backend/rpc_service.h"
 #include "nexus/backend/task.h"
@@ -22,6 +21,10 @@
 #include "nexus/common/server_base.h"
 #include "nexus/common/spinlock.h"
 #include "nexus/proto/control.grpc.pb.h"
+
+#ifdef USE_GPU
+#include "nexus/backend/gpu_executor.h"
+#endif
 
 namespace nexus {
 namespace backend {

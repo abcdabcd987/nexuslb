@@ -1,14 +1,15 @@
-#ifdef USE_GPU
-
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 #include <pthread.h>
 #include <thread>
 
 #include "nexus/backend/backend_server.h"
-#include "nexus/backend/caffe_model.h"
 #include "nexus/backend/gpu_executor.h"
 #include "nexus/common/device.h"
+
+#ifdef USE_CAFFE
+#include "nexus/backend/caffe_model.h"
+#endif
 
 DECLARE_int32(occupancy_valid);
 
@@ -210,5 +211,3 @@ double GpuExecutorNoMultiBatching::CurrentUtilization() {
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_GPU

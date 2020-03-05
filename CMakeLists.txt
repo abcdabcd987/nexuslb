@@ -111,6 +111,19 @@ target_link_libraries(scheduler PRIVATE common)
 
 
 
+###### dispatcher ######
+add_executable(dispatcher
+        src/nexus/dispatcher/dispatcher.cpp
+        src/nexus/dispatcher/dispatcher_main.cpp
+        src/nexus/dispatcher/rpc_service.cpp)
+target_include_directories(dispatcher PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${GENERATED_SRC_DIR}/src)
+target_compile_features(dispatcher PRIVATE cxx_std_11)
+target_link_libraries(dispatcher PRIVATE common)
+
+
+
 ###### frontend libnexus.so ######
 add_library(nexus SHARED
         src/nexus/app/app_base.cpp

@@ -187,3 +187,17 @@ message ComplexQueryAddEdgeRequest {
   ModelSession source = 2;
   ModelSession target = 3;
 }
+
+message DispatchRequest {
+  ModelSession model_session = 1;
+  uint64 request_id = 2;
+  uint32 udp_rpc_ipv4 = 3;
+  uint32 udp_rpc_port = 4;
+}
+
+message DispatchReply {
+  ModelSession model_session = 1;
+  uint64 request_id = 2;
+  CtrlStatus status = 3;
+  BackendInfo backend = 4;
+}

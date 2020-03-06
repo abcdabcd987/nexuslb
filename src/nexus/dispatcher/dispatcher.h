@@ -37,7 +37,7 @@ class ModelRoute {
 
 class Dispatcher : public ServerBase {
  public:
-  Dispatcher(std::string port, std::string rpc_port, std::string sch_addr);
+  Dispatcher(std::string port, std::string rpc_port, std::string sch_addr, int udp_port);
 
   virtual ~Dispatcher();
 
@@ -53,6 +53,8 @@ class Dispatcher : public ServerBase {
   void Register();
 
   void Unregister();
+
+  void UdpServerThread();
 
   /*! \brief Indicator whether the dispatcher is running */
   std::atomic_bool running_;
@@ -73,6 +75,11 @@ class Dispatcher : public ServerBase {
   std::mutex mutex_;
   // Maps model session ID to backend list of the model
   std::unordered_map<std::string, ModelRoute> models_;
+
+  // UDP RPC Server
+  int udp_port_;
+  boost::asio::ip::udp::socket udp_socket_;
+  std::thread udp_server_thread_;
 };
 
 }  // namespace dispatcher

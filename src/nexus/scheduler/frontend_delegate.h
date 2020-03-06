@@ -18,7 +18,7 @@ class FrontendDelegate {
  public:
   FrontendDelegate(uint32_t node_id, const std::string& ip,
                    const std::string& server_port, const std::string& rpc_addr,
-                   int beacon_sec);
+                   int beacon_sec, bool is_dispatcher);
 
   uint32_t node_id() const { return node_id_; }
 
@@ -36,6 +36,8 @@ class FrontendDelegate {
 
   CtrlStatus UpdateModelRoutesRpc(const ModelRouteUpdates& request);
 
+  bool IsDispatcher() const { return is_dispatcher_; }
+
  private:
   uint32_t node_id_;
   std::string ip_;
@@ -46,6 +48,7 @@ class FrontendDelegate {
   std::unique_ptr<FrontendCtrl::Stub> stub_;
   std::chrono::time_point<std::chrono::system_clock> last_time_;
   std::unordered_set<std::string> subscribe_models_;
+  bool is_dispatcher_;
 };
 
 } // namespace scheduler

@@ -47,6 +47,8 @@ void Dispatcher::Stop() {
   LOG(INFO) << "Dispatcher server stopped";
 }
 
+void Dispatcher::HandleAccept() { LOG(FATAL) << "TODO"; }
+
 void Dispatcher::Register() {
   // Init node id
   std::uniform_int_distribution<uint32_t> dis(
@@ -55,7 +57,7 @@ void Dispatcher::Register() {
 
   // Prepare request
   RegisterRequest request;
-  request.set_node_type(FRONTEND_NODE);
+  request.set_node_type(NodeType::DISPATCHER_NODE);
   request.set_node_id(node_id_);
   request.set_server_port(port());
   request.set_rpc_port(rpc_service_.port());
@@ -85,7 +87,7 @@ void Dispatcher::Register() {
 
 void Dispatcher::Unregister() {
   UnregisterRequest request;
-  request.set_node_type(FRONTEND_NODE);
+  request.set_node_type(NodeType::DISPATCHER_NODE);
   request.set_node_id(node_id_);
 
   grpc::ClientContext context;
@@ -121,7 +123,7 @@ void ModelRoute::Update(const ModelRouteProto& route) {
 
   // Save the current DRR backend
   const auto current_drr_backend_id =
-      backends_[current_drr_index_].info().node_id();
+      backends_.empty() ? 0 : backends_[current_drr_index_].info().node_id();
 
   // Update from the proto
   model_session_id_.assign(route.model_session_id());

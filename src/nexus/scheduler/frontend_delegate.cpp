@@ -9,13 +9,14 @@ namespace scheduler {
 FrontendDelegate::FrontendDelegate(uint32_t node_id, const std::string& ip,
                                    const std::string& server_port,
                                    const std::string& rpc_port,
-                                   int beacon_sec):
+                                   int beacon_sec, bool is_dispatcher):
     node_id_(node_id),
     ip_(ip),
     server_port_(server_port),
     rpc_port_(rpc_port),
     beacon_sec_(beacon_sec),
-    timeout_ms_(beacon_sec * 3 * 1000) {
+    timeout_ms_(beacon_sec * 3 * 1000),
+    is_dispatcher_(is_dispatcher) {
   std::stringstream rpc_addr;
   rpc_addr << ip_ << ":" << rpc_port_;
   auto channel = grpc::CreateChannel(rpc_addr.str(),

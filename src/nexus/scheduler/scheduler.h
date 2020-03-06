@@ -81,6 +81,9 @@ class Scheduler : public AsyncRpcServiceBase<AsyncService> {
    */
   void LoadModel(const grpc::ServerContext& ctx,
                  const LoadModelRequest& request, LoadModelReply* reply);
+  void LoadModelInternal(const grpc::ServerContext& ctx,
+                         const LoadModelRequest& request,
+                         LoadModelReply* reply);
   /*!
    * \brief Handles ReportWorkload RPC.
    *
@@ -137,8 +140,9 @@ class Scheduler : public AsyncRpcServiceBase<AsyncService> {
    * This function acquires mutex_.
    *
    * \param node_id Frontend node ID.
+   * \param is_dispatcher true if dispatcher; false if frontend.
    */
-  void UnregisterFrontend(uint32_t node_id);
+  void UnregisterFrontend(uint32_t node_id, bool is_dispatcher);
   /*!
    * \brief Unregister frontend RPC client and fills in the register reply
    *
@@ -190,6 +194,15 @@ class Scheduler : public AsyncRpcServiceBase<AsyncService> {
    * \return FrontendDelegate pointer if found, otherwise nullptr
    */
   FrontendDelegatePtr GetFrontend(uint32_t node_id);
+  /*!
+   * \brief Get dispatcher rpc client given the node id.
+   *
+   * This function doesn't acquire mutex_.
+   *
+   * \param node_id Dispatcher node id.
+   * \return FrontendDelegate pointer if found, otherwise nullptr
+   */
+  FrontendDelegatePtr GetDispatcher(uint32_t node_id);
   /*!
    * \brief Get the model route given the model session id.
    *
@@ -279,6 +292,8 @@ class Scheduler : public AsyncRpcServiceBase<AsyncService> {
   std::unordered_map<uint32_t, FrontendDelegatePtr> frontends_;
   /*! \brief Mapping from backend node id to backend client */
   std::unordered_map<uint32_t, BackendDelegatePtr> backends_;
+  /*! \brief Dispatchers are very similar to Frontends */
+  std::unordered_map<uint32_t, FrontendDelegatePtr> dispatchers_;
   /*! \brief Mapping from model session ID to session information */
   std::unordered_map<std::string, SessionInfoPtr> session_table_;
   /*! \brief Mapping from complex query ID to ComplexQuery */

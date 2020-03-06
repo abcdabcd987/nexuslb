@@ -102,10 +102,11 @@ void Scheduler::Register(const grpc::ServerContext& ctx,
         request.gpu_device_name(), request.gpu_uuid(), request.gpu_available_memory(),
         beacon_interval_sec_);
     RegisterBackend(std::move(backend), reply);
-  } else { // FRONTEND_NODE
+  } else { // FRONTEND_NODE or DISPATCHER_NODE
+    bool is_dispatcher = request.node_type() == NodeType::DISPATCHER_NODE;
     auto frontend = std::make_shared<FrontendDelegate>(
         request.node_id(), ip, request.server_port(), request.rpc_port(),
-        beacon_interval_sec_);
+        beacon_interval_sec_, is_dispatcher);
     RegisterFrontend(std::move(frontend), reply);
   }
 }
@@ -117,7 +118,8 @@ void Scheduler::Unregister(const grpc::ServerContext& ctx,
   if (request.node_type() == BACKEND_NODE) {
     UnregisterBackend(request.node_id());
   } else { // FRONTEND_NODE
-    UnregisterFrontend(request.node_id());
+    bool is_dispatcher = request.node_type() == NodeType::DISPATCHER_NODE;
+    UnregisterFrontend(request.node_id(), is_dispatcher);
   }
   reply->set_status(CTRL_OK);
 }
@@ -125,6 +127,21 @@ void Scheduler::Unregister(const grpc::ServerContext& ctx,
 void Scheduler::LoadModel(const grpc::ServerContext& ctx,
                           const LoadModelRequest& request,
                           LoadModelReply* reply) {
+  LoadModelInternal(ctx, request, reply);
+
+  // Update the dispatcher
+  if (reply->status() == CTRL_OK) {
+    ModelRouteUpdates dispatcher_update;
+    *dispatcher_update.add_model_route() = reply->model_route();
+    for (const auto& iter : dispatchers_) {
+      iter.second->UpdateModelRoutesRpc(dispatcher_update);
+    }
+  }
+}
+
+void Scheduler::LoadModelInternal(const grpc::ServerContext& ctx,
+                                  const LoadModelRequest& request,
+                                  LoadModelReply* reply) {
   ModelSession model_sess(request.model_session());
   {
     auto info = ModelDatabase::Singleton().GetModelInfo(ModelSessionToModelID(model_sess));
@@ -405,12 +422,13 @@ void Scheduler::RegisterFrontend(FrontendDelegatePtr frontend,
                                  RegisterReply* reply) {
   // lock protected
   std::lock_guard<std::mutex> lock(mutex_);
-  if (frontends_.find(frontend->node_id()) != frontends_.end()) {
+  auto& nodes = frontend->IsDispatcher() ? dispatchers_ : frontends_;
+  if (nodes.find(frontend->node_id()) != nodes.end()) {
     reply->set_status(CTRL_FRONTEND_NODE_ID_CONFLICT);
     return;
   }
   // add the frontend client in the frontend map
-  frontends_[frontend->node_id()] = frontend;
+  nodes[frontend->node_id()] = frontend;
   reply->set_status(CTRL_OK);
   reply->set_beacon_interval_sec(BEACON_INTERVAL_SEC);
 }
@@ -431,16 +449,28 @@ void Scheduler::RegisterBackend(BackendDelegatePtr backend,
   AddBackend(backend);
 }
 
-void Scheduler::UnregisterFrontend(uint32_t node_id) {
+void Scheduler::UnregisterFrontend(uint32_t node_id, bool is_dispatcher) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto frontend = GetFrontend(node_id);
-  if (frontend == nullptr) {
-    LOG(ERROR) << "Cannot find frontend " << node_id;
+  const char* node_type = nullptr;
+  std::unordered_map<uint32_t, FrontendDelegatePtr>* nodes = nullptr;
+  FrontendDelegatePtr node;
+  if (is_dispatcher) {
+    node_type = "dispatcher";
+    nodes = &dispatchers_;
+    node = GetDispatcher(node_id);
+  } else {
+    node_type = "frontend";
+    nodes = &frontends_;
+    node = GetFrontend(node_id);
+  }
+
+  if (!node) {
+    LOG(ERROR) << "Cannot find " << node_type << " " << node_id;
     return;
   }
-  frontends_.erase(frontend->node_id());
-  LOG(INFO) << "Remove frontend " << node_id;
-  RemoveFrontend(frontend);
+  nodes->erase(node->node_id());
+  LOG(INFO) << "Remove " << node_type << " " << node_id;
+  RemoveFrontend(node);
 }
 
 void Scheduler::UnregisterBackend(uint32_t node_id) {
@@ -681,6 +711,15 @@ FrontendDelegatePtr Scheduler::GetFrontend(uint32_t node_id) {
   auto iter = frontends_.find(node_id);
   if (iter == frontends_.end()) {
     LOG(ERROR) << "Cannot find frontend " << node_id;
+    return nullptr;
+  }
+  return iter->second;
+}
+
+FrontendDelegatePtr Scheduler::GetDispatcher(uint32_t node_id) {
+  auto iter = dispatchers_.find(node_id);
+  if (iter == dispatchers_.end()) {
+    LOG(ERROR) << "Cannot find dispatcher " << node_id;
     return nullptr;
   }
   return iter->second;
@@ -1086,6 +1125,7 @@ void Scheduler::ConsolidateBackends(
 
 void Scheduler::UpdateModelRoutes(std::unordered_set<SessionInfoPtr> sessions) {
   std::unordered_map<uint32_t, ModelRouteUpdates> frontend_updates;
+  ModelRouteUpdates dispatcher_update;
   for (auto session_info : sessions) {
     for (auto const& iter : session_info->session_subscribers) {
       for (auto frontend_id : iter.second) {
@@ -1095,6 +1135,9 @@ void Scheduler::UpdateModelRoutes(std::unordered_set<SessionInfoPtr> sessions) {
         GetModelRoute(iter.first,
                       frontend_updates.at(frontend_id).add_model_route());
       }
+      // Also send all updates to the dispatcher
+      GetModelRoute(iter.first,
+                    dispatcher_update.add_model_route());
     }
   }
   for (auto iter : frontend_updates) {
@@ -1102,6 +1145,9 @@ void Scheduler::UpdateModelRoutes(std::unordered_set<SessionInfoPtr> sessions) {
     if (frontend != nullptr) {
       frontend->UpdateModelRoutesRpc(iter.second);
     }
+  }
+  for (const auto& iter : dispatchers_) {
+    iter.second->UpdateModelRoutesRpc(dispatcher_update);
   }
 }
 

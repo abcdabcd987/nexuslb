@@ -33,7 +33,6 @@ class ModelRoute {
   std::unordered_map<uint32_t, double> backend_quanta_;
   double min_rate_ = 0;
   size_t current_drr_index_ = 0;
-
 };
 
 class Dispatcher : public ServerBase {
@@ -45,6 +44,8 @@ class Dispatcher : public ServerBase {
   void Run() override;
 
   void Stop() override;
+
+  void HandleAccept() override;
 
   void UpdateModelRoutes(const ModelRouteUpdates& request, RpcReply* reply);
 

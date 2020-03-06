@@ -30,7 +30,7 @@ class ModelRoute {
   double total_throughput_ = 0;
 
   // Members for deficit round robin
-  std::unordered_map<uint32_t, double> backend_quantum_;
+  std::unordered_map<uint32_t, double> backend_quanta_;
   double min_rate_ = 0;
   size_t current_drr_index_ = 0;
 

@@ -117,6 +117,8 @@ void Dispatcher::UpdateModelRoutes(const ModelRouteUpdates& request,
 }
 
 void ModelRoute::Update(const ModelRouteProto& route) {
+  LOG(INFO) << "Update model route for " << route.model_session_id();
+
   // Save the current DRR backend
   const auto current_drr_backend_id =
       backends_[current_drr_index_].info().node_id();
@@ -139,14 +141,16 @@ void ModelRoute::Update(const ModelRouteProto& route) {
     const auto backend_id = backend.info().node_id();
     const auto rate = backend.throughput();
     total_throughput_ += rate;
-    backend_quantum_.emplace(backend_id, rate);
+    LOG(INFO) << "  backend " << backend_id << ": " << rate << " rps";
+    backend_quanta_.emplace(backend_id, rate);
     backend_idx.emplace(backend_id, i);
   }
+  LOG(INFO) << "  total throughput: " << total_throughput_ << " rps";
 
   // Remove quantum of old backends
-  for (auto iter = backend_quantum_.begin(); iter != backend_quantum_.end();) {
+  for (auto iter = backend_quanta_.begin(); iter != backend_quanta_.end();) {
     if (backend_idx.count(iter->first) == 0) {
-      iter = backend_quantum_.erase(iter);
+      iter = backend_quanta_.erase(iter);
     } else {
       ++iter;
     }
@@ -165,12 +169,12 @@ BackendInfo ModelRoute::GetBackend() {
   for (size_t i = 0;; ++i) {
     const auto& backend = backends_[current_drr_index_];
     const uint32_t backend_id = backend.info().node_id();
-    if (backend_quantum_.at(backend_id) >= min_rate_) {
-      backend_quantum_[backend_id] -= min_rate_;
+    if (backend_quanta_.at(backend_id) >= min_rate_) {
+      backend_quanta_[backend_id] -= min_rate_;
       return backend.info();
     } else {
       const auto rate = backend.throughput();
-      backend_quantum_[backend_id] += rate;
+      backend_quanta_[backend_id] += rate;
       current_drr_index_ = (current_drr_index_ + 1) % backends_.size();
     }
 

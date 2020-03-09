@@ -39,7 +39,9 @@ Frontend::~Frontend() {
 }
 
 void Frontend::Run(QueryProcessor* qp, size_t nthreads) {
-  dispatcher_rpc_client_.Start();
+  if (FLAGS_load_balance == LB_Dispatcher) {
+    dispatcher_rpc_client_.Start();
+  }
 
   for (size_t i = 0; i < nthreads; ++i) {
     std::unique_ptr<Worker> worker(new Worker(qp, request_pool_));
@@ -75,7 +77,9 @@ void Frontend::Stop() {
     worker->Join();
   }
   daemon_thread_.join();
-  dispatcher_rpc_client_.Stop();
+  if (FLAGS_load_balance == LB_Dispatcher) {
+    dispatcher_rpc_client_.Stop();
+  }
   // Stop RPC service
   rpc_service_.Stop();
   LOG(INFO) << "Frontend server stopped";

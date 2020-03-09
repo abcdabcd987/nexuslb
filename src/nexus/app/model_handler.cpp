@@ -232,13 +232,16 @@ std::shared_ptr<BackendSession> ModelHandler::GetBackend() {
           return backend;
         } else {
           LOG(WARNING) << "Cannot find the backend returned by the dispatcher."
-                       << reply.backend().ShortDebugString();
+                       << " request_id: " << reply.request_id()
+                       << " backend: " << reply.backend().ShortDebugString()
+                       << " Fallback to deficit round robin.";
         }
       } else {
         LOG(WARNING) << "Dispatcher returns failure: "
-                     << CtrlStatus_Name(reply.status());
+                     << CtrlStatus_Name(reply.status())
+                     << " request_id: " << reply.request_id()
+                     << " Fallback to deficit round robin.";
       }
-      LOG(WARNING) << "  Fallback to deficit round robin.";
       auto backend = GetBackendDeficitRoundRobin();
       if (backend != nullptr) {
         return backend;

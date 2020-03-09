@@ -142,7 +142,7 @@ DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
   // Wait for response
   bool response_ready = false;
   {
-    auto timeout = std::chrono::microseconds(1000);
+    auto timeout = std::chrono::microseconds(2000);
     std::unique_lock<std::mutex> response_lock(response->mutex);
     response_ready = response->cv.wait_for(
         response_lock, timeout, [response] { return response->ready; });
@@ -150,6 +150,7 @@ DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
 
   // Remove from pending list
   DispatchReply reply;
+  reply.set_request_id(request.request_id());
   std::lock_guard<std::mutex> lock(mutex_);
   auto iter = pending_responses_.find(request.request_id());
   if (iter == pending_responses_.end()) {

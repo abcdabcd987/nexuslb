@@ -48,8 +48,8 @@ void Dispatcher::Run() {
   udp_socket_.bind(udp::endpoint(udp::v4(), udp_port_));
   udp_server_thread_ = std::thread(&Dispatcher::UdpServerThread, this);
   LOG(INFO) << "UDP RPC server is listening on "
-            << udp_socket_.local_endpoint().address().to_string()
-            << ":" << udp_socket_.local_endpoint().port();
+            << udp_socket_.local_endpoint().address().to_string() << ":"
+            << udp_socket_.local_endpoint().port();
   io_context_.run();
 }
 
@@ -234,10 +234,14 @@ void ModelRoute::Update(const ModelRouteProto& route) {
 
   // Recover the current DRR backend
   auto backend_idx_iter = backend_idx.find(current_drr_backend_id);
-  if (backend_idx_iter == backend_idx.end()) {
-    current_drr_index_ %= backends_.size();
-  } else {
+  if (backend_idx_iter != backend_idx.end()) {
     current_drr_index_ = backend_idx_iter->second;
+  } else {
+    if (backends_.empty()) {
+      current_drr_index_ = 0;
+    } else {
+      current_drr_index_ %= backends_.size();
+    }
   }
 }
 

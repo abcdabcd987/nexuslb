@@ -127,6 +127,7 @@ target_link_libraries(dispatcher PRIVATE common)
 ###### frontend libnexus.so ######
 add_library(nexus SHARED
         src/nexus/app/app_base.cpp
+        src/nexus/app/dispatcher_rpc_client.cpp
         src/nexus/app/frontend.cpp
         src/nexus/app/model_handler.cpp
         src/nexus/app/request_context.cpp

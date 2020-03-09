@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "nexus/app/dispatcher_rpc_client.h"
 #include "nexus/app/model_handler.h"
 #include "nexus/app/query_processor.h"
 #include "nexus/app/request_context.h"
@@ -28,11 +29,12 @@ namespace app {
 
 class Frontend : public ServerBase, public MessageHandler {
  public:
-  Frontend(std::string port, std::string rpc_port, std::string sch_addr);
+  Frontend(std::string port, std::string rpc_port, std::string sch_addr,
+           std::string dispatcher_addr);
 
   virtual ~Frontend();
 
-  //virtual void Process(const RequestProto& request, ReplyProto* reply) = 0;
+  // virtual void Process(const RequestProto& request, ReplyProto* reply) = 0;
 
   uint32_t node_id() const { return node_id_; }
 
@@ -88,6 +90,8 @@ class Frontend : public ServerBase, public MessageHandler {
 
   void ReportWorkload(const WorkloadStatsProto& request);
 
+  void UdpRpcRxThread();
+
  private:
   /*! \brief Indicator whether backend is running */
   std::atomic_bool running_;
@@ -105,8 +109,8 @@ class Frontend : public ServerBase, public MessageHandler {
    * \brief Map from backend ID to model sessions servered at this backend.
    * Guarded by backend_sessions_mu_
    */
-  std::unordered_map<uint32_t,
-                     std::unordered_set<std::string> > backend_sessions_;
+  std::unordered_map<uint32_t, std::unordered_set<std::string> >
+      backend_sessions_;
   /*! \brief Request pool */
   RequestPool request_pool_;
   /*! \brief Worker pool for processing requests */
@@ -128,9 +132,11 @@ class Frontend : public ServerBase, public MessageHandler {
   /*! \brief Random number generator */
   std::random_device rd_;
   std::mt19937 rand_gen_;
+
+  DispatcherRpcClient dispatcher_rpc_client_;
 };
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus
 
-#endif // NEXUS_APP_APP_BASE_H_
+#endif  // NEXUS_APP_APP_BASE_H_

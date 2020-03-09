@@ -8,15 +8,16 @@ using namespace nexus::app;
 class SimpleApp : public AppBase {
  public:
   SimpleApp(std::string port, std::string rpc_port, std::string sch_addr,
-            size_t nthreads, const std::string& framework,
-            const std::string& model_name, int version, int latency_sla_ms,
-            float estimate_workload, int image_height, int image_width) :
-      AppBase(port, rpc_port, sch_addr, nthreads),
-      framework_(framework),
-      model_name_(model_name),
-      version_(version),
-      latency_sla_ms_(latency_sla_ms),
-      estimate_workload_(estimate_workload) {
+            std::string dispatcher_addr, size_t nthreads,
+            const std::string& framework, const std::string& model_name,
+            int version, int latency_sla_ms, float estimate_workload,
+            int image_height, int image_width)
+      : AppBase(port, rpc_port, sch_addr, dispatcher_addr, nthreads),
+        framework_(framework),
+        model_name_(model_name),
+        version_(version),
+        latency_sla_ms_(latency_sla_ms),
+        estimate_workload_(estimate_workload) {
     CHECK_GE(image_height, 0) << "Image height must be no less than 0";
     CHECK_GE(image_width, 0) << "Image width must be no less than 0";
     if (image_height == 0 || image_width == 0) {
@@ -29,13 +30,12 @@ class SimpleApp : public AppBase {
   }
 
   void Setup() final {
-    model_ = GetModelHandler(framework_, model_name_, version_,
-                             latency_sla_ms_, estimate_workload_,
-                             {image_height_, image_width_});
+    model_ = GetModelHandler(framework_, model_name_, version_, latency_sla_ms_,
+                             estimate_workload_, {image_height_, image_width_});
     auto func1 = [&](std::shared_ptr<RequestContext> ctx) {
       auto output = model_->Execute(ctx, ctx->const_request().input());
       return std::vector<VariablePtr>{
-        std::make_shared<Variable>("output", output)};
+          std::make_shared<Variable>("output", output)};
     };
     auto func2 = [&](std::shared_ptr<RequestContext> ctx) {
       auto output = ctx->GetVariable("output")->result();
@@ -46,7 +46,7 @@ class SimpleApp : public AppBase {
     ExecBlock* b2 = new ExecBlock(1, func2, {"output"});
     qp_ = new QueryProcessor({b1, b2});
   }
-  
+
  private:
   std::string framework_;
   std::string model_name_;
@@ -61,6 +61,7 @@ class SimpleApp : public AppBase {
 DEFINE_string(port, "9001", "Server port");
 DEFINE_string(rpc_port, "9002", "RPC port");
 DEFINE_string(sch_addr, "127.0.0.1", "Scheduler address");
+DEFINE_string(dispatcher_addr, "127.0.0.1", "Dispatcher address");
 DEFINE_int32(nthread, 4, "Number of threads processing requests");
 DEFINE_string(framework, "", "Framework (caffe2, caffe, darknet, tensorflow)");
 DEFINE_string(model, "", "Model name");
@@ -84,9 +85,10 @@ int main(int argc, char** argv) {
   CHECK_GT(FLAGS_model.length(), 0) << "Missing model";
   LOG(INFO) << "App port " << FLAGS_port << ", rpc port " << FLAGS_rpc_port;
   // Create the frontend server
-  SimpleApp app(FLAGS_port, FLAGS_rpc_port, FLAGS_sch_addr, FLAGS_nthread,
-                FLAGS_framework, FLAGS_model, FLAGS_model_version,
-                FLAGS_latency, FLAGS_workload, FLAGS_height, FLAGS_width);
+  SimpleApp app(FLAGS_port, FLAGS_rpc_port, FLAGS_sch_addr,
+                FLAGS_dispatcher_addr, FLAGS_nthread, FLAGS_framework,
+                FLAGS_model, FLAGS_model_version, FLAGS_latency, FLAGS_workload,
+                FLAGS_height, FLAGS_width);
   LaunchApp(&app);
 
   return 0;

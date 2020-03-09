@@ -18,12 +18,6 @@ Dispatcher::Dispatcher(std::string port, std::string rpc_port,
       rand_gen_(rd_()),
       udp_port_(udp_port),
       udp_socket_(io_context_) {
-  // Start UDP RPC server
-  udp_socket_.bind(udp::endpoint(udp::v4(), udp_port_));
-  udp_server_thread_ = std::thread(&Dispatcher::UdpServerThread, this);
-  LOG(INFO) << "UDP RPC server is listening on "
-            << udp_socket_.local_endpoint().address().to_string();
-
   // Start RPC service
   rpc_service_.Start();
   // Init scheduler client
@@ -48,6 +42,14 @@ void Dispatcher::Run() {
   running_ = true;
   LOG(INFO) << "Dispatcher server (id: " << node_id_ << ") is listening on "
             << address();
+
+  // Start UDP RPC server
+  udp_socket_.open(udp::v4());
+  udp_socket_.bind(udp::endpoint(udp::v4(), udp_port_));
+  udp_server_thread_ = std::thread(&Dispatcher::UdpServerThread, this);
+  LOG(INFO) << "UDP RPC server is listening on "
+            << udp_socket_.local_endpoint().address().to_string()
+            << ":" << udp_socket_.local_endpoint().port();
   io_context_.run();
 }
 
@@ -77,19 +79,8 @@ void Dispatcher::UdpServerThread() {
                                           remote_endpoint);
 
     // Validate request
-    if (len < 2) {
-      LOG(ERROR) << "Bad request. Length = " << len;
-      continue;
-    }
-    uint16_t msg_len = 0;
-    memcpy(&msg_len, buf, sizeof(uint16_t));
-    if (msg_len + 2 != len) {
-      LOG(ERROR) << "Bad request. Message length:" << msg_len
-                 << ", Total Length: " << len;
-      continue;
-    }
     request.Clear();
-    bool ok = request.ParseFromString(std::string(buf + 2, buf + len));
+    bool ok = request.ParseFromString(std::string(buf, buf + len));
     if (!ok) {
       LOG(ERROR) << "Bad request. Failed to ParseFromString. Total length = "
                  << len;

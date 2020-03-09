@@ -9,16 +9,14 @@
 #include "nexus/common/model_def.h"
 
 DEFINE_int32(count_interval, 1, "Interval to count number of requests in sec");
-DEFINE_int32(load_balance, 3, "Load balance policy (1: random, 2: choice of 2, "
-             "3: deficit round robin)");
+DEFINE_int32(load_balance, 3,
+             "Load balance policy (1: random, 2: choice of 2, "
+             "3: deficit round robin, 4: centralized dispatcher)");
 
 namespace nexus {
 namespace app {
 
-QueryResult::QueryResult(uint64_t qid) :
-    qid_(qid),
-    ready_(false) {
-}
+QueryResult::QueryResult(uint64_t qid) : qid_(qid), ready_(false) {}
 
 uint32_t QueryResult::status() const {
   CheckReady();
@@ -78,15 +76,17 @@ void QueryResult::SetError(uint32_t status, const std::string& error_msg) {
 std::atomic<uint64_t> ModelHandler::global_query_id_(0);
 
 ModelHandler::ModelHandler(const std::string& model_session_id,
-                           BackendPool& pool, LoadBalancePolicy lb_policy) :
-    model_session_id_(model_session_id),
-    backend_pool_(pool),
-    lb_policy_(lb_policy),
-    total_throughput_(0.),
-    rand_gen_(rd_()) {
+                           BackendPool& pool, LoadBalancePolicy lb_policy,
+                           DispatcherRpcClient* dispatcher_rpc_client)
+    : model_session_id_(model_session_id),
+      backend_pool_(pool),
+      lb_policy_(lb_policy),
+      total_throughput_(0.),
+      rand_gen_(rd_()),
+      dispatcher_rpc_client_(dispatcher_rpc_client) {
   ParseModelSession(model_session_id, &model_session_);
-  counter_ = MetricRegistry::Singleton().CreateIntervalCounter(
-      FLAGS_count_interval);
+  counter_ =
+      MetricRegistry::Singleton().CreateIntervalCounter(FLAGS_count_interval);
   LOG(INFO) << model_session_id_ << " load balance policy: " << lb_policy_;
   if (lb_policy_ == LB_DeficitRR) {
     running_ = true;
@@ -143,7 +143,8 @@ void ModelHandler::HandleReply(const QueryResultProto& result) {
   auto iter = query_ctx_.find(qid);
   if (iter == query_ctx_.end()) {
     // FIXME why this happens? lower from FATAL to ERROR temporarily
-    LOG(ERROR) << model_session_id_ << " cannot find query context for query " << qid;
+    LOG(ERROR) << model_session_id_ << " cannot find query context for query "
+               << qid;
     return;
   }
   auto ctx = iter->second;
@@ -162,7 +163,7 @@ void ModelHandler::UpdateRoute(const ModelRouteProto& route) {
     min_rate = std::min(min_rate, itr.throughput());
   }
   quantum_to_rate_ratio_ = 1. / min_rate;
-  
+
   for (auto itr : route.backend_rate()) {
     uint32_t backend_id = itr.info().node_id();
     backends_.push_back(backend_id);
@@ -222,6 +223,28 @@ std::shared_ptr<BackendSession> ModelHandler::GetBackend() {
       }
       return candidate2;
     }
+    case LB_Dispatcher: {
+      auto reply = dispatcher_rpc_client_->Query(model_session_);
+      if (reply.status() == CtrlStatus::CTRL_OK) {
+        auto backend_id = reply.backend().node_id();
+        auto backend = backend_pool_.GetBackend(backend_id);
+        if (backend) {
+          return backend;
+        } else {
+          LOG(WARNING) << "Cannot find the backend returned by the dispatcher."
+                       << reply.backend().ShortDebugString();
+        }
+      } else {
+        LOG(WARNING) << "Dispatcher returns failure: "
+                     << CtrlStatus_Name(reply.status());
+      }
+      LOG(WARNING) << "  Fallback to deficit round robin.";
+      auto backend = GetBackendDeficitRoundRobin();
+      if (backend != nullptr) {
+        return backend;
+      }
+      return GetBackendWeightedRoundRobin();
+    }
     default:
       return nullptr;
   }
@@ -277,5 +300,5 @@ std::shared_ptr<BackendSession> ModelHandler::GetBackendDeficitRoundRobin() {
   return nullptr;
 }
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus

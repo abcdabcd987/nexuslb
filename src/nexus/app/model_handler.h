@@ -9,6 +9,7 @@
 #include <random>
 #include <unordered_map>
 
+#include "nexus/app/dispatcher_rpc_client.h"
 #include "nexus/common/backend_pool.h"
 #include "nexus/common/data_type.h"
 #include "nexus/common/metric.h"
@@ -74,12 +75,15 @@ enum LoadBalancePolicy {
   LB_Query = 2,
   // Deficit round robin
   LB_DeficitRR = 3,
+  // Use a dispatcher
+  LB_Dispatcher = 4,
 };
 
 class ModelHandler {
  public:
   ModelHandler(const std::string& model_session_id, BackendPool& pool,
-               LoadBalancePolicy lb_policy);
+               LoadBalancePolicy lb_policy,
+               DispatcherRpcClient* dispatcher_rpc_client);
 
   ~ModelHandler();
 
@@ -138,6 +142,7 @@ class ModelHandler {
   std::mt19937 rand_gen_;
 
   std::atomic<bool> running_;
+  DispatcherRpcClient* dispatcher_rpc_client_;
 };
 
 } // namespace app

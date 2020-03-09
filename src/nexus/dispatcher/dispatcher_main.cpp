@@ -1,10 +1,11 @@
 #include <gflags/gflags.h>
 
+#include "nexus/common/config.h"
 #include "nexus/dispatcher/dispatcher.h"
 
 DEFINE_string(port, "7001", "Server port");
 DEFINE_string(rpc_port, "7002", "RPC port");
-DEFINE_int32(udp_port, 7003, "UDP RPC server port");
+DEFINE_int32(udp_port, DISPATCHER_RPC_DEFAULT_PORT, "UDP RPC server port");
 DEFINE_string(sch_addr, "127.0.0.1", "Scheduler address");
 
 int main(int argc, char** argv) {

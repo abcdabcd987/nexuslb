@@ -419,8 +419,16 @@ void BackendServer::Daemon() {
       double rps = iter.second->GetRequestRate();
       double drop_rate = iter.second->GetDropRate();
       if (rps > 0.1) {
-        LOG(INFO) << iter.first << " request rate: " << rps <<
-            ", drop rate: " << drop_rate;
+        int drop_percent = static_cast<int>(100. * drop_rate / rps);
+        if (drop_percent >= 1) {
+          LOG(WARNING) << iter.first << " request rate: " << rps
+                       << ", drop rate: " << drop_rate << " (" << drop_percent
+                       << "%)";
+        } else {
+          VLOG(1) << iter.first << " request rate: " << rps
+                  << ", drop rate: " << drop_rate << " (" << drop_percent
+                  << "%)";
+        }
       }
     }
     std::this_thread::sleep_until(next_time);

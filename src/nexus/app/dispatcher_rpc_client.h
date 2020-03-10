@@ -39,7 +39,6 @@ class DispatcherRpcClient {
   boost::asio::ip::udp::endpoint dispatcher_endpoint_;
   boost::asio::ip::udp::socket tx_socket_;
   boost::asio::ip::udp::socket rx_socket_;
-  uint32_t rx_ipv4_ = 0;
   uint32_t rx_port_ = 0;
   std::thread rx_thread_;
 

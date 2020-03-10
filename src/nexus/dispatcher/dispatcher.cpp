@@ -86,9 +86,8 @@ void Dispatcher::UdpServerThread() {
                  << len;
       continue;
     }
-    auto client_ip = boost::asio::ip::make_address_v4(request.udp_rpc_ipv4());
-    auto client_endpoint =
-        boost::asio::ip::udp::endpoint(client_ip, request.udp_rpc_port());
+    auto client_endpoint = boost::asio::ip::udp::endpoint(
+        remote_endpoint.address(), request.udp_rpc_port());
 
     // Handle request
     reply.Clear();

@@ -48,7 +48,6 @@ void DispatcherRpcClient::Start() {
   rx_socket_.open(udp::v4());
   tx_socket_.bind(udp::endpoint(udp::v4(), 0));
   rx_socket_.bind(udp::endpoint(udp::v4(), 0));
-  rx_ipv4_ = rx_socket_.local_endpoint().address().to_v4().to_ulong();
   rx_port_ = rx_socket_.local_endpoint().port();
   running_ = true;
   rx_thread_ = std::thread(&DispatcherRpcClient::RxThread, this);
@@ -108,7 +107,6 @@ void DispatcherRpcClient::RxThread() {
 DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
   DispatchRequest request;
   *request.mutable_model_session() = std::move(model_session);
-  request.set_udp_rpc_ipv4(rx_ipv4_);
   request.set_udp_rpc_port(rx_port_);
 
   // Add to the pending list

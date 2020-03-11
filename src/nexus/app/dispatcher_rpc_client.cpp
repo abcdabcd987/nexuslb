@@ -1,12 +1,70 @@
 #include "nexus/app/dispatcher_rpc_client.h"
 
+#include <cstdio>
 #include <chrono>
+#include <mutex>
 #include <tuple>
 #include <utility>
 #include <glog/logging.h>
+#include <gflags/gflags.h>
 
 #include "nexus/common/config.h"
 #include "nexus/common/model_def.h"
+
+// ========== For debugging purpose BEGIN ==========
+DEFINE_string(_debug_record_dispatcher_rpc_latency, "",
+              "DEBUG: Save the latency of each Dispatcher RPC to the path "
+              "specified by this flag.");
+
+namespace {
+class RpcLatencyRecorder {
+ public:
+  explicit RpcLatencyRecorder(const std::string& path) {
+    LOG(INFO) << "Logging latency of Dispatcher RPC calls to " << path;
+    file_ = fopen(path.c_str(), "wb");
+    CHECK(file_ != nullptr) << "Failed to open " << path;
+  }
+
+  ~RpcLatencyRecorder() { fclose(file_); }
+
+  void RecordDispatcherRpcLatency(uint32_t latency_ns) {
+    auto n = fwrite(&latency_ns, sizeof(latency_ns), 1, file_);
+    CHECK_EQ(n, 1);
+  }
+
+ private:
+  FILE* file_ = nullptr;
+};
+}  // namespace
+
+class nexus::app::DispatcherRpcClient::Debug {
+ public:
+  void RecordDispatcherRpcLatency(uint32_t latency_ns) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    rpc_latency_recorder_->RecordDispatcherRpcLatency(latency_ns);
+  }
+
+  static std::unique_ptr<Debug> NewIfEnabled() {
+    std::unique_ptr<Debug> debug(new Debug());
+    bool enabled = false;
+    if (!FLAGS__debug_record_dispatcher_rpc_latency.empty()) {
+      enabled = true;
+      debug->rpc_latency_recorder_.reset(
+          new RpcLatencyRecorder(FLAGS__debug_record_dispatcher_rpc_latency));
+    }
+    if (!enabled) {
+      delete debug.release();
+    }
+    return debug;
+  }
+
+ private:
+  Debug() = default;
+  std::mutex mutex_;
+  std::unique_ptr<RpcLatencyRecorder> rpc_latency_recorder_;
+};
+
+// ========== For debugging purpose END ==========
 
 using boost::asio::ip::udp;
 
@@ -18,7 +76,8 @@ DispatcherRpcClient::DispatcherRpcClient(boost::asio::io_context* io_context,
     : io_context_(io_context),
       dispatcher_addr_(std::move(dispatcher_addr)),
       tx_socket_(*io_context_),
-      rx_socket_(*io_context_) {}
+      rx_socket_(*io_context_),
+      debug_(Debug::NewIfEnabled()) {}
 
 DispatcherRpcClient::~DispatcherRpcClient() {
   if (running_) {
@@ -62,6 +121,8 @@ void DispatcherRpcClient::Start() {
 
 void DispatcherRpcClient::Stop() {
   running_ = false;
+  // TODO let unique_ptr delete it, once the rx_thread can join.
+  delete debug_.release();
   rx_thread_.join();
 }
 
@@ -121,6 +182,7 @@ DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
   }
 
   // Send request
+  auto start = std::chrono::high_resolution_clock::now();
   auto request_msg = request.SerializeAsString();
   if (request_msg.size() > 1400) {
     LOG(WARNING) << "UDP RPC client request size is too big. Size = "
@@ -144,6 +206,13 @@ DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
     std::unique_lock<std::mutex> response_lock(response->mutex);
     response_ready = response->cv.wait_for(
         response_lock, timeout, [response] { return response->ready; });
+  }
+  if (debug_) {
+    auto end = std::chrono::high_resolution_clock::now();
+    uint32_t latency_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+            .count();
+    debug_->RecordDispatcherRpcLatency(latency_ns);
   }
 
   // Remove from pending list

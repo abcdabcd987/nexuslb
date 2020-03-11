@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdint>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 
@@ -25,7 +26,7 @@ class DispatcherRpcClient {
 
  private:
   void RxThread();
-  
+
   struct UdpRpcPendingResponse {
     std::mutex mutex;
     std::condition_variable cv;
@@ -45,6 +46,10 @@ class DispatcherRpcClient {
   std::mutex mutex_;
   uint64_t next_request_id_ = 0;
   std::unordered_map<uint64_t, UdpRpcPendingResponse> pending_responses_;
+
+  // For debugging purpose:
+  class Debug;
+  std::unique_ptr<Debug> debug_;
 };
 
 }  // namespace app

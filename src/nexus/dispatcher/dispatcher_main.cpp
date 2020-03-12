@@ -13,7 +13,7 @@ int main(int argc, char** argv) {
   google::InitGoogleLogging(argv[0]);
   google::ParseCommandLineFlags(&argc, &argv, true);
   google::InstallFailureSignalHandler();
-  nexus::dispatcher::Dispatcher dispatcher(FLAGS_port, FLAGS_rpc_port,
-                                           FLAGS_sch_addr, FLAGS_udp_port);
+  nexus::dispatcher::Dispatcher dispatcher(FLAGS_rpc_port, FLAGS_sch_addr,
+                                           FLAGS_udp_port);
   dispatcher.Run();
 }

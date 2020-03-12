@@ -25,7 +25,7 @@ class DispatcherRpcClient {
   DispatchReply Query(ModelSession model_session);
 
  private:
-  void RxThread();
+  void DoReceive();
 
   struct UdpRpcPendingResponse {
     std::mutex mutex;
@@ -41,7 +41,8 @@ class DispatcherRpcClient {
   boost::asio::ip::udp::socket tx_socket_;
   boost::asio::ip::udp::socket rx_socket_;
   uint32_t rx_port_ = 0;
-  std::thread rx_thread_;
+  boost::asio::ip::udp::endpoint rx_endpoint_;
+  uint8_t rx_buf_[1400];
 
   std::mutex mutex_;
   uint64_t next_request_id_ = 0;

@@ -38,6 +38,7 @@ void ServerBase::Run() {
 
 void ServerBase::Stop() {
   acceptor_.close();
+  io_context_.stop();
 }
 
 void ServerBase::DoAccept() {

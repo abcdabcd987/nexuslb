@@ -11,15 +11,11 @@ using boost::asio::ip::udp;
 namespace nexus {
 namespace dispatcher {
 
-Dispatcher::Dispatcher(std::string port, std::string rpc_port,
-                       std::string sch_addr, int udp_port)
-    : ServerBase(port),
-      rpc_service_(this, rpc_port, 1),
+Dispatcher::Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port)
+    : rpc_service_(this, rpc_port, 1),
       rand_gen_(rd_()),
       udp_port_(udp_port),
       udp_socket_(io_context_) {
-  // Start RPC service
-  rpc_service_.Start();
   // Init scheduler client
   if (sch_addr.find(':') == std::string::npos) {
     // Add default scheduler port if no port specified
@@ -28,8 +24,6 @@ Dispatcher::Dispatcher(std::string port, std::string rpc_port,
   auto channel =
       grpc::CreateChannel(sch_addr, grpc::InsecureChannelCredentials());
   sch_stub_ = SchedulerCtrl::NewStub(channel);
-  // Init Node ID and register frontend to scheduler
-  Register();
 }
 
 Dispatcher::~Dispatcher() {
@@ -40,87 +34,91 @@ Dispatcher::~Dispatcher() {
 
 void Dispatcher::Run() {
   running_ = true;
-  LOG(INFO) << "Dispatcher server (id: " << node_id_ << ") is listening on "
-            << address();
+
+  // Start RPC service
+  rpc_service_.Start();
+  // Init Node ID and register frontend to scheduler
+  Register();
 
   // Start UDP RPC server
   udp_socket_.open(udp::v4());
   udp_socket_.bind(udp::endpoint(udp::v4(), udp_port_));
-  udp_server_thread_ = std::thread(&Dispatcher::UdpServerThread, this);
   LOG(INFO) << "UDP RPC server is listening on "
             << udp_socket_.local_endpoint().address().to_string() << ":"
             << udp_socket_.local_endpoint().port();
+  UdpServerDoReceive();
   io_context_.run();
 }
 
 void Dispatcher::Stop() {
+  LOG(INFO) << "Shutting down the dispatcher.";
   running_ = false;
   // Unregister frontend
   Unregister();
-  // Stop all accept new connections
-  ServerBase::Stop();
   // Stop RPC service
   rpc_service_.Stop();
-  LOG(INFO) << "Dispatcher server stopped";
-
   // Stop UDP RPC server
-  LOG(INFO) << "Joining UDP RPC server thread";
-  udp_server_thread_.join();
+  io_context_.stop();
 }
 
-void Dispatcher::UdpServerThread() {
-  uint8_t buf[1400];
-  udp::endpoint remote_endpoint;
-  DispatchRequest request;
-  DispatchReply reply;
-  while (running_) {
-    // Receive request
-    size_t len = udp_socket_.receive_from(boost::asio::buffer(buf, 1400),
-                                          remote_endpoint);
-
-    // Validate request
-    request.Clear();
-    bool ok = request.ParseFromString(std::string(buf, buf + len));
-    if (!ok) {
-      LOG(ERROR) << "Bad request. Failed to ParseFromString. Total length = "
-                 << len;
-      continue;
-    }
-    auto client_endpoint = boost::asio::ip::udp::endpoint(
-        remote_endpoint.address(), request.udp_rpc_port());
-
-    // Handle request
-    reply.Clear();
-    *reply.mutable_model_session() = request.model_session();
-    reply.set_request_id(request.request_id());
-    do {
-      std::string model_sess_id = ModelSessionToString(request.model_session());
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto iter = models_.find(model_sess_id);
-      if (iter == models_.end()) {
-        reply.set_status(CtrlStatus::MODEL_NOT_FOUND);
-        break;
-      }
-      *reply.mutable_backend() = iter->second.GetBackend();
-      reply.set_status(CtrlStatus::CTRL_OK);
-    } while (false);
-
-    // Send response
-    auto reply_msg = reply.SerializeAsString();
-    if (reply_msg.size() > 1400) {
-      LOG(WARNING) << "UDP RPC server reply size is too big. Size = "
-                   << reply_msg.size();
-    }
-    size_t sent_bytes =
-        udp_socket_.send_to(boost::asio::buffer(reply_msg), client_endpoint);
-    if (sent_bytes != reply_msg.size()) {
-      LOG(WARNING) << "UDP RPC server reply sent " << sent_bytes
-                   << " bytes, expecting " << reply_msg.size() << " bytes";
-    }
-  }
+void Dispatcher::UdpServerDoSend(boost::asio::ip::udp::endpoint endpoint,
+                                 std::string msg) {
+  size_t msg_len = msg.size();
+  udp_socket_.async_send_to(
+      boost::asio::buffer(std::move(msg)), endpoint,
+      [this, msg_len](boost::system::error_code ec, std::size_t len) {
+        if (len != msg_len) {
+          LOG(WARNING) << "UDP RPC server reply sent " << len
+                       << " bytes, expecting " << msg_len << " bytes";
+        }
+        UdpServerDoReceive();
+      });
 }
 
-void Dispatcher::HandleAccept() { LOG(FATAL) << "TODO"; }
+void Dispatcher::UdpServerDoReceive() {
+  udp_socket_.async_receive_from(
+      boost::asio::buffer(buf_, 1400), remote_endpoint_,
+      [this](boost::system::error_code ec, std::size_t len) {
+        if (!ec && len > 0) {
+          DispatchRequest request;
+          // Validate request
+          request.Clear();
+          bool ok = request.ParseFromString(std::string(buf_, buf_ + len));
+          if (!ok) {
+            LOG(ERROR)
+                << "Bad request. Failed to ParseFromString. Total length = "
+                << len;
+            UdpServerDoReceive();
+            return;
+          }
+          auto client_endpoint = boost::asio::ip::udp::endpoint(
+              remote_endpoint_.address(), request.udp_rpc_port());
+
+          // Handle request
+          DispatchReply reply;
+          reply.Clear();
+          *reply.mutable_model_session() = request.model_session();
+          reply.set_request_id(request.request_id());
+          do {
+            std::string model_sess_id =
+                ModelSessionToString(request.model_session());
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto iter = models_.find(model_sess_id);
+            if (iter == models_.end()) {
+              reply.set_status(CtrlStatus::MODEL_NOT_FOUND);
+              break;
+            }
+            *reply.mutable_backend() = iter->second.GetBackend();
+            reply.set_status(CtrlStatus::CTRL_OK);
+          } while (false);
+
+          // Send response
+          UdpServerDoSend(client_endpoint, reply.SerializeAsString());
+        } else {
+          UdpServerDoReceive();
+        }
+      });
+}
 
 void Dispatcher::Register() {
   // Init node id
@@ -132,7 +130,6 @@ void Dispatcher::Register() {
   RegisterRequest request;
   request.set_node_type(NodeType::DISPATCHER_NODE);
   request.set_node_id(node_id_);
-  request.set_server_port(port());
   request.set_rpc_port(rpc_service_.port());
 
   while (true) {

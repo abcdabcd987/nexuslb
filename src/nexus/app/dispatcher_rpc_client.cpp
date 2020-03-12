@@ -108,8 +108,6 @@ void DispatcherRpcClient::Start() {
   tx_socket_.bind(udp::endpoint(udp::v4(), 0));
   rx_socket_.bind(udp::endpoint(udp::v4(), 0));
   rx_port_ = rx_socket_.local_endpoint().port();
-  running_ = true;
-  rx_thread_ = std::thread(&DispatcherRpcClient::RxThread, this);
   LOG(INFO) << "Dispatcher RPC client is sending from "
             << tx_socket_.local_endpoint().address().to_string() << ":"
             << tx_socket_.local_endpoint().port() << " to "
@@ -117,52 +115,52 @@ void DispatcherRpcClient::Start() {
             << dispatcher_endpoint_.port() << " and receiving from "
             << rx_socket_.local_endpoint().address().to_string() << ":"
             << rx_socket_.local_endpoint().port();
+  running_ = true;
+  DoReceive();
 }
 
 void DispatcherRpcClient::Stop() {
   running_ = false;
-  // TODO let unique_ptr delete it, once the rx_thread can join.
-  delete debug_.release();
-  rx_thread_.join();
 }
 
-void DispatcherRpcClient::RxThread() {
-  uint8_t buf[1400];
-  udp::endpoint remote_endpoint;
-  DispatchReply reply;
-  while (running_) {
-    // Receive response
-    size_t len = rx_socket_.receive_from(boost::asio::buffer(buf, 1400),
-                                         remote_endpoint);
-
-    // Validate response
-    reply.Clear();
-    bool ok = reply.ParseFromString(std::string(buf, buf + len));
-    if (!ok) {
-      LOG(ERROR) << "Bad response. Failed to ParseFromString. Total length = "
-                 << len;
-      continue;
-    }
-
-    // Wake up worker
-    do {
-      std::lock_guard<std::mutex> lock(mutex_);
-      auto iter = pending_responses_.find(reply.request_id());
-      if (iter == pending_responses_.end()) {
-        LOG(WARNING) << "Received unexpected response. request_id: "
-                     << reply.request_id() << ", model_session: "
-                     << ModelSessionToModelID(reply.model_session());
-        break;
-      }
-      auto& pending_response = iter->second;
-      {
-        std::lock_guard<std::mutex> response_lock(pending_response.mutex);
-        pending_response.reply = std::move(reply);
-        pending_response.ready = true;
-      }
-      pending_response.cv.notify_one();
-    } while (false);
+void DispatcherRpcClient::DoReceive() {
+  if (!running_) {
+    return;
   }
+  rx_socket_.async_receive_from(
+      boost::asio::buffer(rx_buf_, 1400), rx_endpoint_,
+      [this](boost::system::error_code ec, std::size_t len) {
+        // Validate response
+        DispatchReply reply;
+        bool ok = reply.ParseFromString(std::string(rx_buf_, rx_buf_ + len));
+        if (!ok) {
+          LOG(ERROR)
+              << "Bad response. Failed to ParseFromString. Total length = "
+              << len;
+          DoReceive();
+          return;
+        }
+
+        // Wake up worker
+        do {
+          std::lock_guard<std::mutex> lock(mutex_);
+          auto iter = pending_responses_.find(reply.request_id());
+          if (iter == pending_responses_.end()) {
+            LOG(WARNING) << "Received unexpected response. request_id: "
+                         << reply.request_id() << ", model_session: "
+                         << ModelSessionToModelID(reply.model_session());
+            break;
+          }
+          auto& pending_response = iter->second;
+          {
+            std::lock_guard<std::mutex> response_lock(pending_response.mutex);
+            pending_response.reply = std::move(reply);
+            pending_response.ready = true;
+          }
+          pending_response.cv.notify_one();
+        } while (false);
+        DoReceive();
+      });
 }
 
 DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {

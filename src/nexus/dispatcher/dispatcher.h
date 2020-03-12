@@ -35,17 +35,15 @@ class ModelRoute {
   size_t current_drr_index_ = 0;
 };
 
-class Dispatcher : public ServerBase {
+class Dispatcher {
  public:
-  Dispatcher(std::string port, std::string rpc_port, std::string sch_addr, int udp_port);
+  Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port);
 
   virtual ~Dispatcher();
 
-  void Run() override;
+  void Run();
 
-  void Stop() override;
-
-  void HandleAccept() override;
+  void Stop();
 
   void UpdateModelRoutes(const ModelRouteUpdates& request, RpcReply* reply);
 
@@ -54,7 +52,11 @@ class Dispatcher : public ServerBase {
 
   void Unregister();
 
-  void UdpServerThread();
+  void UdpServerDoReceive();
+  void UdpServerDoSend(boost::asio::ip::udp::endpoint endpoint,
+                       std::string msg);
+
+  boost::asio::io_context io_context_;
 
   /*! \brief Indicator whether the dispatcher is running */
   std::atomic_bool running_;
@@ -79,7 +81,8 @@ class Dispatcher : public ServerBase {
   // UDP RPC Server
   int udp_port_;
   boost::asio::ip::udp::socket udp_socket_;
-  std::thread udp_server_thread_;
+  uint8_t buf_[1400];
+  boost::asio::ip::udp::endpoint remote_endpoint_;
 };
 
 }  // namespace dispatcher

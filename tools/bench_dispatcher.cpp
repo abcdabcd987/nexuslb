@@ -9,6 +9,7 @@
 #include <tuple>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -47,7 +48,9 @@ class DispatcherRpcBencher {
         report_progress_(report_progress),
         tx_socket_(io_context_),
         rx_socket_(io_context_),
-        timer_(io_context_) {}
+        timeout_timer_(io_context_),
+        report_timer_(io_context_),
+        stop_timer_(io_context_) {}
 
   void Run() {
     // Start tx/rx socket on the client sdie
@@ -59,15 +62,19 @@ class DispatcherRpcBencher {
 
     // Set up bookkeeping
     requests_per_second_.assign(bench_seconds_ + 2, 0);
-    timeouts_per_second_.assign(bench_seconds_ + 2, 0);
     start_time_ = std::chrono::high_resolution_clock::now();
+    status_ = Status::Running;
 
     // Set up async operations
     DoReceive();
     MaintainQuery();
+    TimeoutTimer();
+    ReportTimer();
+    StopTimer();
 
     // Block until done
     io_context_.run();
+    status_ = Status::Done;
   }
 
   const std::vector<uint32_t>& latencies_ns() const { return latencies_ns_; }
@@ -80,13 +87,16 @@ class DispatcherRpcBencher {
 
  private:
   void DoReceive() {
+    if (status_ == Status::Stopping) {
+      return;
+    }
     rx_socket_.async_receive_from(
         boost::asio::buffer(rx_buf_, 1400), rx_endpoint_,
         [this](boost::system::error_code ec, std::size_t len) {
           if (ec == boost::asio::error::operation_aborted) {
             return;
           } else if (ec) {
-            LOG(ERROR) << "ec: " << ec;
+            LOG(ERROR) << "Error when receiving: " << ec;
             DoReceive();
             return;
           }
@@ -120,17 +130,8 @@ class DispatcherRpcBencher {
                                                                start_time_)
                   .count();
           ++requests_per_second_[bucket];
-          --cnt_flying_;
+          flying_requests_.erase(reply.request_id());
           pending_responses_.erase(iter);
-
-          if (report_progress_ && bucket != next_report_second_) {
-            LOG(INFO) << "cnt_sent = " << latencies_ns_.size() << ", rps["
-                      << next_report_second_
-                      << "] = " << requests_per_second_[next_report_second_]
-                      << ", timeouts: "
-                      << timeouts_per_second_[next_report_second_];
-            next_report_second_ = bucket;
-          }
 
           DoReceive();
           MaintainQuery();
@@ -138,18 +139,12 @@ class DispatcherRpcBencher {
   }
 
   void MaintainQuery() {
-    const auto now = std::chrono::high_resolution_clock::now();
-    if (now >= start_time_ + std::chrono::seconds(bench_seconds_)) {
-      timer_.expires_at(start_time_ + std::chrono::seconds(bench_seconds_ + 1));
-      timer_.async_wait([this](boost::system::error_code ec) {
-        if (!ec) {
-          rx_socket_.cancel();
-        }
-      });
+    if (status_ != Status::Running) {
       return;
     }
 
     // Remove flying requests that are timed out
+    const auto now = std::chrono::high_resolution_clock::now();
     while (!not_yet_timeout_requests_.empty()) {
       auto req_id = not_yet_timeout_requests_.front();
       auto iter = pending_responses_.find(req_id);
@@ -167,8 +162,8 @@ class DispatcherRpcBencher {
               std::chrono::duration_cast<std::chrono::seconds>(now -
                                                                start_time_)
                   .count();
-          ++timeouts_per_second_[bucket];
-          --cnt_flying_;
+          ++cnt_timeout_;
+          flying_requests_.erase(iter->first);
           not_yet_timeout_requests_.pop_front();
         } else {
           // The earliest request in the queue is not timed out yet.
@@ -179,7 +174,7 @@ class DispatcherRpcBencher {
     }
 
     // Send requests
-    while (cnt_flying_ < max_flying_) {
+    while (flying_requests_.size() < max_flying_) {
       DispatchRequest request;
       auto req_id = ++cnt_sent_;
       *request.mutable_model_session() = model_session_;
@@ -190,24 +185,79 @@ class DispatcherRpcBencher {
           .start_time = now,
       };
       not_yet_timeout_requests_.push_back(req_id);
-      ++cnt_flying_;
+      flying_requests_.insert(req_id);
 
       auto msg = request.SerializeAsString();
       auto msg_len = msg.size();
       tx_socket_.async_send_to(
           boost::asio::buffer(std::move(msg)), dispatcher_endpoint_,
           [this, msg_len](boost::system::error_code ec, std::size_t len) {
+            if (ec && ec != boost::asio::error::operation_aborted) {
+              LOG(ERROR) << "Error when sending: " << ec;
+            }
             if (len != msg_len) {
               LOG(ERROR) << "Sent " << len << " bytes, expecting " << msg_len
                          << " bytes";
             }
-
-            timer_.expires_after(std::chrono::nanoseconds(timeout_ns_));
-            timer_.async_wait(
-                [this](boost::system::error_code) { MaintainQuery(); });
           });
     }
   }
+
+  void TimeoutTimer() {
+    if (status_ == Status::Stopping) {
+      return;
+    }
+    timeout_timer_.expires_after(std::chrono::nanoseconds(timeout_ns_));
+    timeout_timer_.async_wait([this](boost::system::error_code) {
+      MaintainQuery();
+      TimeoutTimer();
+    });
+  }
+
+  void ReportTimer() {
+    if (status_ == Status::Stopping) {
+      return;
+    }
+    report_timer_.expires_after(std::chrono::seconds(1));
+    report_timer_.async_wait([this](boost::system::error_code) {
+      const auto now = std::chrono::high_resolution_clock::now();
+      const size_t elapsed =
+          std::chrono::duration_cast<std::chrono::seconds>(now - start_time_)
+              .count();
+
+      while (report_progress_ && next_report_second_ < elapsed) {
+        LOG(INFO) << "cnt_sent: " << latencies_ns_.size() << ", rps["
+                  << next_report_second_
+                  << "]: " << requests_per_second_[next_report_second_]
+                  << ", cnt_timeout: "
+                  << cnt_timeout_
+                  << ", cnt_flying: " << flying_requests_.size();
+        ++next_report_second_;
+      }
+
+      ReportTimer();
+    });
+  }
+
+  void StopTimer() {
+    if (status_ == Status::Running) {
+      stop_timer_.expires_at(start_time_ +
+                             std::chrono::seconds(bench_seconds_));
+      stop_timer_.async_wait([this](boost::system::error_code) {
+        status_ = Status::Finishing;
+        tx_socket_.cancel();
+        StopTimer();
+      });
+    } else if (status_ == Status::Finishing) {
+      stop_timer_.expires_after(std::chrono::seconds(1));
+      stop_timer_.async_wait([this](boost::system::error_code) {
+        status_ = Status::Stopping;
+        rx_socket_.cancel();
+      });
+    }
+  }
+
+  enum class Status { Idle, Running, Finishing, Stopping, Done };
 
   const udp::endpoint dispatcher_endpoint_;
   const ModelSession model_session_;
@@ -216,25 +266,28 @@ class DispatcherRpcBencher {
   const uint64_t timeout_ns_;
   const bool report_progress_;
 
+  Status status_ = Status::Idle;
   boost::asio::io_context io_context_;
   udp::socket tx_socket_;
   udp::socket rx_socket_;
   uint32_t rx_port_ = 0;
   udp::endpoint rx_endpoint_;
   uint8_t rx_buf_[1400];
-  boost::asio::high_resolution_timer timer_;
+  boost::asio::high_resolution_timer timeout_timer_;
+  boost::asio::high_resolution_timer report_timer_;
+  boost::asio::high_resolution_timer stop_timer_;
 
   struct PendingResponse {
     std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
   };
-  std::unordered_map<uint64_t, PendingResponse> pending_responses_;
-  std::deque<uint64_t> not_yet_timeout_requests_;
+  std::unordered_map<uint32_t, PendingResponse> pending_responses_;
+  std::unordered_set<uint32_t> flying_requests_;
+  std::deque<uint32_t> not_yet_timeout_requests_;
   std::vector<uint32_t> latencies_ns_;
-  uint64_t cnt_sent_ = 0;
-  uint32_t cnt_flying_ = 0;
+  uint32_t cnt_sent_ = 0;
+  uint32_t cnt_timeout_ = 0;
   std::chrono::time_point<std::chrono::high_resolution_clock> start_time_;
   std::vector<uint32_t> requests_per_second_;
-  std::vector<uint32_t> timeouts_per_second_;
   int next_report_second_ = 0;
 };
 

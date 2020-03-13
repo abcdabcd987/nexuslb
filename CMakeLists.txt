@@ -290,6 +290,16 @@ endif()
 
 
 
+###### tools/bench_dispatcher ######
+add_executable(bench_dispatcher
+        tools/bench_dispatcher.cpp)
+target_include_directories(bench_dispatcher PRIVATE
+        ${GENERATED_SRC_DIR}/src)
+target_compile_features(bench_dispatcher PRIVATE cxx_std_11)
+target_link_libraries(bench_dispatcher PRIVATE common)
+
+
+
 # FIXME ###### tests ######
 # add_executable(runtest
 #         tests/cpp/scheduler/backend_delegate_test.cpp

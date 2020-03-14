@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 
 #include <algorithm>
+#include <chrono>
 #include <boost/asio.hpp>
 
 #include "nexus/common/config.h"
@@ -207,8 +208,7 @@ void Dispatcher::Run() {
 
   // Nothing to do here
   for (;;) {
-    using namespace std::chrono_literals;
-    std::this_thread::sleep_for(24h);
+    std::this_thread::sleep_for(std::chrono::hours(24));
   }
 }
 

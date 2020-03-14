@@ -1,8 +1,12 @@
 #ifndef NEXUS_DISPATCHER_DISPATCHER_H_
 #define NEXUS_DISPATCHER_DISPATCHER_H_
 
-#include <atomic>
 #include <cstdint>
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -35,9 +39,47 @@ class ModelRoute {
   size_t current_drr_index_ = 0;
 };
 
+struct RequestContext {
+  std::array<uint8_t, 1400> buf;
+  size_t len;
+  boost::asio::ip::udp::endpoint endpoint;
+};
+
+class Dispatcher;
+
+class UdpRpcServer {
+ public:
+  UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher);
+  ~UdpRpcServer();
+  void Run();
+  void Stop();
+
+ private:
+  void AsyncReceive();
+  void WorkerThread();
+  void HandleRequest(std::unique_ptr<RequestContext> ctx);
+
+  const int udp_rpc_port_;
+  // TODO: refactor
+  Dispatcher* const dispatcher_;
+
+  boost::asio::io_context io_context_;
+  boost::asio::ip::udp::socket rx_socket_;
+  boost::asio::ip::udp::socket tx_socket_;
+  std::thread worker_thread_;
+  std::atomic<bool> running_{false};
+
+  std::mutex queue_mutex_;
+  std::condition_variable queue_cv_;
+  std::deque<std::unique_ptr<RequestContext>> queue_;
+  std::unique_ptr<RequestContext> incoming_request_;
+  // TODO: memory pool maybe?
+};
+
 class Dispatcher {
  public:
-  Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port);
+  Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
+             int num_udp_threads);
 
   virtual ~Dispatcher();
 
@@ -47,16 +89,15 @@ class Dispatcher {
 
   void UpdateModelRoutes(const ModelRouteUpdates& request, RpcReply* reply);
 
+  void GetBackend(const std::string& model_sess_id, DispatchReply* reply);
+
  private:
   void Register();
 
   void Unregister();
 
-  void UdpServerDoReceive();
-  void UdpServerDoSend(boost::asio::ip::udp::endpoint endpoint,
-                       std::string msg);
-
-  boost::asio::io_context io_context_;
+  const int udp_port_;
+  const int num_udp_threads_;
 
   /*! \brief Indicator whether the dispatcher is running */
   std::atomic_bool running_;
@@ -69,20 +110,14 @@ class Dispatcher {
   /*! \brief RPC client connected to scheduler */
   std::unique_ptr<SchedulerCtrl::Stub> sch_stub_;
 
-  /*! \brief Random number generator */
-  std::random_device rd_;
-  std::mt19937 rand_gen_;
-
-  // Big lock for the following members
+  // Big lock for the model routes
   std::mutex mutex_;
   // Maps model session ID to backend list of the model
   std::unordered_map<std::string, ModelRoute> models_;
 
   // UDP RPC Server
-  int udp_port_;
-  boost::asio::ip::udp::socket udp_socket_;
-  uint8_t buf_[1400];
-  boost::asio::ip::udp::endpoint remote_endpoint_;
+  std::vector<std::thread> workers_;
+  std::vector<std::unique_ptr<UdpRpcServer>> udp_rpc_servers_;
 };
 
 }  // namespace dispatcher

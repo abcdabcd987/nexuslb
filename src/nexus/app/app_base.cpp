@@ -7,8 +7,9 @@ AppBase::AppBase(const std::string& port,
                  const std::string& rpc_port,
                  const std::string& sch_addr,
                  const std::string& dispatcher_addr,
+                 uint32_t dispatcher_rpc_timeout_us,
                  size_t nthreads) :
-    Frontend(port, rpc_port, sch_addr, dispatcher_addr),
+    Frontend(port, rpc_port, sch_addr, dispatcher_addr, dispatcher_rpc_timeout_us),
     nthreads_(nthreads),
     qp_(nullptr),
     step_us_(0)

@@ -30,7 +30,7 @@ namespace app {
 class Frontend : public ServerBase, public MessageHandler {
  public:
   Frontend(std::string port, std::string rpc_port, std::string sch_addr,
-           std::string dispatcher_addr);
+           std::string dispatcher_addr, uint32_t dispatcher_rpc_timeout_us);
 
   virtual ~Frontend();
 

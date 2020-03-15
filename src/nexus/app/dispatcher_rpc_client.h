@@ -18,7 +18,8 @@ namespace app {
 class DispatcherRpcClient {
  public:
   DispatcherRpcClient(boost::asio::io_context* io_context,
-                      std::string dispatcher_addr);
+                      std::string dispatcher_addr,
+                      uint32_t rpc_timeout_us);
   ~DispatcherRpcClient();
   void Start();
   void Stop();
@@ -37,6 +38,7 @@ class DispatcherRpcClient {
   std::atomic<bool> running_{false};
   boost::asio::io_context* const io_context_;
   const std::string dispatcher_addr_;
+  const uint32_t rpc_timeout_us_;
   boost::asio::ip::udp::endpoint dispatcher_endpoint_;
   boost::asio::ip::udp::socket tx_socket_;
   boost::asio::ip::udp::socket rx_socket_;

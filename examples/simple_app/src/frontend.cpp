@@ -8,11 +8,12 @@ using namespace nexus::app;
 class SimpleApp : public AppBase {
  public:
   SimpleApp(std::string port, std::string rpc_port, std::string sch_addr,
-            std::string dispatcher_addr, size_t nthreads,
-            const std::string& framework, const std::string& model_name,
-            int version, int latency_sla_ms, float estimate_workload,
-            int image_height, int image_width)
-      : AppBase(port, rpc_port, sch_addr, dispatcher_addr, nthreads),
+            std::string dispatcher_addr, uint32_t dispatcher_rpc_timeout_us,
+            size_t nthreads, const std::string& framework,
+            const std::string& model_name, int version, int latency_sla_ms,
+            float estimate_workload, int image_height, int image_width)
+      : AppBase(port, rpc_port, sch_addr, dispatcher_addr,
+                dispatcher_rpc_timeout_us, nthreads),
         framework_(framework),
         model_name_(model_name),
         version_(version),
@@ -62,6 +63,8 @@ DEFINE_string(port, "9001", "Server port");
 DEFINE_string(rpc_port, "9002", "RPC port");
 DEFINE_string(sch_addr, "127.0.0.1", "Scheduler address");
 DEFINE_string(dispatcher_addr, "127.0.0.1", "Dispatcher address");
+DEFINE_uint32(dispatcher_rpc_timeout_us, 3000,
+              "Dispatcher UDP RPC timeout in microseconds.");
 DEFINE_int32(nthread, 4, "Number of threads processing requests");
 DEFINE_string(framework, "", "Framework (caffe2, caffe, darknet, tensorflow)");
 DEFINE_string(model, "", "Model name");
@@ -86,8 +89,9 @@ int main(int argc, char** argv) {
   LOG(INFO) << "App port " << FLAGS_port << ", rpc port " << FLAGS_rpc_port;
   // Create the frontend server
   SimpleApp app(FLAGS_port, FLAGS_rpc_port, FLAGS_sch_addr,
-                FLAGS_dispatcher_addr, FLAGS_nthread, FLAGS_framework,
-                FLAGS_model, FLAGS_model_version, FLAGS_latency, FLAGS_workload,
+                FLAGS_dispatcher_addr, FLAGS_dispatcher_rpc_timeout_us,
+                FLAGS_nthread, FLAGS_framework, FLAGS_model,
+                FLAGS_model_version, FLAGS_latency, FLAGS_workload,
                 FLAGS_height, FLAGS_width);
   LaunchApp(&app);
 

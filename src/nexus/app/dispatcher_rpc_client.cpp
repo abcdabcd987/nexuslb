@@ -72,9 +72,11 @@ namespace nexus {
 namespace app {
 
 DispatcherRpcClient::DispatcherRpcClient(boost::asio::io_context* io_context,
-                                         std::string dispatcher_addr)
+                                         std::string dispatcher_addr,
+                                         uint32_t rpc_timeout_us)
     : io_context_(io_context),
       dispatcher_addr_(std::move(dispatcher_addr)),
+      rpc_timeout_us_(rpc_timeout_us),
       tx_socket_(*io_context_),
       rx_socket_(*io_context_),
       debug_(Debug::NewIfEnabled()) {}
@@ -200,7 +202,7 @@ DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
   // Wait for response
   bool response_ready = false;
   {
-    auto timeout = std::chrono::microseconds(2000);
+    auto timeout = std::chrono::microseconds(rpc_timeout_us_);
     std::unique_lock<std::mutex> response_lock(response->mutex);
     response_ready = response->cv.wait_for(
         response_lock, timeout, [response] { return response->ready; });

@@ -13,11 +13,13 @@ namespace nexus {
 namespace app {
 
 Frontend::Frontend(std::string port, std::string rpc_port, std::string sch_addr,
-                   std::string dispatcher_addr)
+                   std::string dispatcher_addr,
+                   uint32_t dispatcher_rpc_timeout_us)
     : ServerBase(port),
       rpc_service_(this, rpc_port),
       rand_gen_(rd_()),
-      dispatcher_rpc_client_(&io_context_, std::move(dispatcher_addr)) {
+      dispatcher_rpc_client_(&io_context_, std::move(dispatcher_addr),
+                             dispatcher_rpc_timeout_us) {
   // Start RPC service
   rpc_service_.Start();
   // Init scheduler client

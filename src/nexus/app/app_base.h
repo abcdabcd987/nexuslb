@@ -15,6 +15,7 @@ class AppBase : public Frontend {
           const std::string& rpc_port,
           const std::string& sch_addr,
           const std::string& dispatcher_addr,
+          uint32_t dispatcher_rpc_timeout_us,
           size_t nthreads);
 
   ~AppBase() override;

@@ -49,7 +49,7 @@ class Dispatcher;
 
 class UdpRpcServer {
  public:
-  UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher);
+  UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher, int rx_cpu, int worker_cpu);
   ~UdpRpcServer();
   void Run();
   void Stop();
@@ -60,6 +60,8 @@ class UdpRpcServer {
   void HandleRequest(std::unique_ptr<RequestContext> ctx);
 
   const int udp_rpc_port_;
+  const int rx_cpu_;
+  const int worker_cpu_;
   // TODO: refactor
   Dispatcher* const dispatcher_;
 
@@ -79,7 +81,7 @@ class UdpRpcServer {
 class Dispatcher {
  public:
   Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
-             int num_udp_threads);
+             int num_udp_threads, std::vector<int> pin_cpus);
 
   virtual ~Dispatcher();
 
@@ -98,6 +100,7 @@ class Dispatcher {
 
   const int udp_port_;
   const int num_udp_threads_;
+  const std::vector<int> pin_cpus_;
 
   /*! \brief Indicator whether the dispatcher is running */
   std::atomic_bool running_;

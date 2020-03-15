@@ -1,9 +1,14 @@
 #include "nexus/dispatcher/dispatcher.h"
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <sys/socket.h>
+#include <pthread.h>
 
 #include <algorithm>
 #include <chrono>
+#include <sstream>
 #include <boost/asio.hpp>
 
 #include "nexus/common/config.h"
@@ -11,11 +16,24 @@
 
 using boost::asio::ip::udp;
 
+namespace {
+void PinCpu(pthread_t thread, int cpu) {
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(cpu, &cpuset);
+  int rc = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+  LOG_IF(FATAL, rc != 0) << "Error calling pthread_setaffinity_np: " << rc;
+}
+}  // namespace
+
 namespace nexus {
 namespace dispatcher {
 
-UdpRpcServer::UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher)
+UdpRpcServer::UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher, int rx_cpu,
+                           int worker_cpu)
     : udp_rpc_port_(udp_rpc_port),
+      rx_cpu_(rx_cpu),
+      worker_cpu_(worker_cpu),
       dispatcher_(dispatcher),
       rx_socket_(io_context_),
       tx_socket_(io_context_) {}
@@ -37,13 +55,25 @@ void UdpRpcServer::Run() {
   rx_socket_.bind(udp::endpoint(udp::v4(), udp_rpc_port_));
   tx_socket_.open(udp::v4());
   tx_socket_.bind(udp::endpoint(udp::v4(), 0));
-  LOG(INFO) << "UDP RPC server is listening on " << rx_socket_.local_endpoint()
-            << " and sending from " << tx_socket_.local_endpoint();
 
   running_ = true;
   worker_thread_ = std::thread(&UdpRpcServer::WorkerThread, this);
   incoming_request_.reset(new RequestContext);
   AsyncReceive();
+
+  // Pin cpu
+  std::stringstream ss;
+  ss << "UDP RPC server is listening on " << rx_socket_.local_endpoint();
+  if (rx_cpu_ >= 0) {
+    PinCpu(pthread_self(), rx_cpu_);
+    ss << " (pinned on CPU " << rx_cpu_ << ")";
+  }
+  ss << " and sending from " << tx_socket_.local_endpoint();
+  if (worker_cpu_ >= 0) {
+    PinCpu(worker_thread_.native_handle(), worker_cpu_);
+    ss << " (pinned on CPU " << worker_cpu_ << ")";
+  }
+  LOG(INFO) << ss.str();
 
   // Block until done
   io_context_.run();
@@ -167,14 +197,20 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
 }
 
 Dispatcher::Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
-                       int num_udp_threads)
+                       int num_udp_threads, std::vector<int> pin_cpus)
     : udp_port_(udp_port),
       num_udp_threads_(num_udp_threads),
+      pin_cpus_(std::move(pin_cpus)),
       rpc_service_(this, rpc_port, 1) {
 #ifndef SO_REUSEPORT
   CHECK_EQ(num_udp_threads, 1) << "SO_REUSEPORT is not supported. UDP RPC "
                                   "server must be run in single threaded mode.";
 #endif
+  if (!pin_cpus_.empty()) {
+    CHECK_EQ(num_udp_threads_ * 2, pin_cpus_.size())
+        << "UDP RPC thread affinity settings should contain exactly twice the "
+           "number of thread.";
+  }
 
   // Init scheduler client
   if (sch_addr.find(':') == std::string::npos) {
@@ -202,7 +238,10 @@ void Dispatcher::Run() {
 
   // Run UDP RPC server
   for (int i = 0; i < num_udp_threads_; ++i) {
-    udp_rpc_servers_.emplace_back(new UdpRpcServer(udp_port_, this));
+    int cpu1 = pin_cpus_.empty() ? -1 : pin_cpus_.at(i * 2);
+    int cpu2 = pin_cpus_.empty() ? -1 : pin_cpus_.at(i * 2 + 1);
+    udp_rpc_servers_.emplace_back(
+        new UdpRpcServer(udp_port_, this, cpu1, cpu2));
     workers_.emplace_back(&UdpRpcServer::Run, udp_rpc_servers_.back().get());
   }
 

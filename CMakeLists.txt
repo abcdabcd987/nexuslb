@@ -121,6 +121,12 @@ target_include_directories(dispatcher PRIVATE
         ${GENERATED_SRC_DIR}/src)
 target_compile_features(dispatcher PRIVATE cxx_std_11)
 target_link_libraries(dispatcher PRIVATE common)
+option(NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
+       "Avoid grpc in dispatcher. Useful for benchmarking the network performance."
+       OFF)
+if(NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER)
+    target_compile_definitions(dispatcher PRIVATE NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER)
+endif()
 
 
 

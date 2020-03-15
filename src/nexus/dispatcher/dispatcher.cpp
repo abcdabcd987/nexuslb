@@ -3,12 +3,14 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#include <sys/socket.h>
 #include <pthread.h>
+#include <sys/socket.h>
 
 #include <algorithm>
 #include <chrono>
 #include <sstream>
+
+#include <glog/logging.h>
 #include <boost/asio.hpp>
 
 #include "nexus/common/config.h"
@@ -200,8 +202,12 @@ Dispatcher::Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
                        int num_udp_threads, std::vector<int> pin_cpus)
     : udp_port_(udp_port),
       num_udp_threads_(num_udp_threads),
-      pin_cpus_(std::move(pin_cpus)),
-      rpc_service_(this, rpc_port, 1) {
+      pin_cpus_(std::move(pin_cpus))
+#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
+      ,
+      rpc_service_(this, rpc_port, 1)
+#endif
+{
 #ifndef SO_REUSEPORT
   CHECK_EQ(num_udp_threads, 1) << "SO_REUSEPORT is not supported. UDP RPC "
                                   "server must be run in single threaded mode.";
@@ -217,9 +223,11 @@ Dispatcher::Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
     // Add default scheduler port if no port specified
     sch_addr += ":" + std::to_string(SCHEDULER_DEFAULT_PORT);
   }
+#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
   auto channel =
       grpc::CreateChannel(sch_addr, grpc::InsecureChannelCredentials());
   sch_stub_ = SchedulerCtrl::NewStub(channel);
+#endif
 }
 
 Dispatcher::~Dispatcher() {
@@ -231,10 +239,12 @@ Dispatcher::~Dispatcher() {
 void Dispatcher::Run() {
   running_ = true;
 
+#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
   // Start RPC service
   rpc_service_.Start();
   // Init Node ID and register frontend to scheduler
   Register();
+#endif
 
   // Run UDP RPC server
   for (int i = 0; i < num_udp_threads_; ++i) {
@@ -254,10 +264,13 @@ void Dispatcher::Run() {
 void Dispatcher::Stop() {
   LOG(INFO) << "Shutting down the dispatcher.";
   running_ = false;
+
+#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
   // Unregister frontend
   Unregister();
   // Stop RPC service
   rpc_service_.Stop();
+#endif
 
   // Stop UDP RPC server
   for (auto& server : udp_rpc_servers_) {
@@ -280,6 +293,7 @@ void Dispatcher::GetBackend(const std::string& model_sess_id,
   }
 }
 
+#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
 void Dispatcher::Register() {
   // Init node id
   std::random_device rd;
@@ -335,6 +349,7 @@ void Dispatcher::Unregister() {
     LOG(ERROR) << "Failed to unregister frontend: " << CtrlStatus_Name(ret);
   }
 }
+#endif
 
 void Dispatcher::UpdateModelRoutes(const ModelRouteUpdates& request,
                                    RpcReply* reply) {

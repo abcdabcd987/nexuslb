@@ -1,10 +1,10 @@
 #ifndef NEXUS_DISPATCHER_DISPATCHER_H_
 #define NEXUS_DISPATCHER_DISPATCHER_H_
 
-#include <cstdint>
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -16,7 +16,9 @@
 
 #include "nexus/common/connection.h"
 #include "nexus/common/server_base.h"
+#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
 #include "nexus/dispatcher/rpc_service.h"
+#endif
 #include "nexus/proto/control.pb.h"
 
 namespace nexus {
@@ -49,7 +51,8 @@ class Dispatcher;
 
 class UdpRpcServer {
  public:
-  UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher, int rx_cpu, int worker_cpu);
+  UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher, int rx_cpu,
+               int worker_cpu);
   ~UdpRpcServer();
   void Run();
   void Stop();
@@ -94,9 +97,10 @@ class Dispatcher {
   void GetBackend(const std::string& model_sess_id, DispatchReply* reply);
 
  private:
+#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
   void Register();
-
   void Unregister();
+#endif
 
   const int udp_port_;
   const int num_udp_threads_;
@@ -108,10 +112,12 @@ class Dispatcher {
   uint32_t beacon_interval_sec_;
   /*! \brief Frontend node ID */
   uint32_t node_id_;
+#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
   /*! \brief RPC service */
   RpcService rpc_service_;
   /*! \brief RPC client connected to scheduler */
   std::unique_ptr<SchedulerCtrl::Stub> sch_stub_;
+#endif
 
   // Big lock for the model routes
   std::mutex mutex_;

@@ -147,7 +147,6 @@ int ns(const std::chrono::time_point<std::chrono::high_resolution_clock>& x,
 }  // namespace
 
 void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
-  auto t1 = std::chrono::high_resolution_clock::now();
   DispatchRequest request;
   // Validate request
   bool ok = request.ParseFromString(
@@ -158,7 +157,6 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
         << ctx->len;
     return;
   }
-  auto t2 = std::chrono::high_resolution_clock::now();
   auto client_endpoint = boost::asio::ip::udp::endpoint(ctx->endpoint.address(),
                                                         request.udp_rpc_port());
 
@@ -166,15 +164,11 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
   DispatchReply reply;
   *reply.mutable_model_session() = request.model_session();
   reply.set_request_id(request.request_id());
-  auto t3 = std::chrono::high_resolution_clock::now();
   std::string model_sess_id = ModelSessionToString(request.model_session());
-  auto t4 = std::chrono::high_resolution_clock::now();
   dispatcher_->GetBackend(model_sess_id, &reply);
-  auto t5 = std::chrono::high_resolution_clock::now();
 
   // Send reply. I think using blocking APIs should be okay here?
   auto msg = reply.SerializeAsString();
-  auto t6 = std::chrono::high_resolution_clock::now();
   if (msg.empty()) {
     LOG(ERROR) << "Failed to reply.SerializeAsString()";
     return;
@@ -184,17 +178,6 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
   if (len != msg.size()) {
     LOG(WARNING) << "UDP RPC server reply sent " << len << " bytes, expecting "
                  << msg.size() << " bytes";
-  }
-
-  auto t7 = std::chrono::high_resolution_clock::now();
-  if (request.request_id() % 1024 == 0) {
-    VLOG(1) << "t2: " << ns(t1, t2) << ", "
-            << "t3: " << ns(t2, t3) << ", "
-            << "t4: " << ns(t3, t4) << ", "
-            << "t5: " << ns(t4, t5) << ", "
-            << "t6: " << ns(t5, t6) << ", "
-            << "t7: " << ns(t6, t7) << ", "
-            << "total: " << ns(t1, t7) << " ns";
   }
 }
 

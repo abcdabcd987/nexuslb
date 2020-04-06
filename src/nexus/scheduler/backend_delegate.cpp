@@ -1,10 +1,14 @@
 #include <cmath>
 #include <sstream>
 #include <glog/logging.h>
+#include <gflags/gflags.h>
 
 #include "nexus/common/model_db.h"
 #include "nexus/scheduler/backend_delegate.h"
 #include "nexus/scheduler/scheduler.h"
+
+DEFINE_uint32(dispatcher_latency_us, 0,
+              "Latency of frontend calling the dispatcher.");
 
 uint32_t BatchSizeCeilEps(double x, double eps) {
   double floor = std::floor(x);
@@ -538,6 +542,7 @@ void BackendDelegate::ComputeBatchSize(InstanceInfo* inst_info,
 
   // 2. Compute the max batch for residue load
   double latency_sla_us = inst_info->model_sessions[0].latency_sla() * 1000;
+  latency_sla_us -= FLAGS_dispatcher_latency_us;
   double preprocess = inst_info->profile->GetPreprocessLatency();
   double postprocess = inst_info->profile->GetPostprocessLatency();
   batch = 1;

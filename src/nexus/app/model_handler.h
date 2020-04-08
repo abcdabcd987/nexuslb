@@ -5,8 +5,8 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
-#include <string>
 #include <random>
+#include <string>
 #include <unordered_map>
 
 #include "nexus/app/dispatcher_rpc_client.h"
@@ -31,7 +31,7 @@ class QueryResult {
   QueryResult(uint64_t qid);
 
   bool ready() const { return ready_; }
-  
+
   uint64_t query_id() const { return qid_; }
   /*! \brief Gets the status of output result */
   uint32_t status() const;
@@ -95,10 +95,15 @@ class ModelHandler {
 
   std::shared_ptr<QueryResult> Execute(
       std::shared_ptr<RequestContext> ctx, const ValueProto& input,
-      std::vector<std::string> output_fields={}, uint32_t topk=1,
-      std::vector<RectProto> windows={});
+      std::vector<std::string> output_fields = {}, uint32_t topk = 1,
+      std::vector<RectProto> windows = {});
 
-  void HandleReply(const QueryResultProto& result);
+  void SendBackendQuery(std::shared_ptr<RequestContext> ctx, uint64_t qid,
+                        std::shared_ptr<BackendSession> backend);
+
+  void HandleBackendReply(const QueryResultProto& result);
+
+  void HandleDispatcherReply(const DispatchReply& reply);
 
   void UpdateRoute(const ModelRouteProto& route);
 
@@ -106,7 +111,7 @@ class ModelHandler {
 
  private:
   std::shared_ptr<BackendSession> GetBackend();
-  
+
   std::shared_ptr<BackendSession> GetBackendWeightedRoundRobin();
 
   std::shared_ptr<BackendSession> GetBackendDeficitRoundRobin();
@@ -145,7 +150,7 @@ class ModelHandler {
   DispatcherRpcClient* dispatcher_rpc_client_;
 };
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_MODEL_HANDLER_H_
+#endif  // NEXUS_COMMON_MODEL_HANDLER_H_

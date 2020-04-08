@@ -1,10 +1,12 @@
-#include <glog/logging.h>
+#include "nexus/app/model_handler.h"
+
 #include <gflags/gflags.h>
+#include <glog/logging.h>
+
+#include <algorithm>
 #include <limits>
 #include <typeinfo>
-#include <algorithm>
 
-#include "nexus/app/model_handler.h"
 #include "nexus/app/request_context.h"
 #include "nexus/common/model_def.h"
 
@@ -104,12 +106,12 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
     std::vector<RectProto> windows) {
   uint64_t qid = global_query_id_.fetch_add(1, std::memory_order_relaxed);
   counter_->Increase(1);
-  auto reply = std::make_shared<QueryResult>(qid);
-  auto backend = GetBackend();
-  if (backend == nullptr) {
-    ctx->HandleError(SERVICE_UNAVAILABLE, "Service unavailable");
-    return reply;
+  {
+    std::lock_guard<std::mutex> lock(query_ctx_mu_);
+    query_ctx_.emplace(qid, ctx);
   }
+
+  // Build the query proto
   QueryProto query;
   query.set_query_id(qid);
   query.set_model_session_id(model_session_id_);
@@ -126,18 +128,39 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   if (ctx->slack_ms() > 0) {
     query.set_slack_ms(int(floor(ctx->slack_ms())));
   }
-  ctx->RecordQuerySend(qid);
-  {
-    std::lock_guard<std::mutex> lock(query_ctx_mu_);
-    query_ctx_.emplace(qid, ctx);
+  ctx->SetBackendQueryProto(std::move(query));
+
+  // Send query to backend if not using dispatcher.
+  // Otherwise ask the dispatcher first.
+  if (lb_policy_ != LB_Dispatcher) {
+    auto backend = GetBackend();
+    SendBackendQuery(ctx, qid, backend);
+  } else {
+    dispatcher_rpc_client_->AsyncQuery(model_session_, qid, this);
   }
-  auto msg = std::make_shared<Message>(kBackendRequest, query.ByteSizeLong());
-  msg->EncodeBody(query);
-  backend->Write(std::move(msg));
+
+  auto reply = std::make_shared<QueryResult>(qid);
   return reply;
 }
 
-void ModelHandler::HandleReply(const QueryResultProto& result) {
+void ModelHandler::SendBackendQuery(std::shared_ptr<RequestContext> ctx,
+                                    uint64_t qid,
+                                    std::shared_ptr<BackendSession> backend) {
+  if (backend == nullptr) {
+    ctx->HandleError(SERVICE_UNAVAILABLE, "Service unavailable");
+    return;
+  }
+
+  ctx->RecordQuerySend(qid);
+  const auto& query = ctx->backend_query_proto();
+  auto msg = std::make_shared<Message>(kBackendRequest, query.ByteSizeLong());
+  msg->EncodeBody(query);
+
+  // Send to backend
+  backend->Write(std::move(msg));
+}
+
+void ModelHandler::HandleBackendReply(const QueryResultProto& result) {
   std::lock_guard<std::mutex> lock(query_ctx_mu_);
   uint64_t qid = result.query_id();
   auto iter = query_ctx_.find(qid);
@@ -150,6 +173,43 @@ void ModelHandler::HandleReply(const QueryResultProto& result) {
   auto ctx = iter->second;
   ctx->HandleQueryResult(result);
   query_ctx_.erase(qid);
+}
+
+void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
+  uint64_t qid = reply.query_id();
+  std::shared_ptr<RequestContext> ctx;
+  {
+    std::lock_guard<std::mutex> lock(query_ctx_mu_);
+    auto iter = query_ctx_.find(qid);
+    if (iter == query_ctx_.end()) {
+      // Ignore dispatcher RPC replies that take too long time to return.
+      return;
+    }
+    ctx = iter->second;
+  }
+
+  std::shared_ptr<BackendSession> backend;
+  if (reply.status() == CtrlStatus::CTRL_OK) {
+    auto backend_id = reply.backend().node_id();
+    backend = backend_pool_.GetBackend(backend_id);
+    if (!backend) {
+      LOG(WARNING) << "Cannot find the backend returned by the dispatcher."
+                   << " query_id: " << reply.query_id()
+                   << " backend: " << reply.backend().ShortDebugString()
+                   << " Fallback to deficit round robin.";
+    }
+  } else {
+    LOG(WARNING) << "Dispatcher returns failure: "
+                 << CtrlStatus_Name(reply.status())
+                 << " query_id: " << reply.query_id()
+                 << " Fallback to deficit round robin.";
+  }
+  if (!backend) {
+    std::lock_guard<std::mutex> lock(route_mu_);
+    backend = GetBackendDeficitRoundRobin();
+  }
+
+  SendBackendQuery(ctx, qid, backend);
 }
 
 void ModelHandler::UpdateRoute(const ModelRouteProto& route) {
@@ -224,29 +284,7 @@ std::shared_ptr<BackendSession> ModelHandler::GetBackend() {
       return candidate2;
     }
     case LB_Dispatcher: {
-      auto reply = dispatcher_rpc_client_->Query(model_session_);
-      if (reply.status() == CtrlStatus::CTRL_OK) {
-        auto backend_id = reply.backend().node_id();
-        auto backend = backend_pool_.GetBackend(backend_id);
-        if (backend) {
-          return backend;
-        } else {
-          LOG(WARNING) << "Cannot find the backend returned by the dispatcher."
-                       << " request_id: " << reply.request_id()
-                       << " backend: " << reply.backend().ShortDebugString()
-                       << " Fallback to deficit round robin.";
-        }
-      } else {
-        LOG(WARNING) << "Dispatcher returns failure: "
-                     << CtrlStatus_Name(reply.status())
-                     << " request_id: " << reply.request_id()
-                     << " Fallback to deficit round robin.";
-      }
-      auto backend = GetBackendDeficitRoundRobin();
-      if (backend != nullptr) {
-        return backend;
-      }
-      return GetBackendWeightedRoundRobin();
+      LOG(FATAL) << "Unreachable.";
     }
     default:
       return nullptr;

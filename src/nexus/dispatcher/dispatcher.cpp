@@ -163,7 +163,7 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
   // Handle request
   DispatchReply reply;
   *reply.mutable_model_session() = request.model_session();
-  reply.set_request_id(request.request_id());
+  reply.set_query_id(request.query_id());
   std::string model_sess_id = ModelSessionToString(request.model_session());
   dispatcher_->GetBackend(model_sess_id, &reply);
 

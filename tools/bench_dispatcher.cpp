@@ -111,10 +111,10 @@ class DispatcherRpcBencher {
             return;
           }
 
-          auto iter = pending_responses_.find(reply.request_id());
+          auto iter = pending_responses_.find(reply.query_id());
           if (iter == pending_responses_.end()) {
-            LOG(ERROR) << "Got unexpected response. request_id: "
-                       << reply.request_id();
+            LOG(ERROR) << "Got unexpected response. query_id: "
+                       << reply.query_id();
             DoReceive();
             return;
           }
@@ -130,7 +130,7 @@ class DispatcherRpcBencher {
                                                                start_time_)
                   .count();
           ++requests_per_second_[bucket];
-          flying_requests_.erase(reply.request_id());
+          flying_requests_.erase(reply.query_id());
           pending_responses_.erase(iter);
 
           DoReceive();
@@ -179,7 +179,7 @@ class DispatcherRpcBencher {
       auto req_id = ++cnt_sent_;
       *request.mutable_model_session() = model_session_;
       request.set_udp_rpc_port(rx_port_);
-      request.set_request_id(req_id);
+      request.set_query_id(req_id);
 
       pending_responses_[req_id] = PendingResponse{
           .start_time = now,

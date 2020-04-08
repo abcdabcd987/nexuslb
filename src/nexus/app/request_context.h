@@ -10,6 +10,7 @@
 #include "nexus/app/user_session.h"
 #include "nexus/common/block_queue.h"
 #include "nexus/proto/nnquery.pb.h"
+#include "nexus/proto/control.pb.h"
 
 namespace nexus {
 namespace app {
@@ -105,9 +106,13 @@ class RequestContext : public DeadlineItem,
 
   double slack_ms() const { return slack_ms_; }
 
+  const QueryProto& backend_query_proto() const { return backend_query_proto_; }
+
   void SetState(RequestState state);
 
   void SetExecBlocks(std::vector<ExecBlock*> blocks);
+
+  void SetBackendQueryProto(QueryProto query_proto);
 
   ExecBlock* NextReadyBlock();
 
@@ -116,6 +121,8 @@ class RequestContext : public DeadlineItem,
   void AddBlockReturn(std::vector<VariablePtr> vars);
 
   void HandleQueryResult(const QueryResultProto& result);
+
+  void HandleDispatcherReply(const DispatchReply& reply);
 
   void HandleError(uint32_t status, const std::string& error_msg);
 
@@ -135,6 +142,7 @@ class RequestContext : public DeadlineItem,
   ReplyProto reply_;
   std::atomic<RequestState> state_;
   double slack_ms_;
+  QueryProto backend_query_proto_;
   
   std::deque<ExecBlock*> ready_blocks_;
   std::unordered_map<int, ExecBlock*> pending_blocks_;

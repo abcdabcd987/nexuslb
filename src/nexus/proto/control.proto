@@ -190,13 +190,13 @@ message ComplexQueryAddEdgeRequest {
 
 message DispatchRequest {
   ModelSession model_session = 1;
-  uint64 request_id = 2;
+  uint64 query_id = 2;
   uint32 udp_rpc_port = 3;
 }
 
 message DispatchReply {
   ModelSession model_session = 1;
-  uint64 request_id = 2;
+  uint64 query_id = 2;
   CtrlStatus status = 3;
   BackendInfo backend = 4;
 }

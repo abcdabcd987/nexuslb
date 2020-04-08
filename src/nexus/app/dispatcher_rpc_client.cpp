@@ -1,70 +1,17 @@
 #include "nexus/app/dispatcher_rpc_client.h"
 
-#include <cstdio>
+#include <gflags/gflags.h>
+#include <glog/logging.h>
+
 #include <chrono>
+#include <cstdio>
 #include <mutex>
 #include <tuple>
 #include <utility>
-#include <glog/logging.h>
-#include <gflags/gflags.h>
 
+#include "nexus/app/model_handler.h"
 #include "nexus/common/config.h"
 #include "nexus/common/model_def.h"
-
-// ========== For debugging purpose BEGIN ==========
-DEFINE_string(_debug_record_dispatcher_rpc_latency, "",
-              "DEBUG: Save the latency of each Dispatcher RPC to the path "
-              "specified by this flag.");
-
-namespace {
-class RpcLatencyRecorder {
- public:
-  explicit RpcLatencyRecorder(const std::string& path) {
-    LOG(INFO) << "Logging latency of Dispatcher RPC calls to " << path;
-    file_ = fopen(path.c_str(), "wb");
-    CHECK(file_ != nullptr) << "Failed to open " << path;
-  }
-
-  ~RpcLatencyRecorder() { fclose(file_); }
-
-  void RecordDispatcherRpcLatency(uint32_t latency_ns) {
-    auto n = fwrite(&latency_ns, sizeof(latency_ns), 1, file_);
-    CHECK_EQ(n, 1);
-  }
-
- private:
-  FILE* file_ = nullptr;
-};
-}  // namespace
-
-class nexus::app::DispatcherRpcClient::Debug {
- public:
-  void RecordDispatcherRpcLatency(uint32_t latency_ns) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    rpc_latency_recorder_->RecordDispatcherRpcLatency(latency_ns);
-  }
-
-  static std::unique_ptr<Debug> NewIfEnabled() {
-    std::unique_ptr<Debug> debug(new Debug());
-    bool enabled = false;
-    if (!FLAGS__debug_record_dispatcher_rpc_latency.empty()) {
-      enabled = true;
-      debug->rpc_latency_recorder_.reset(
-          new RpcLatencyRecorder(FLAGS__debug_record_dispatcher_rpc_latency));
-    }
-    if (!enabled) {
-      delete debug.release();
-    }
-    return debug;
-  }
-
- private:
-  Debug() = default;
-  std::mutex mutex_;
-  std::unique_ptr<RpcLatencyRecorder> rpc_latency_recorder_;
-};
-
-// ========== For debugging purpose END ==========
 
 using boost::asio::ip::udp;
 
@@ -78,8 +25,7 @@ DispatcherRpcClient::DispatcherRpcClient(boost::asio::io_context* io_context,
       dispatcher_addr_(std::move(dispatcher_addr)),
       rpc_timeout_us_(rpc_timeout_us),
       tx_socket_(*io_context_),
-      rx_socket_(*io_context_),
-      debug_(Debug::NewIfEnabled()) {}
+      rx_socket_(*io_context_) {}
 
 DispatcherRpcClient::~DispatcherRpcClient() {
   if (running_) {
@@ -121,9 +67,7 @@ void DispatcherRpcClient::Start() {
   DoReceive();
 }
 
-void DispatcherRpcClient::Stop() {
-  running_ = false;
-}
+void DispatcherRpcClient::Stop() { running_ = false; }
 
 void DispatcherRpcClient::DoReceive() {
   if (!running_) {
@@ -132,6 +76,9 @@ void DispatcherRpcClient::DoReceive() {
   rx_socket_.async_receive_from(
       boost::asio::buffer(rx_buf_, 1400), rx_endpoint_,
       [this](boost::system::error_code ec, std::size_t len) {
+        // Set up async task
+        DoReceive();
+
         // Validate response
         DispatchReply reply;
         bool ok = reply.ParseFromString(std::string(rx_buf_, rx_buf_ + len));
@@ -139,33 +86,33 @@ void DispatcherRpcClient::DoReceive() {
           LOG(ERROR)
               << "Bad response. Failed to ParseFromString. Total length = "
               << len;
-          DoReceive();
           return;
         }
 
-        // Wake up worker
-        do {
+        // Get ModelHandler and remove from pending_responses_
+        ModelHandler* model_handler = nullptr;
+        {
           std::lock_guard<std::mutex> lock(mutex_);
-          auto iter = pending_responses_.find(reply.request_id());
+          auto iter = pending_responses_.find(reply.query_id());
           if (iter == pending_responses_.end()) {
-            LOG(WARNING) << "Received unexpected response. request_id: "
-                         << reply.request_id() << ", model_session: "
-                         << ModelSessionToModelID(reply.model_session());
-            break;
+            // Ignore timed-out requests.
+            return;
           }
           auto& pending_response = iter->second;
-          {
-            std::lock_guard<std::mutex> response_lock(pending_response.mutex);
-            pending_response.reply = std::move(reply);
-            pending_response.ready = true;
-          }
-          pending_response.cv.notify_one();
-        } while (false);
-        DoReceive();
+          model_handler = pending_response.model_handler;
+          pending_responses_.erase(iter);
+        }
+
+        // Handle the dispatcher RPC
+        CHECK(model_handler != nullptr);
+        model_handler->HandleDispatcherReply(reply);
       });
 }
 
-DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
+void DispatcherRpcClient::AsyncQuery(ModelSession model_session,
+                                     uint64_t query_id,
+                                     ModelHandler* model_handler) {
+  CHECK(model_handler != nullptr);
   DispatchRequest request;
   *request.mutable_model_session() = std::move(model_session);
   request.set_udp_rpc_port(rx_port_);
@@ -174,12 +121,13 @@ DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
   UdpRpcPendingResponse* response = nullptr;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    request.set_request_id(++next_request_id_);
+    request.set_query_id(query_id);
     auto res = pending_responses_.emplace(std::piecewise_construct,
-                                          std::make_tuple(request.request_id()),
+                                          std::make_tuple(request.query_id()),
                                           std::make_tuple());
     response = &res.first->second;
   }
+  response->model_handler = model_handler;
 
   // Send request
   auto start = std::chrono::high_resolution_clock::now();
@@ -198,41 +146,6 @@ DispatchReply DispatcherRpcClient::Query(ModelSession model_session) {
     LOG(WARNING) << "UDP RPC client request sent " << sent_bytes
                  << " bytes, expecting " << request_msg.size() << " bytes";
   }
-
-  // Wait for response
-  bool response_ready = false;
-  {
-    auto timeout = std::chrono::microseconds(rpc_timeout_us_);
-    std::unique_lock<std::mutex> response_lock(response->mutex);
-    response_ready = response->cv.wait_for(
-        response_lock, timeout, [response] { return response->ready; });
-  }
-  if (debug_) {
-    auto end = std::chrono::high_resolution_clock::now();
-    uint32_t latency_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-            .count();
-    debug_->RecordDispatcherRpcLatency(latency_ns);
-  }
-
-  // Remove from pending list
-  DispatchReply reply;
-  reply.set_request_id(request.request_id());
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto iter = pending_responses_.find(request.request_id());
-  if (iter == pending_responses_.end()) {
-    LOG(ERROR) << "Cannot find pending response. request_id: "
-               << request.request_id();
-    reply.set_status(CtrlStatus::INPUT_TYPE_INCORRECT);
-  } else {
-    if (response_ready) {
-      reply = std::move(iter->second.reply);
-    } else {
-      reply.set_status(CtrlStatus::TIMEOUT);
-    }
-    pending_responses_.erase(iter);
-  }
-  return reply;
 }
 
 }  // namespace app

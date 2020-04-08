@@ -131,7 +131,7 @@ void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
         LOG(ERROR) << "Cannot find model handler for " << model_session_id;
         break;
       }
-      itr->second->HandleReply(result);
+      itr->second->HandleBackendReply(result);
       break;
     }
     default: {

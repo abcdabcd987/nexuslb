@@ -57,6 +57,10 @@ void RequestContext::SetExecBlocks(std::vector<ExecBlock*> blocks) {
   state_.store(kRunning);
 }
 
+void RequestContext::SetBackendQueryProto(QueryProto query_proto) {
+  backend_query_proto_ = std::move(query_proto);
+}
+
 ExecBlock* RequestContext::NextReadyBlock() {
   std::lock_guard<std::mutex> lock(mu_);
   if (ready_blocks_.empty()) {
@@ -143,6 +147,13 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
     waiting_vars_.erase(var_name);
     AddReadyVariable(var);
   }
+}
+
+void RequestContext::HandleDispatcherReply(const DispatchReply& reply) {
+  if (state_ == kError) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mu_);
 }
 
 void RequestContext::HandleError(uint32_t status,

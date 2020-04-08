@@ -188,6 +188,11 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
     ctx = iter->second;
   }
 
+  if (!ctx->MarkBackendQuerySent()) {
+    // Avoid send to backend twice.
+    return;
+  }
+
   std::shared_ptr<BackendSession> backend;
   if (reply.status() == CtrlStatus::CTRL_OK) {
     auto backend_id = reply.backend().node_id();
@@ -198,6 +203,12 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
                    << " backend: " << reply.backend().ShortDebugString()
                    << " Fallback to deficit round robin.";
     }
+  } else if (reply.status() == CtrlStatus::TIMEOUT) {
+    const int n = 1000;
+    LOG_EVERY_N(WARNING, n)
+        << "LOG_EVERY " << n
+        << "] Dispatcher timeout. query_id: " << reply.query_id()
+        << " Fallback to deficit round robin.";
   } else {
     LOG(WARNING) << "Dispatcher returns failure: "
                  << CtrlStatus_Name(reply.status())

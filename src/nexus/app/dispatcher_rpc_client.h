@@ -3,8 +3,10 @@
 
 #include <atomic>
 #include <boost/asio.hpp>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -28,15 +30,22 @@ class DispatcherRpcClient {
 
  private:
   void DoReceive();
+  void SetTimeoutTimer();
 
   struct UdpRpcPendingResponse {
     ModelHandler* model_handler;
+  };
+
+  struct TimerContext {
+    uint64_t query_id;
+    std::chrono::time_point<std::chrono::steady_clock> deadline;
   };
 
   std::atomic<bool> running_{false};
   boost::asio::io_context* const io_context_;
   const std::string dispatcher_addr_;
   const uint32_t rpc_timeout_us_;
+  const uint64_t timer_interval_ns_;
   boost::asio::ip::udp::endpoint dispatcher_endpoint_;
   boost::asio::ip::udp::socket tx_socket_;
   boost::asio::ip::udp::socket rx_socket_;
@@ -46,6 +55,8 @@ class DispatcherRpcClient {
 
   std::mutex mutex_;
   std::unordered_map<uint64_t, UdpRpcPendingResponse> pending_responses_;
+  boost::asio::steady_timer timeout_timer_;
+  std::deque<TimerContext> timer_queue_;
 };
 
 }  // namespace app

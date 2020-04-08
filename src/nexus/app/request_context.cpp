@@ -61,6 +61,17 @@ void RequestContext::SetBackendQueryProto(QueryProto query_proto) {
   backend_query_proto_ = std::move(query_proto);
 }
 
+bool RequestContext::MarkBackendQuerySent() {
+  std::lock_guard<std::mutex> lock(mu_);
+  bool sent = has_backend_query_sent_;
+  if (!sent) {
+    has_backend_query_sent_ = true;
+    return true;
+  } else {
+    return false;
+  }
+}
+
 ExecBlock* RequestContext::NextReadyBlock() {
   std::lock_guard<std::mutex> lock(mu_);
   if (ready_blocks_.empty()) {

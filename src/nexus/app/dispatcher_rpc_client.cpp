@@ -24,8 +24,10 @@ DispatcherRpcClient::DispatcherRpcClient(boost::asio::io_context* io_context,
     : io_context_(io_context),
       dispatcher_addr_(std::move(dispatcher_addr)),
       rpc_timeout_us_(rpc_timeout_us),
+      timer_interval_ns_(static_cast<uint64_t>(rpc_timeout_us_) * 1000 / 10),
       tx_socket_(*io_context_),
-      rx_socket_(*io_context_) {}
+      rx_socket_(*io_context_),
+      timeout_timer_(*io_context_) {}
 
 DispatcherRpcClient::~DispatcherRpcClient() {
   if (running_) {
@@ -34,6 +36,8 @@ DispatcherRpcClient::~DispatcherRpcClient() {
 }
 
 void DispatcherRpcClient::Start() {
+  CHECK_NE(timer_interval_ns_, 0);
+
   // Resolve dispatcher server address
   CHECK(!dispatcher_addr_.empty()) << "Dispatcher address is empty.";
   std::string addr, port;
@@ -63,8 +67,11 @@ void DispatcherRpcClient::Start() {
             << dispatcher_endpoint_.port() << " and receiving from "
             << rx_socket_.local_endpoint().address().to_string() << ":"
             << rx_socket_.local_endpoint().port();
+
+  // Set up async tasks
   running_ = true;
   DoReceive();
+  SetTimeoutTimer();
 }
 
 void DispatcherRpcClient::Stop() { running_ = false; }
@@ -130,22 +137,79 @@ void DispatcherRpcClient::AsyncQuery(ModelSession model_session,
   response->model_handler = model_handler;
 
   // Send request
-  auto start = std::chrono::high_resolution_clock::now();
-  auto request_msg = request.SerializeAsString();
-  if (request_msg.size() > 1400) {
-    LOG(WARNING) << "UDP RPC client request size is too big. Size = "
-                 << request_msg.size();
+  auto buf = request.SerializeAsString();
+  auto buf_len = buf.size();
+  if (buf_len > 1400) {
+    LOG(WARNING) << "UDP RPC client request size is too big. Size = " << buf_len
+                 << ". message: " << request.DebugString();
   }
-  size_t sent_bytes = 0;
+  tx_socket_.async_send_to(
+      boost::asio::buffer(std::move(buf)), dispatcher_endpoint_,
+      [this, buf_len](boost::system::error_code ec, std::size_t len) {
+        if (ec && ec != boost::asio::error::operation_aborted) {
+          LOG(WARNING) << "Error when sending to Dispatcher: " << ec;
+        }
+        if (len != buf_len) {
+          LOG(WARNING) << "UDP RPC client request sent " << len
+                       << " bytes, expecting " << buf_len << " bytes";
+        }
+      });
+
+  // Set timeout timer
+  auto now = std::chrono::steady_clock::now();
+  auto deadline = now + std::chrono::milliseconds(rpc_timeout_us_);
+  auto ctx = TimerContext{query_id, deadline};
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    sent_bytes = tx_socket_.send_to(boost::asio::buffer(request_msg),
-                                    dispatcher_endpoint_);
+    timer_queue_.push_back(ctx);
   }
-  if (sent_bytes != request_msg.size()) {
-    LOG(WARNING) << "UDP RPC client request sent " << sent_bytes
-                 << " bytes, expecting " << request_msg.size() << " bytes";
+}
+
+void DispatcherRpcClient::SetTimeoutTimer() {
+  if (!running_) {
+    return;
   }
+  timeout_timer_.expires_after(std::chrono::nanoseconds(timer_interval_ns_));
+  timeout_timer_.async_wait([this](boost::system::error_code) {
+    struct QueueItem {
+      uint64_t query_id;
+      ModelHandler* model_handler;
+    };
+    static std::vector<QueueItem> timeout_requests;
+    static DispatchReply reply;
+
+    // Find all timeout requests.
+    auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      while (!timer_queue_.empty()) {
+        const auto& ctx = timer_queue_.front();
+        if (ctx.deadline < now) {
+          break;
+        }
+        auto iter = pending_responses_.find(ctx.query_id);
+        if (iter != pending_responses_.end()) {
+          QueueItem item;
+          item.query_id = ctx.query_id;
+          item.model_handler = iter->second.model_handler;
+          timeout_requests.push_back(item);
+          pending_responses_.erase(iter);
+        }
+        timer_queue_.pop_front();
+      }
+    }
+
+    // Handle the timeout
+    for (const auto& ctx : timeout_requests) {
+      reply.set_query_id(ctx.query_id);
+      reply.set_status(CtrlStatus::TIMEOUT);
+      ctx.model_handler->HandleDispatcherReply(reply);
+    }
+    timeout_requests.clear();
+
+    // Set up async task
+    SetTimeoutTimer();
+  });
 }
 
 }  // namespace app

@@ -114,6 +114,10 @@ class RequestContext : public DeadlineItem,
 
   void SetBackendQueryProto(QueryProto query_proto);
 
+  // Return true if the sent flag is not set yet and set it, atomically.
+  // Otherwise return false.
+  bool MarkBackendQuerySent();
+
   ExecBlock* NextReadyBlock();
 
   VariablePtr GetVariable(const std::string& var_name);
@@ -143,6 +147,7 @@ class RequestContext : public DeadlineItem,
   std::atomic<RequestState> state_;
   double slack_ms_;
   QueryProto backend_query_proto_;
+  bool has_backend_query_sent_ = false;
   
   std::deque<ExecBlock*> ready_blocks_;
   std::unordered_map<int, ExecBlock*> pending_blocks_;

@@ -33,6 +33,8 @@ class TensorflowModel : public ModelInstance {
 
   void Postprocess(std::shared_ptr<Task> task) final;
 
+  uint64_t GetPeakBytesInUse() override;
+
  private:
   tf::Tensor* NewInputTensor();
 

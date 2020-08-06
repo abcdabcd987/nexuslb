@@ -27,7 +27,7 @@ message ImageProto {
 }
 
 enum DataType {
-  DT_UNKNOWN = 0; 
+  DT_UNKNOWN = 0;
   DT_BOOL = 1;
   DT_INT8 = 2;
   DT_UINT8 = 3;
@@ -45,8 +45,8 @@ message TensorProto {
   // Shape of tensor
   repeated uint32 shape = 1;
   // Data type can only be int8, int32, float, double, or string
-  DataType data_type = 2; 
-  // Exact ONE of the following fields must be present 
+  DataType data_type = 2;
+  // Exact ONE of the following fields must be present
   repeated bool bools = 10;      // bool tensor
   repeated int32 ints = 11;      // int tensor
   repeated float floats = 12;    // float tensor
@@ -58,14 +58,14 @@ message ValueProto {
   // name of value
   string name = 1;
   DataType data_type = 2;
-  
+
   // Exact ONE of the following fields must be present.
   bool b = 10;             // bool
   int32 i = 11;            // int
   float f = 13;            // float
   double d = 14;           // double
   bytes s = 15;            // string
-  
+
   TensorProto tensor = 20; // tensor
   ImageProto image = 21;   // image
   RectProto rect = 22;     // bbox

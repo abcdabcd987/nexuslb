@@ -120,7 +120,7 @@ void SharePrefixModel::Forward(std::shared_ptr<BatchTask> batch_task) {
 
 #if 0
   // sequentially execute each suffix task
-  
+
   prefix_model_->ForwardAsync(batch_task);
 
   uint32_t batch_size = batch_task->batch_size();
@@ -131,7 +131,7 @@ void SharePrefixModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   size_t prefix_output_nfloats = prefix_output_shape_.NumElements(1);
   std::vector<ArrayPtr> suffix_input_arrs;
   std::vector<std::shared_ptr<BatchTask> > suffix_batch_tasks;
-  
+
   // Prepare the suffix batch tasks
   for (uint32_t i = 0; i < batch_size; ++i) {
     auto task = tasks[i];
@@ -163,7 +163,7 @@ void SharePrefixModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   }
 
   prefix_model_->WaitOutput(batch_task);
-  
+
   std::vector<std::shared_ptr<Output> > batch_outputs;
   for (int i = 0; i < batch_size; ++i) {
     auto task = tasks[i];

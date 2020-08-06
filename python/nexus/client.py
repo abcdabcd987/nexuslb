@@ -36,7 +36,7 @@ class Client:
         self.sock.sendall(msg)
         reply = self._recv_reply()
         assert reply.status == 0
-        
+
 
     def request(self, img):
         req = self._prepare_req(img)
@@ -87,7 +87,7 @@ class Client:
         assert msg_type == MSG_USER_REPLY
         return length
 
-    
+
     def _read_nbytes(self, n):
         """ Read exactly n bytes from the socket.
             Raise RuntimeError if the connection closed before

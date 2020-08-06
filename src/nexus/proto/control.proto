@@ -33,7 +33,7 @@ enum NodeType {
 
 enum CtrlStatus {
   CTRL_OK = 0;
-  
+
   // User facing error code
   // Service unavailable
   SERVICE_UNAVAILABLE = 1;

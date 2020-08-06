@@ -25,7 +25,7 @@ class BackendRpcService : public AsyncRpcServiceBase<AsyncService> {
   BackendServer* backend_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_RPC_SERVICE_H_
+#endif  // NEXUS_BACKEND_RPC_SERVICE_H_

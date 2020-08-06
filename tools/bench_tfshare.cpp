@@ -1,30 +1,31 @@
-#include <utility>
+#include <gflags/gflags.h>
+#include <glog/logging.h>
+#include <time.h>
+#include <yaml-cpp/yaml.h>
 
 #include <boost/filesystem.hpp>
 #include <cmath>
-#include <fstream>
-#include <gflags/gflags.h>
-#include <glog/logging.h>
-#include <iostream>
 #include <cstdlib>
+#include <fstream>
+#include <iostream>
 #include <string>
-#include <time.h>
 #include <thread>
-#include <vector>
 #include <unordered_map>
-#include <yaml-cpp/yaml.h>
+#include <utility>
+#include <vector>
 
-#include "nexus/common/device.h"
-#include "nexus/common/block_queue.h"
-#include "nexus/common/model_db.h"
 #include "nexus/backend/model_exec.h"
 #include "nexus/backend/model_ins.h"
+#include "nexus/common/block_queue.h"
+#include "nexus/common/device.h"
+#include "nexus/common/model_db.h"
 #include "nexus/proto/nnquery.pb.h"
 
 DEFINE_int32(gpu, 0, "GPU device id");
 DEFINE_string(model, "", "Model name");
 DEFINE_string(image_dir, "", "Image directory");
-DEFINE_string(batch_sizes, "", "list of batch sizes for each suffix model, separated by comma");
+DEFINE_string(batch_sizes, "",
+              "list of batch sizes for each suffix model, separated by comma");
 DEFINE_int32(height, 0, "Image height");
 DEFINE_int32(width, 0, "Image width");
 DEFINE_int32(dryrun, 5, "Warmup times for profiling");
@@ -40,16 +41,18 @@ class BenchTFShare {
  public:
   BenchTFShare(int gpu, const std::string &model_name,
                const std::string &image_dir, int height, int width,
-               std::vector<int> batch_sizes) :
-      gpu_(gpu), batch_sizes_(std::move(batch_sizes)) {
+               std::vector<int> batch_sizes)
+      : gpu_(gpu), batch_sizes_(std::move(batch_sizes)) {
     // Init model session
     const std::string framework = "tf_share";
     const int model_version = 1;
     for (size_t i = 0; i < batch_sizes_.size(); ++i) {
       const auto name = model_name + "_" + std::to_string(i);
-      auto model_info_ = ModelDatabase::Singleton().GetModelInfo(framework, name, model_version);
-      CHECK(model_info_ != nullptr) << "Cannot find model info for "
-                                    << framework << ":" << model_name << ":" << model_version;
+      auto model_info_ = ModelDatabase::Singleton().GetModelInfo(
+          framework, name, model_version);
+      CHECK(model_info_ != nullptr)
+          << "Cannot find model info for " << framework << ":" << model_name
+          << ":" << model_version;
       ModelSession model_sess;
       model_sess.set_framework(framework);
       model_sess.set_model_name(name);
@@ -60,10 +63,13 @@ class BenchTFShare {
         model_sess.set_image_height(height);
         model_sess.set_image_width(width);
       } else {
-        if ((*model_info_)["resizable"] && (*model_info_)["resizable"].as<bool>()) {
+        if ((*model_info_)["resizable"] &&
+            (*model_info_)["resizable"].as<bool>()) {
           // Set default image size for resizable CNN
-          model_sess.set_image_height((*model_info_)["image_height"].as<uint32_t>());
-          model_sess.set_image_width((*model_info_)["image_width"].as<uint32_t>());
+          model_sess.set_image_height(
+              (*model_info_)["image_height"].as<uint32_t>());
+          model_sess.set_image_width(
+              (*model_info_)["image_width"].as<uint32_t>());
         }
       }
       model_sessions_.push_back(model_sess);
@@ -113,8 +119,7 @@ class BenchTFShare {
 
     // forward and postprocess
     uint32_t total_batch = 0;
-    for (auto batch_size : batch_sizes_)
-      total_batch += batch_size;
+    for (auto batch_size : batch_sizes_) total_batch += batch_size;
     config.set_batch(total_batch);
     config.set_max_batch(total_batch);
     auto model = std::make_shared<ModelExecutor>(gpu_, config, task_queue);
@@ -144,14 +149,15 @@ class BenchTFShare {
       model->Execute();
       auto end = std::chrono::high_resolution_clock::now();
       auto time_us = std::chrono::duration_cast<duration>(end - beg).count();
-      if (i >= 0)
-        forward_lats.push_back(time_us);
-      fprintf(stdout, "\x1b[2Krepeat %d/%d: %.3fms\r", i + 1, repeat, time_us / 1000.);
+      if (i >= 0) forward_lats.push_back(time_us);
+      fprintf(stdout, "\x1b[2Krepeat %d/%d: %.3fms\r", i + 1, repeat,
+              time_us / 1000.);
       fflush(stdout);
     }
     for (int i = 0; i < total_tasks; ++i) {
       auto task = task_queue.pop();
-      CHECK_EQ(task->result.status(), CTRL_OK) << "Error detected: " << task->result.status();
+      CHECK_EQ(task->result.status(), CTRL_OK)
+          << "Error detected: " << task->result.status();
     }
     CHECK_EQ(task_queue.size(), 0) << "Task queue is not empty";
     preproc_tasks.clear();
@@ -160,15 +166,14 @@ class BenchTFShare {
     double mean, std;
     std::tie(mean, std) = GetStats<uint64_t>(forward_lats);
     printf("\nbatch sizes =");
-    for (auto batch_size : batch_sizes_)
-      printf(" %d", batch_size);
+    for (auto batch_size : batch_sizes_) printf(" %d", batch_size);
     printf("\n");
     printf("mean %11.6f\n", mean / 1e3);
     printf("std  %11.6f\n", std / 1e3);
   }
 
  private:
-  template<class T>
+  template <class T>
   std::pair<double, double> GetStats(const std::vector<T> &lats) {
     double mean = 0.;
     double std = 0.;
@@ -208,9 +213,8 @@ class BenchTFShare {
   GPUDevice *gpu_device_;
 };
 
-} // namespace backend
-} // namespace nexus
-
+}  // namespace backend
+}  // namespace nexus
 
 std::vector<int> parse_int_list(const std::string &str) {
   std::vector<int> list;
@@ -247,7 +251,7 @@ int main(int argc, char **argv) {
 
   auto batch_sizes = parse_int_list(FLAGS_batch_sizes);
 
-  BenchTFShare bench(FLAGS_gpu, FLAGS_model, FLAGS_image_dir,
-                     FLAGS_height, FLAGS_width, batch_sizes);
+  BenchTFShare bench(FLAGS_gpu, FLAGS_model, FLAGS_image_dir, FLAGS_height,
+                     FLAGS_width, batch_sizes);
   bench.Bench(FLAGS_dryrun, FLAGS_repeat);
 }

@@ -8,9 +8,8 @@ using namespace nexus::app;
 class FaceRecApp : public AppBase {
  public:
   FaceRecApp(std::string port, std::string rpc_port, std::string sch_addr,
-             size_t nthreads) :
-      AppBase(port, rpc_port, sch_addr, nthreads) {
-  }
+             size_t nthreads)
+      : AppBase(port, rpc_port, sch_addr, nthreads) {}
 
   void Setup() final {
     model_ = GetModelHandler("caffe2", "vgg_face", 1, 1000);
@@ -21,7 +20,7 @@ class FaceRecApp : public AppBase {
                                   {"class_id", "class_prob", "class_name"});
     output->FillReply(reply);
   }
-  
+
  private:
   std::shared_ptr<ModelHandler> model_;
 };
@@ -29,7 +28,8 @@ class FaceRecApp : public AppBase {
 DEFINE_string(port, "9001", "Server port");
 DEFINE_string(rpc_port, "9002", "RPC port");
 DEFINE_string(sch_addr, "127.0.0.1", "Scheduler address");
-DEFINE_int32(nthread, 1000, "Number of threads processing requests "
+DEFINE_int32(nthread, 1000,
+             "Number of threads processing requests "
              "(default: 1000)");
 
 int main(int argc, char** argv) {

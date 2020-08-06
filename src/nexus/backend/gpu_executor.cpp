@@ -1,10 +1,12 @@
+#include "nexus/backend/gpu_executor.h"
+
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 #include <pthread.h>
+
 #include <thread>
 
 #include "nexus/backend/backend_server.h"
-#include "nexus/backend/gpu_executor.h"
 #include "nexus/common/device.h"
 
 #ifdef USE_CAFFE
@@ -16,11 +18,8 @@ DECLARE_int32(occupancy_valid);
 namespace nexus {
 namespace backend {
 
-GpuExecutorMultiBatching::GpuExecutorMultiBatching(int gpu_id) : 
-    gpu_id_(gpu_id),
-    running_(false),
-    utilization_(-1.) {
-}
+GpuExecutorMultiBatching::GpuExecutorMultiBatching(int gpu_id)
+    : gpu_id_(gpu_id), running_(false), utilization_(-1.) {}
 
 void GpuExecutorMultiBatching::Start(int core) {
   running_ = true;
@@ -29,8 +28,8 @@ void GpuExecutorMultiBatching::Start(int core) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core, &cpuset);
-    int rc = pthread_setaffinity_np(thread_.native_handle(),
-                                    sizeof(cpu_set_t), &cpuset);
+    int rc = pthread_setaffinity_np(thread_.native_handle(), sizeof(cpu_set_t),
+                                    &cpuset);
     if (rc != 0) {
       LOG(ERROR) << "Error calling pthread_setaffinity_np: " << rc << "\n";
     }
@@ -84,7 +83,7 @@ double GpuExecutorMultiBatching::CurrentUtilization() {
   std::vector<std::shared_ptr<ModelExecutor> > models;
   std::vector<std::shared_ptr<ModelExecutor> > backup_models;
   {
-    //std::lock_guard<std::mutex> model_lock(models_mu_);
+    // std::lock_guard<std::mutex> model_lock(models_mu_);
     models = models_;
     backup_models = backup_models_;
   }
@@ -93,11 +92,12 @@ double GpuExecutorMultiBatching::CurrentUtilization() {
     int curr_queue_len = model->NumberOfOpenRequests();
     TimePoint last_exec_time = model->LastExecuteFinishTime();
     double elapse = std::chrono::duration_cast<std::chrono::microseconds>(
-          now - last_exec_time).count();
-    int est_queue_len = (int) std::min(elapse / duty_cycle_us_ * curr_queue_len,
-                                       (double) model->model()->max_batch());
-    LOG(INFO) << model->model()->model_session_id() <<
-        " estimate batch size: " << est_queue_len;
+                        now - last_exec_time)
+                        .count();
+    int est_queue_len = (int)std::min(elapse / duty_cycle_us_ * curr_queue_len,
+                                      (double)model->model()->max_batch());
+    LOG(INFO) << model->model()->model_session_id()
+              << " estimate batch size: " << est_queue_len;
     if (est_queue_len > 0) {
       exec_cycle += model->profile()->GetForwardLatency(est_queue_len);
     }
@@ -112,8 +112,8 @@ double GpuExecutorMultiBatching::CurrentUtilization() {
   // LOG(INFO) << "Utilization: " << utilization_ << " (exec/duty: " <<
   //     exec_cycle << " / " << duty_cycle_us_ << " us)";
   double utilization = exec_cycle / duty_cycle_us_;
-  LOG(INFO) << "Utilization: " << utilization << " (exec/duty: " <<
-      exec_cycle << " / " << duty_cycle_us_ << " us)";
+  LOG(INFO) << "Utilization: " << utilization << " (exec/duty: " << exec_cycle
+            << " / " << duty_cycle_us_ << " us)";
   return utilization;
 }
 
@@ -125,7 +125,7 @@ void GpuExecutorMultiBatching::Run() {
 #endif
 
   NEXUS_CUDA_CHECK(cudaSetDevice(gpu_id_));
-  double min_cycle_us = 50.; // us
+  double min_cycle_us = 50.;  // us
   LOG(INFO) << "GpuExecutor started";
   while (running_) {
     std::vector<std::shared_ptr<ModelExecutor> > models;
@@ -164,19 +164,17 @@ void GpuExecutorMultiBatching::Run() {
     if (exec_cycle_us < min_cycle_us) {
       // ensure the cycle to be at least min_cycle to avoid acquiring lock
       // too frequently in the ModelInstance
-      std::this_thread::sleep_for(std::chrono::microseconds(
-          int(min_cycle_us - exec_cycle_us)));
+      std::this_thread::sleep_for(
+          std::chrono::microseconds(int(min_cycle_us - exec_cycle_us)));
     }
   }
   LOG(INFO) << "GpuExecutor stopped";
 }
 
-GpuExecutorNoMultiBatching::GpuExecutorNoMultiBatching(int gpu_id) :
-    gpu_id_(gpu_id) {}
+GpuExecutorNoMultiBatching::GpuExecutorNoMultiBatching(int gpu_id)
+    : gpu_id_(gpu_id) {}
 
-void GpuExecutorNoMultiBatching::Start(int core) {
-  core_ = core;
-}
+void GpuExecutorNoMultiBatching::Start(int core) { core_ = core; }
 
 void GpuExecutorNoMultiBatching::Stop() {
   for (auto& iter : threads_) {
@@ -209,5 +207,5 @@ double GpuExecutorNoMultiBatching::CurrentUtilization() {
   return -1.;
 }
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus

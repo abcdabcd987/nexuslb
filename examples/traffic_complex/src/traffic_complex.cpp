@@ -8,16 +8,17 @@ using namespace nexus::app;
 class TrafficApp : public AppBase {
  public:
   TrafficApp(std::string port, std::string rpc_port, std::string sch_addr,
-             size_t nthreads, int latency_slo, int ssd_latency_ms) :
-      AppBase(port, rpc_port, sch_addr, nthreads),
-      latency_slo_(latency_slo),
-      ssd_latency_ms_(ssd_latency_ms),
-      rec_latency_ms_(latency_slo - ssd_latency_ms) {}
+             size_t nthreads, int latency_slo, int ssd_latency_ms)
+      : AppBase(port, rpc_port, sch_addr, nthreads),
+        latency_slo_(latency_slo),
+        ssd_latency_ms_(ssd_latency_ms),
+        rec_latency_ms_(latency_slo - ssd_latency_ms) {}
 
   void Setup() final {
     ssd_model_ = GetModelHandler("tensorflow", "ssd_mobilenet", 1,
                                  ssd_latency_ms_, 0, {}, LB_DeficitRR);
-    car_model_ = GetModelHandler("caffe2", "googlenet_cars", 1, rec_latency_ms_);
+    car_model_ =
+        GetModelHandler("caffe2", "googlenet_cars", 1, rec_latency_ms_);
     face_model_ = GetModelHandler("caffe2", "vgg_face_0", 1, rec_latency_ms_);
     auto func1 = [&](std::shared_ptr<RequestContext> ctx) {
       auto ssd_output = ssd_model_->Execute(ctx, ctx->const_request().input());
@@ -39,14 +40,12 @@ class TrafficApp : public AppBase {
         }
       }
       if (!car_boxes.empty()) {
-        results.push_back(
-            car_model_->Execute(ctx, ctx->const_request().input(), {}, 1,
-                                car_boxes));
+        results.push_back(car_model_->Execute(ctx, ctx->const_request().input(),
+                                              {}, 1, car_boxes));
       }
       if (!face_boxes.empty()) {
-        results.push_back(
-            face_model_->Execute(ctx, ctx->const_request().input(), {}, 1,
-                                 face_boxes));
+        results.push_back(face_model_->Execute(
+            ctx, ctx->const_request().input(), {}, 1, face_boxes));
       }
       return std::vector<VariablePtr>{
           std::make_shared<Variable>("rec_output", results)};

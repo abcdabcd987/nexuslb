@@ -1,25 +1,26 @@
 #ifndef NEXUS_SCHEDULER_SCHEDULER_H_
 #define NEXUS_SCHEDULER_SCHEDULER_H_
 
-#include <chrono>
-#include <deque>
 #include <gflags/gflags.h>
 #include <grpc++/grpc++.h>
 #include <gtest/gtest.h>
+#include <yaml-cpp/yaml.h>
+
+#include <chrono>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
-#include <yaml-cpp/yaml.h>
 
 #include "nexus/common/rpc_call.h"
 #include "nexus/common/rpc_service_base.h"
 #include "nexus/proto/control.grpc.pb.h"
 #include "nexus/scheduler/backend_delegate.h"
+#include "nexus/scheduler/complex_query.h"
 #include "nexus/scheduler/frontend_delegate.h"
 #include "nexus/scheduler/sch_info.h"
-#include "nexus/scheduler/complex_query.h"
 
 namespace nexus {
 namespace scheduler {
@@ -108,10 +109,12 @@ class Scheduler : public AsyncRpcServiceBase<AsyncService> {
                  const KeepAliveRequest& request, RpcReply* reply);
 
   void ComplexQuerySetup(const grpc::ServerContext& ctx,
-                         const ComplexQuerySetupRequest& request, RpcReply* reply);
+                         const ComplexQuerySetupRequest& request,
+                         RpcReply* reply);
 
   void ComplexQueryAddEdge(const grpc::ServerContext& ctx,
-                           const ComplexQueryAddEdgeRequest& request, RpcReply* reply);
+                           const ComplexQueryAddEdgeRequest& request,
+                           RpcReply* reply);
 
  private:
   /*! \brief Initializes RPC handlers. */
@@ -302,7 +305,7 @@ class Scheduler : public AsyncRpcServiceBase<AsyncService> {
   std::mutex mutex_;
 };
 
-} // namespace scheduler
-} // namespace nexus
+}  // namespace scheduler
+}  // namespace nexus
 
-#endif // NEXUS_SCHEDULER_SCHEDULER_H_
+#endif  // NEXUS_SCHEDULER_SCHEDULER_H_

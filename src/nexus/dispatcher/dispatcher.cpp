@@ -3,15 +3,14 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <glog/logging.h>
 #include <pthread.h>
 #include <sys/socket.h>
 
 #include <algorithm>
+#include <boost/asio.hpp>
 #include <chrono>
 #include <sstream>
-
-#include <glog/logging.h>
-#include <boost/asio.hpp>
 
 #include "nexus/common/config.h"
 #include "nexus/common/model_def.h"

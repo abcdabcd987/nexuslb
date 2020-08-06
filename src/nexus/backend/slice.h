@@ -54,7 +54,7 @@ class Slice {
   size_t total_elements_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_SLICE_H_
+#endif  // NEXUS_BACKEND_SLICE_H_

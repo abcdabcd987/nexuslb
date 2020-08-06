@@ -1,13 +1,11 @@
+#include "nexus/common/server_base.h"
+
 #include <glog/logging.h>
 #include <signal.h>
 
-#include "nexus/common/server_base.h"
-
 namespace nexus {
 
-ServerBase::ServerBase(std::string port) :
-    ServerBase("0.0.0.0", port) {
-}
+ServerBase::ServerBase(std::string port) : ServerBase("0.0.0.0", port) {}
 
 ServerBase::ServerBase(std::string ip, std::string port)
     : ip_(ip),
@@ -32,9 +30,7 @@ ServerBase::ServerBase(std::string ip, std::string port)
   DoAccept();
 }
 
-void ServerBase::Run() {
-  io_context_.run();
-}
+void ServerBase::Run() { io_context_.run(); }
 
 void ServerBase::Stop() {
   acceptor_.close();
@@ -42,24 +38,20 @@ void ServerBase::Stop() {
 }
 
 void ServerBase::DoAccept() {
-  acceptor_.async_accept(
-      socket_,
-      [this](boost::system::error_code ec){
-        if (!acceptor_.is_open()) {
-          return;
-        }
-        if (!ec) {
-          HandleAccept();
-        }
-        DoAccept();
-      });
+  acceptor_.async_accept(socket_, [this](boost::system::error_code ec) {
+    if (!acceptor_.is_open()) {
+      return;
+    }
+    if (!ec) {
+      HandleAccept();
+    }
+    DoAccept();
+  });
 }
 
 void ServerBase::DoAwaitStop() {
   signals_.async_wait(
-      [this](boost::system::error_code /*ec*/, int /*signo*/) {
-        Stop();
-      });
+      [this](boost::system::error_code /*ec*/, int /*signo*/) { Stop(); });
 }
 
-} // namespace nexus
+}  // namespace nexus

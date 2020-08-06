@@ -25,7 +25,7 @@ class RpcService : public AsyncRpcServiceBase<AsyncService> {
   Frontend* frontend_;
 };
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus
 
-#endif // NEXUS_APP_RPC_SERVICE_H_
+#endif  // NEXUS_APP_RPC_SERVICE_H_

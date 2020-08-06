@@ -62,7 +62,7 @@ class CaffeModel : public ModelInstance {
   int prefix_index_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_CAFFE_MODEL_H_
+#endif  // NEXUS_BACKEND_CAFFE_MODEL_H_

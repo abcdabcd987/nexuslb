@@ -1,23 +1,19 @@
-#include "nexus/app/frontend.h"
 #include "nexus/app/worker.h"
+
+#include "nexus/app/frontend.h"
 
 namespace nexus {
 namespace app {
 
-Worker::Worker(QueryProcessor* qp, RequestPool& req_pool) :
-    qp_(qp),
-    req_pool_(req_pool),
-    running_(false) {
-}
+Worker::Worker(QueryProcessor* qp, RequestPool& req_pool)
+    : qp_(qp), req_pool_(req_pool), running_(false) {}
 
 void Worker::Start() {
   running_ = true;
   thread_ = std::thread(&Worker::Run, this);
 }
 
-void Worker::Stop() {
-  running_ = false;
-}
+void Worker::Stop() { running_ = false; }
 
 void Worker::Join() {
   if (thread_.joinable()) {
@@ -36,5 +32,5 @@ void Worker::Run() {
   }
 }
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus

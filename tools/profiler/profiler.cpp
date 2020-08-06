@@ -1,22 +1,23 @@
-#include <boost/filesystem.hpp>
-#include <cmath>
-#include <fstream>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include <iostream>
-#include <cstdlib>
-#include <string>
 #include <time.h>
-#include <thread>
-#include <vector>
-#include <unordered_map>
 #include <yaml-cpp/yaml.h>
 
-#include "nexus/common/device.h"
-#include "nexus/common/block_queue.h"
-#include "nexus/common/model_db.h"
+#include <boost/filesystem.hpp>
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
 #include "nexus/backend/model_exec.h"
 #include "nexus/backend/model_ins.h"
+#include "nexus/common/block_queue.h"
+#include "nexus/common/device.h"
+#include "nexus/common/model_db.h"
 #include "nexus/proto/nnquery.pb.h"
 
 DEFINE_int32(gpu, 0, "GPU device id");
@@ -42,12 +43,12 @@ class ModelProfiler {
  public:
   ModelProfiler(int gpu, const std::string& framework,
                 const std::string& model_name, int model_version,
-                const std::string& image_dir, int height=0, int width=0) :
-      gpu_(gpu) {
-    model_info_ = ModelDatabase::Singleton().GetModelInfo(
-        framework, model_name, model_version);
-    CHECK(model_info_ != nullptr) << "Cannot find model info for " <<
-        framework << ":" << model_name << ":" << model_version;
+                const std::string& image_dir, int height = 0, int width = 0)
+      : gpu_(gpu) {
+    model_info_ = ModelDatabase::Singleton().GetModelInfo(framework, model_name,
+                                                          model_version);
+    CHECK(model_info_ != nullptr) << "Cannot find model info for " << framework
+                                  << ":" << model_name << ":" << model_version;
     // Init model session
     model_sess_.set_framework(framework);
     model_sess_.set_model_name(model_name);
@@ -77,8 +78,8 @@ class ModelProfiler {
     gpu_device_ = DeviceManager::Singleton().GetGPUDevice(gpu_);
   }
 
-  void Profile(int min_batch, int max_batch, const std::string output="",
-               int repeat=10) {
+  void Profile(int min_batch, int max_batch, const std::string output = "",
+               int repeat = 10) {
     std::vector<uint64_t> preprocess_lats;
     std::vector<uint64_t> postprocess_lats;
     std::unordered_map<int, std::tuple<float, float, uint64_t> > forward_stats;
@@ -108,7 +109,7 @@ class ModelProfiler {
     {
       config.set_batch(1);
       config.set_max_batch(1);
-      //auto model = CreateModelInstance(gpu_, config);
+      // auto model = CreateModelInstance(gpu_, config);
       std::unique_ptr<ModelInstance> model;
       CreateModelInstance(gpu_, config, &model);
       // prepare the input
@@ -195,8 +196,8 @@ class ModelProfiler {
       LOG(INFO) << "memory usage: " << memory_usage;
       for (int i = 0; i < batch * (repeat + dryrun); ++i) {
         auto task = task_queue.pop();
-        CHECK_EQ(task->result.status(), CTRL_OK) << "Error detected: " <<
-            task->result.status();
+        CHECK_EQ(task->result.status(), CTRL_OK)
+            << "Error detected: " << task->result.status();
         auto beg = std::chrono::high_resolution_clock::now();
         model->Postprocess(task);
         auto end = std::chrono::high_resolution_clock::now();
@@ -211,7 +212,8 @@ class ModelProfiler {
       CHECK_EQ(task_queue.size(), 0) << "Task queue is not empty";
 
       // output to file
-      *fout << batch << "," << mean << "," << std << "," << memory_usage << "," << repeat << std::endl;
+      *fout << batch << "," << mean << "," << std << "," << memory_usage << ","
+            << repeat << std::endl;
 
       std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
@@ -234,7 +236,7 @@ class ModelProfiler {
   }
 
  private:
-  template<class T>
+  template <class T>
   std::pair<float, float> GetStats(const std::vector<T>& lats) {
     float mean = 0.;
     float std = 0.;
@@ -280,9 +282,8 @@ class ModelProfiler {
   GPUDevice* gpu_device_;
 };
 
-} // namespace backend
-} // namespace nexus
-
+}  // namespace backend
+}  // namespace nexus
 
 int main(int argc, char** argv) {
   using namespace nexus;

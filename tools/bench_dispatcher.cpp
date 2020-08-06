@@ -1,20 +1,19 @@
-#include <cstdint>
+#include <gflags/gflags.h>
+#include <glog/logging.h>
 
 #include <algorithm>
+#include <boost/asio.hpp>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <limits>
 #include <memory>
 #include <string>
 #include <tuple>
-#include <utility>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
-
-#include <boost/asio.hpp>
-#include <gflags/gflags.h>
-#include <glog/logging.h>
 
 #include "nexus/common/model_def.h"
 #include "nexus/proto/control.pb.h"
@@ -229,8 +228,7 @@ class DispatcherRpcBencher {
         LOG(INFO) << "cnt_sent: " << latencies_ns_.size() << ", rps["
                   << next_report_second_
                   << "]: " << requests_per_second_[next_report_second_]
-                  << ", cnt_timeout: "
-                  << cnt_timeout_
+                  << ", cnt_timeout: " << cnt_timeout_
                   << ", cnt_flying: " << flying_requests_.size();
         ++next_report_second_;
       }

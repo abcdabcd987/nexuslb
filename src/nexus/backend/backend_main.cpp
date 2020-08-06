@@ -1,3 +1,5 @@
+#include <gflags/gflags.h>
+#include <glog/logging.h>
 #include <signal.h>
 #include <unistd.h>
 
@@ -5,9 +7,6 @@
 #include <iostream>
 #include <string>
 #include <vector>
-
-#include <gflags/gflags.h>
-#include <glog/logging.h>
 
 #include "nexus/backend/backend_server.h"
 #include "nexus/common/config.h"

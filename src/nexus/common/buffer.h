@@ -13,29 +13,26 @@ class Buffer : public std::enable_shared_from_this<Buffer> {
   Buffer(const Buffer&) = delete;
   Buffer& operator=(const Buffer&) = delete;
 
-  Buffer() :
-      data_(nullptr),
-      nbytes_(0),
-      own_data_(false),
-      shared_from_(nullptr) {}
+  Buffer()
+      : data_(nullptr), nbytes_(0), own_data_(false), shared_from_(nullptr) {}
 
-  explicit Buffer(size_t nbytes, Device* device) :
-      nbytes_(nbytes),
-      device_(device),
-      own_data_(true),
-      shared_from_(nullptr) {
+  explicit Buffer(size_t nbytes, Device* device)
+      : nbytes_(nbytes),
+        device_(device),
+        own_data_(true),
+        shared_from_(nullptr) {
     data_ = device->Allocate(nbytes_);
     // LOG(INFO) << "Allocate " << nbytes_ << " on " << device->name() <<
     //     ", own data " << own_data_;
   }
 
   explicit Buffer(void* data, size_t nbytes, Device* device,
-                  bool own_data = false) :
-      data_(data),
-      nbytes_(nbytes),
-      device_(device),
-      own_data_(own_data),
-      shared_from_(nullptr) {}
+                  bool own_data = false)
+      : data_(data),
+        nbytes_(nbytes),
+        device_(device),
+        own_data_(own_data),
+        shared_from_(nullptr) {}
 
   ~Buffer() {
     // LOG(INFO) << "Destroy buffer, size: " << nbytes_ << ", device: " <<
@@ -55,18 +52,19 @@ class Buffer : public std::enable_shared_from_this<Buffer> {
   Device* device() const { return device_; }
 
   std::shared_ptr<Buffer> Slice(size_t offset, size_t nbytes);
-  
+
  private:
-  Buffer(std::shared_ptr<Buffer> origin, size_t offset, size_t nbytes) :
-      data_((char*) origin->data_ + offset),
-      nbytes_(nbytes),
-      device_(origin->device_),
-      own_data_(false),
-      shared_from_(origin) {
-    // LOG(INFO) << "Slice buffer, offset: " << offset << ", size: " << nbytes <<
+  Buffer(std::shared_ptr<Buffer> origin, size_t offset, size_t nbytes)
+      : data_((char*)origin->data_ + offset),
+        nbytes_(nbytes),
+        device_(origin->device_),
+        own_data_(false),
+        shared_from_(origin) {
+    // LOG(INFO) << "Slice buffer, offset: " << offset << ", size: " << nbytes
+    // <<
     //     ", own data: " << own_data_;
   }
-  
+
   void* data_;
   size_t nbytes_;
   Device* device_;
@@ -74,6 +72,6 @@ class Buffer : public std::enable_shared_from_this<Buffer> {
   std::shared_ptr<Buffer> shared_from_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_BUFFER_H_
+#endif  // NEXUS_COMMON_BUFFER_H_

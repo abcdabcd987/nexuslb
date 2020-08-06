@@ -1,11 +1,13 @@
+#include "nexus/backend/darknet_model.h"
+
+#include <glog/logging.h>
+
 #include <boost/filesystem.hpp>
 #include <fstream>
-#include <glog/logging.h>
 #include <opencv2/opencv.hpp>
 #include <sstream>
 #include <unordered_set>
 
-#include "nexus/backend/darknet_model.h"
 #include "nexus/backend/slice.h"
 #include "nexus/backend/utils.h"
 #include "nexus/common/image.h"
@@ -35,27 +37,26 @@ image cvmat_to_image(const cv::Mat& cv_img_rgb) {
   return img;
 }
 
-}
+}  // namespace
 
-DarknetModel::DarknetModel(int gpu_id, const ModelInstanceConfig& config) :
-    ModelInstance(gpu_id, config),
-    first_input_array_(true) {
+DarknetModel::DarknetModel(int gpu_id, const ModelInstanceConfig& config)
+    : ModelInstance(gpu_id, config), first_input_array_(true) {
   // load darknet model
   CHECK(model_info_["cfg_file"]) << "Missing cfg_file in the model info";
   CHECK(model_info_["weight_file"]) << "Missing weight_file in the model info";
   fs::path model_dir = fs::path(model_info_["model_dir"].as<std::string>());
   fs::path cfg_path = model_dir / model_info_["cfg_file"].as<std::string>();
-  fs::path weight_path = model_dir / model_info_["weight_file"].
-                         as<std::string>();
-  CHECK(fs::exists(cfg_path)) << "Config file " << cfg_path <<
-      " doesn't exist";
-  CHECK(fs::exists(weight_path)) << "Weight file " << weight_path <<
-      " doesn't exist";
+  fs::path weight_path =
+      model_dir / model_info_["weight_file"].as<std::string>();
+  CHECK(fs::exists(cfg_path)) << "Config file " << cfg_path << " doesn't exist";
+  CHECK(fs::exists(weight_path))
+      << "Weight file " << weight_path << " doesn't exist";
   image_height_ = 0;
   image_width_ = 0;
   if (model_session_.image_height() > 0) {
-    CHECK_GT(model_session_.image_width(), 0) << "image_height and " <<
-        "image_width must be set at same time";
+    CHECK_GT(model_session_.image_width(), 0)
+        << "image_height and "
+        << "image_width must be set at same time";
     image_height_ = model_session_.image_height();
     image_width_ = model_session_.image_width();
   }
@@ -64,24 +65,24 @@ DarknetModel::DarknetModel(int gpu_id, const ModelInstanceConfig& config) :
   // for loading a model in the darknet
   fs::path curr_dir = fs::current_path();
   fs::current_path(weight_path.parent_path());
-  net_ = parse_network_cfg_spec(const_cast<char*>(cfg_path.string().c_str()),
-                                gpu_id, max_batch_, image_width_,
-                                image_height_);
+  net_ =
+      parse_network_cfg_spec(const_cast<char*>(cfg_path.string().c_str()),
+                             gpu_id, max_batch_, image_width_, image_height_);
   load_weights(net_, const_cast<char*>(weight_path.string().c_str()));
   fs::current_path(curr_dir);
 
   // Get input and output's shape and size
   auto input_layer = net_->layers[0];
-  input_shape_.set_dims({max_batch_, input_layer.c, input_layer.h,
-          input_layer.w});
+  input_shape_.set_dims(
+      {max_batch_, input_layer.c, input_layer.h, input_layer.w});
   input_size_ = input_shape_.NumElements(1);
   auto output_layer = get_network_output_layer(net_);
-  output_shape_.set_dims({max_batch_, output_layer.out_c, output_layer.out_h,
-          output_layer.out_w});
+  output_shape_.set_dims(
+      {max_batch_, output_layer.out_c, output_layer.out_h, output_layer.out_w});
   output_size_ = output_shape_.NumElements(1);
-  LOG(INFO) << "Model " << model_session_id_ << ": input shape " <<
-      input_shape_ << " (" << input_size_ << "), output shape " <<
-      output_shape_ << " (" << output_size_ << ")";
+  LOG(INFO) << "Model " << model_session_id_ << ": input shape " << input_shape_
+            << " (" << input_size_ << "), output shape " << output_shape_
+            << " (" << output_size_ << ")";
   // find the output layer id
   for (int i = net_->n - 1; i > 0; --i) {
     if (net_->layers[i].type != COST) {
@@ -90,33 +91,28 @@ DarknetModel::DarknetModel(int gpu_id, const ModelInstanceConfig& config) :
     }
   }
   // Darknet doesn't have name for layers, so hardcode name as "output"
-  output_name_ = "output"; 
+  output_name_ = "output";
   // load classnames
   if (model_info_["class_names"]) {
-    fs::path cns_path = model_dir / model_info_["class_names"].
-                        as<std::string>();
+    fs::path cns_path =
+        model_dir / model_info_["class_names"].as<std::string>();
     LoadClassnames(cns_path.string(), &classnames_);
   }
 }
 
-DarknetModel::~DarknetModel() {
-  free_network(net_);
-}
+DarknetModel::~DarknetModel() { free_network(net_); }
 
-Shape DarknetModel::InputShape() {
-  return input_shape_;
-}
+Shape DarknetModel::InputShape() { return input_shape_; }
 
 std::unordered_map<std::string, Shape> DarknetModel::OutputShapes() {
-  return {{ output_name_, output_shape_ }};
+  return {{output_name_, output_shape_}};
 }
 
 ArrayPtr DarknetModel::CreateInputGpuArray() {
   std::shared_ptr<Array> arr;
   if (first_input_array_) {
     auto buf = std::make_shared<Buffer>(
-        net_->input_gpu, max_batch_ * input_size_ * sizeof(float),
-        gpu_device_);
+        net_->input_gpu, max_batch_ * input_size_ * sizeof(float), gpu_device_);
     arr = std::make_shared<Array>(DT_FLOAT, max_batch_ * input_size_, buf);
     first_input_array_ = false;
   } else {
@@ -131,7 +127,7 @@ std::unordered_map<std::string, ArrayPtr> DarknetModel::GetOutputGpuArrays() {
                                       max_batch_ * output_size_ * sizeof(float),
                                       gpu_device_);
   auto arr = std::make_shared<Array>(DT_FLOAT, max_batch_ * output_size_, buf);
-  return {{ output_name_, arr }};
+  return {{output_name_, arr}};
 }
 
 void DarknetModel::Preprocess(std::shared_ptr<Task> task) {
@@ -149,8 +145,8 @@ void DarknetModel::Preprocess(std::shared_ptr<Task> task) {
     cv::resize(cv_img, resized_image, cv::Size(net_->w, net_->h));
     image input = cvmat_to_image(resized_image);
     size_t nfloats = net_->w * net_->h * 3;
-    auto buf = std::make_shared<Buffer>(
-        input.data, nfloats * sizeof(float), cpu_device_, true);
+    auto buf = std::make_shared<Buffer>(input.data, nfloats * sizeof(float),
+                                        cpu_device_, true);
 #endif
     auto in_arr = std::make_shared<Array>(DT_FLOAT, nfloats, buf);
     task->AppendInput(in_arr);
@@ -166,9 +162,9 @@ void DarknetModel::Preprocess(std::shared_ptr<Task> task) {
       if (query.window_size() > 0) {
         for (int i = 0; i < query.window_size(); ++i) {
           auto rect = query.window(i);
-          cv::Mat crop_img = cv_img_rgb(cv::Rect(
-              rect.left(), rect.top(), rect.right() - rect.left(),
-              rect.bottom() - rect.top()));
+          cv::Mat crop_img = cv_img_rgb(cv::Rect(rect.left(), rect.top(),
+                                                 rect.right() - rect.left(),
+                                                 rect.bottom() - rect.top()));
           prepare_image(crop_img);
         }
       } else {
@@ -193,8 +189,8 @@ void DarknetModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   auto out_arr = batch_task->GetOutputArray(output_name_);
   Memcpy(out_arr->Data<void>(), cpu_device_, l.output_gpu, gpu_device_,
          batch_size * output_size_ * sizeof(float));
-  batch_task->SliceOutputBatch({{
-        output_name_, Slice(batch_size, output_size_) }});
+  batch_task->SliceOutputBatch(
+      {{output_name_, Slice(batch_size, output_size_)}});
 }
 
 void DarknetModel::Postprocess(std::shared_ptr<Task> task) {
@@ -218,10 +214,10 @@ void DarknetModel::Postprocess(std::shared_ptr<Task> task) {
       float threshold = 0.24;
       int im_height = task->attrs["im_height"].as<int>();
       int im_width = task->attrs["im_width"].as<int>();
-      output_detection_results(
-          out_data, l, im_width, im_height, net_->w, net_->h, threshold, probs,
-          nprobs, boxes, nboxes * 4, only_objectness, nullptr, tree_threshold,
-          relative, nms);
+      output_detection_results(out_data, l, im_width, im_height, net_->w,
+                               net_->h, threshold, probs, nprobs, boxes,
+                               nboxes * 4, only_objectness, nullptr,
+                               tree_threshold, relative, nms);
       MarshalDetectionResult(query, probs, nprobs, boxes, nboxes, result);
       delete[] boxes;
       delete[] probs;
@@ -242,9 +238,10 @@ void DarknetModel::Postprocess(std::shared_ptr<Task> task) {
   }
 }
 
-void DarknetModel::MarshalDetectionResult(
-    const QueryProto& query, const float* probs, size_t nprobs,
-    const int* boxes, size_t nboxes, QueryResultProto* result) {
+void DarknetModel::MarshalDetectionResult(const QueryProto& query,
+                                          const float* probs, size_t nprobs,
+                                          const int* boxes, size_t nboxes,
+                                          QueryResultProto* result) {
   std::vector<std::string> output_fields(query.output_field().begin(),
                                          query.output_field().end());
   if (output_fields.size() == 0) {
@@ -315,5 +312,5 @@ void DarknetModel::MarshalDetectionResult(
   }
 }
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus

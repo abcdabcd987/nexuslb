@@ -5,8 +5,8 @@
 #include <string>
 #include <thread>
 
-#include "nexus/common/block_queue.h"
 #include "nexus/backend/task.h"
+#include "nexus/common/block_queue.h"
 
 namespace nexus {
 namespace backend {
@@ -37,7 +37,7 @@ class Worker {
   std::thread thread_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_WORKER_H_
+#endif  // NEXUS_BACKEND_WORKER_H_

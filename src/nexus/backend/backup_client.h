@@ -1,8 +1,9 @@
 #ifndef NEXUS_BACKEND_BACKUP_CLIENT_H_
 #define NEXUS_BACKEND_BACKUP_CLIENT_H_
 
-#include <atomic>
 #include <grpc++/grpc++.h>
+
+#include <atomic>
 
 #include "nexus/backend/task.h"
 #include "nexus/common/backend_pool.h"
@@ -28,7 +29,7 @@ class BackupClient : public BackendSession {
   std::mutex relay_mu_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_BACKUP_CLIENT_H_
+#endif  // NEXUS_BACKEND_BACKUP_CLIENT_H_

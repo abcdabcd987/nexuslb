@@ -1,20 +1,22 @@
-#include <chrono>
+#include "nexus/backend/worker.h"
+
 #include <glog/logging.h>
 #include <pthread.h>
 
+#include <chrono>
+
 #include "nexus/backend/backend_server.h"
 #include "nexus/backend/model_ins.h"
-#include "nexus/backend/worker.h"
 
 namespace nexus {
 namespace backend {
 
 Worker::Worker(int index, BackendServer* server,
-               BlockPriorityQueue<Task>& task_queue) :
-    index_(index),
-    server_(server),
-    task_queue_(task_queue),
-    running_(false) {}
+               BlockPriorityQueue<Task>& task_queue)
+    : index_(index),
+      server_(server),
+      task_queue_(task_queue),
+      running_(false) {}
 
 void Worker::Start(int core) {
   running_ = true;
@@ -23,8 +25,8 @@ void Worker::Start(int core) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core, &cpuset);
-    int rc = pthread_setaffinity_np(thread_.native_handle(),
-                                    sizeof(cpu_set_t), &cpuset);
+    int rc = pthread_setaffinity_np(thread_.native_handle(), sizeof(cpu_set_t),
+                                    &cpuset);
     if (rc != 0) {
       LOG(ERROR) << "Error calling pthread_setaffinity_np: " << rc << "\n";
     }
@@ -82,7 +84,8 @@ void Worker::Process(std::shared_ptr<Task> task) {
             }
           }
           if (best_backup != nullptr) {
-            // LOG(INFO) << "Relay request " << task->query.model_session_id() <<
+            // LOG(INFO) << "Relay request " << task->query.model_session_id()
+            // <<
             //     " to backup " << best_backup->node_id() <<
             //     " with utilization " << min_util;
             best_backup->Forward(std::move(task));
@@ -123,11 +126,10 @@ void Worker::SendReply(std::shared_ptr<Task> task) {
   if (task->msg_type == kBackendRelay) {
     reply_type = kBackendRelayReply;
   }
-  auto msg = std::make_shared<Message>(reply_type,
-                                       task->result.ByteSizeLong());
+  auto msg = std::make_shared<Message>(reply_type, task->result.ByteSizeLong());
   msg->EncodeBody(task->result);
   task->connection->Write(std::move(msg));
 }
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus

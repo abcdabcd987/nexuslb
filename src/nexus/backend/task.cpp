@@ -1,31 +1,27 @@
 #include "nexus/backend/task.h"
+
 #include "nexus/common/model_def.h"
 
 namespace nexus {
 namespace backend {
 
-Input::Input(TimePoint deadline, uint64_t tid, int idx, ArrayPtr arr) :
-    DeadlineItem(deadline),
-    task_id(tid),
-    index(idx),
-    array(arr) {}
+Input::Input(TimePoint deadline, uint64_t tid, int idx, ArrayPtr arr)
+    : DeadlineItem(deadline), task_id(tid), index(idx), array(arr) {}
 
 Output::Output(uint64_t tid, int idx,
-               const std::unordered_map<std::string, ArrayPtr>& arrs) :
-    task_id(tid),
-    index(idx),
-    arrays(arrs) {}
+               const std::unordered_map<std::string, ArrayPtr>& arrs)
+    : task_id(tid), index(idx), arrays(arrs) {}
 
 std::atomic<uint64_t> Task::global_task_id_(0);
 
 Task::Task() : Task(nullptr) {}
 
-Task::Task(std::shared_ptr<Connection> conn) :
-    DeadlineItem(),
-    connection(conn),
-    model(nullptr),
-    stage(kPreprocess),
-    filled_outputs(0) {
+Task::Task(std::shared_ptr<Connection> conn)
+    : DeadlineItem(),
+      connection(conn),
+      model(nullptr),
+      stage(kPreprocess),
+      filled_outputs(0) {
   task_id = global_task_id_.fetch_add(1, std::memory_order_relaxed);
   timer.Record("begin");
 }
@@ -68,6 +64,5 @@ bool Task::AddVirtualOutput(int index) {
   return false;
 }
 
-} // namespace backend
-} // namespace nexus
-
+}  // namespace backend
+}  // namespace nexus

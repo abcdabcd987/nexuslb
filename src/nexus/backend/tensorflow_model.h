@@ -7,7 +7,6 @@
 
 namespace tf = tensorflow;
 
-
 namespace nexus {
 namespace backend {
 
@@ -38,9 +37,9 @@ class TensorflowModel : public ModelInstance {
  private:
   tf::Tensor* NewInputTensor();
 
-  void MarshalDetectionResult(
-      const QueryProto& query, std::shared_ptr<Output> output,
-      int im_height, int im_width, QueryResultProto* result);
+  void MarshalDetectionResult(const QueryProto& query,
+                              std::shared_ptr<Output> output, int im_height,
+                              int im_width, QueryResultProto* result);
 
   tf::SessionOptions gpu_option_;
   tf::SessionOptions cpu_option_;
@@ -66,10 +65,11 @@ class TensorflowModel : public ModelInstance {
   size_t num_suffixes_;
   std::unique_ptr<tf::Tensor> slice_beg_tensor_;
   std::unique_ptr<tf::Tensor> slice_end_tensor_;
-  void set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst, const std::vector<int32_t> &src);
+  void set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst,
+                        const std::vector<int32_t>& src);
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_TENSORFLOW_MODEL_H_
+#endif  // NEXUS_BACKEND_TENSORFLOW_MODEL_H_

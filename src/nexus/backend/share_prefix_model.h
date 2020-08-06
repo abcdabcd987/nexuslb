@@ -46,8 +46,8 @@ class SharePrefixModel : public ModelInstance {
   Shape prefix_output_shape_;
   std::unordered_map<std::string, ArrayPtr> prefix_batch_output_arr_;
   // Suffix models information
-  std::unordered_map<std::string,
-                     std::shared_ptr<ModelInstance> > suffix_models_;
+  std::unordered_map<std::string, std::shared_ptr<ModelInstance> >
+      suffix_models_;
   std::unordered_map<std::string, ArrayPtr> suffix_input_arrays_;
   std::unordered_map<std::string, std::string> suffix_output_names_;
   std::unordered_map<std::string, size_t> suffix_output_sizes_;
@@ -57,7 +57,7 @@ class SharePrefixModel : public ModelInstance {
   std::mutex suffix_mu_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_SHARE_PREFIX_MODEL_H_
+#endif  // NEXUS_BACKEND_SHARE_PREFIX_MODEL_H_

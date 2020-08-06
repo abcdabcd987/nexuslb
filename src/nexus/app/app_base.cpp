@@ -3,18 +3,15 @@
 namespace nexus {
 namespace app {
 
-AppBase::AppBase(const std::string& port,
-                 const std::string& rpc_port,
+AppBase::AppBase(const std::string& port, const std::string& rpc_port,
                  const std::string& sch_addr,
                  const std::string& dispatcher_addr,
-                 uint32_t dispatcher_rpc_timeout_us,
-                 size_t nthreads) :
-    Frontend(port, rpc_port, sch_addr, dispatcher_addr, dispatcher_rpc_timeout_us),
-    nthreads_(nthreads),
-    qp_(nullptr),
-    step_us_(0)
-{
-}
+                 uint32_t dispatcher_rpc_timeout_us, size_t nthreads)
+    : Frontend(port, rpc_port, sch_addr, dispatcher_addr,
+               dispatcher_rpc_timeout_us),
+      nthreads_(nthreads),
+      qp_(nullptr),
+      step_us_(0) {}
 
 AppBase::~AppBase() {
   if (qp_ != nullptr) {
@@ -63,11 +60,10 @@ std::shared_ptr<ModelHandler> AppBase::GetModelHandler(
   return model_handler;
 }
 
-bool AppBase::IsComplexQuery() const {
-  return slo_us_ != 0;
-}
+bool AppBase::IsComplexQuery() const { return slo_us_ != 0; }
 
-void AppBase::ComplexQuerySetup(const std::string &cq_id, uint32_t slo_us, uint32_t step_us) {
+void AppBase::ComplexQuerySetup(const std::string& cq_id, uint32_t slo_us,
+                                uint32_t step_us) {
   CHECK(!IsComplexQuery()) << "The complex query has been set up.";
   CHECK(!cq_id.empty()) << "cq_id cannot be empty.";
   CHECK(slo_us != 0) << "slo_us cannot be 0.";
@@ -97,5 +93,5 @@ void LaunchApp(AppBase* app) {
   app->Start();
 }
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus

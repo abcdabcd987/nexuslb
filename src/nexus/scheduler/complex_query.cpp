@@ -1,10 +1,12 @@
+#include "nexus/scheduler/complex_query.h"
+
+#include <glog/logging.h>
+
 #include <cmath>
 #include <mutex>
 #include <utility>
-#include <glog/logging.h>
 
 #include "nexus/common/model_db.h"
-#include "nexus/scheduler/complex_query.h"
 
 namespace nexus {
 namespace scheduler {
@@ -13,7 +15,7 @@ class ComplexQuery::Impl {
  public:
   Impl(std::string cq_id, int slo_us, int segments);
   void AddNode(NodeID node_id, std::string current_model_sess_id,
-               const ModelProfile& profile);
+               const ModelProfile &profile);
   void AddChild(const NodeID &parent, const NodeID &child);
   void SetRequestRate(const NodeID &node_id, double request_rate);
   double GetMinimalGPUs();
@@ -26,7 +28,7 @@ class ComplexQuery::Impl {
   struct ThroughputEntry {
     double max_throughput;
     uint32_t batch_size;
-    ThroughputEntry(double t, uint32_t b): max_throughput(t), batch_size(b) {}
+    ThroughputEntry(double t, uint32_t b) : max_throughput(t), batch_size(b) {}
   };
 
   struct DPEntry {
@@ -41,14 +43,15 @@ class ComplexQuery::Impl {
     double request_rate;
 
     // dependency graph
-    NodeInfo* parent;
-    std::unordered_set<NodeInfo*> children;
+    NodeInfo *parent;
+    std::unordered_set<NodeInfo *> children;
 
     // dynamic programming
-    std::vector<ThroughputEntry> max_throughput;  // max_throughput[i] for time budget step_*i
+    std::vector<ThroughputEntry>
+        max_throughput;       // max_throughput[i] for time budget step_*i
     std::vector<DPEntry> dp;  // dynamic programming book keeping
-    int global_time_budget; // used to calculate slo_ms recursively
-    uint32_t slo_ms;  // the result of dynamic programming
+    int global_time_budget;   // used to calculate slo_ms recursively
+    uint32_t slo_ms;          // the result of dynamic programming
   };
 
   std::string cq_id_;
@@ -57,22 +60,26 @@ class ComplexQuery::Impl {
   double step_;
   std::unordered_map<NodeID, NodeInfo> nodes_;
   double minimal_gpus_;
-  NodeInfo* root_;
-  std::vector<NodeInfo*> tree_order_;  // topological order
+  NodeInfo *root_;
+  std::vector<NodeInfo *> tree_order_;  // topological order
   std::mutex mutex_;
 };
 
-ComplexQuery::Impl::Impl(std::string cq_id, int slo_us, int segments) :
-    cq_id_(std::move(cq_id)), slo_us_(slo_us), segments_(segments),
-    step_(static_cast<double>(slo_us) / segments), minimal_gpus_(0), root_(nullptr)
-{
-}
+ComplexQuery::Impl::Impl(std::string cq_id, int slo_us, int segments)
+    : cq_id_(std::move(cq_id)),
+      slo_us_(slo_us),
+      segments_(segments),
+      step_(static_cast<double>(slo_us) / segments),
+      minimal_gpus_(0),
+      root_(nullptr) {}
 
-void ComplexQuery::Impl::AddNode(NodeID node_id, std::string current_model_sess_id,
-                                 const ModelProfile& profile) {
+void ComplexQuery::Impl::AddNode(NodeID node_id,
+                                 std::string current_model_sess_id,
+                                 const ModelProfile &profile) {
   std::lock_guard<std::mutex> lock(mutex_);
   CHECK(root_ == nullptr) << "Already finalized";
-  CHECK(nodes_.count(node_id) == 0) << "Node " << node_id.ToString() << " already exists.";
+  CHECK(nodes_.count(node_id) == 0)
+      << "Node " << node_id.ToString() << " already exists.";
 
   NodeInfo node_info = {
       .node_id = std::move(node_id),
@@ -99,18 +106,19 @@ void ComplexQuery::Impl::AddChild(const NodeID &parent, const NodeID &child) {
   p.children.insert(&c);
 }
 
-void ComplexQuery::Impl::SetRequestRate(const NodeID &node_id, double request_rate) {
+void ComplexQuery::Impl::SetRequestRate(const NodeID &node_id,
+                                        double request_rate) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto &node = nodes_.at(node_id);
   node.request_rate = request_rate;
 }
 
-std::unordered_map<ComplexQuery::NodeID, uint32_t> ComplexQuery::Impl::GetSLOms() {
+std::unordered_map<ComplexQuery::NodeID, uint32_t>
+ComplexQuery::Impl::GetSLOms() {
   std::lock_guard<std::mutex> lock(mutex_);
   CHECK(IsFinalized()) << "Not finalized yet";
   std::unordered_map<ComplexQuery::NodeID, uint32_t> res;
-  for (auto &node : nodes_)
-    res.emplace(node.first, node.second.slo_ms);
+  for (auto &node : nodes_) res.emplace(node.first, node.second.slo_ms);
   return res;
 }
 
@@ -125,17 +133,17 @@ void ComplexQuery::Impl::DynamicProgramming() {
   CHECK(IsFinalized()) << "Not finalized yet";
   for (auto it = tree_order_.rbegin(); it != tree_order_.rend(); ++it) {
     auto &node = *it;
-    node->dp[0] = DPEntry{.min_gpu = 1e10,
-                          .node_time = 0};
+    node->dp[0] = DPEntry{.min_gpu = 1e10, .node_time = 0};
     for (int time_budget = 1; time_budget <= segments_; ++time_budget) {
       node->dp[time_budget] = node->dp[time_budget - 1];
       for (int node_time = 1; node_time < time_budget; ++node_time) {
-        double cost = node->request_rate / node->max_throughput[node_time].max_throughput;
+        double cost =
+            node->request_rate / node->max_throughput[node_time].max_throughput;
         for (auto &child : node->children)
           cost += child->dp[time_budget - node_time].min_gpu;
         if (cost < node->dp[time_budget].min_gpu) {
-          node->dp[time_budget] = DPEntry{.min_gpu = cost,
-                                          .node_time = node_time};
+          node->dp[time_budget] =
+              DPEntry{.min_gpu = cost, .node_time = node_time};
         }
       }
     }
@@ -170,7 +178,7 @@ void ComplexQuery::Impl::Finalize() {
     node.second.dp.assign(segments_ + 1, {});
   }
 
-  std::unordered_set<NodeInfo*> visited;
+  std::unordered_set<NodeInfo *> visited;
   tree_order_.push_back(root_);
   visited.insert(root_);
   for (size_t head = 0; head < tree_order_.size(); ++head) {
@@ -184,21 +192,17 @@ void ComplexQuery::Impl::Finalize() {
   CHECK_EQ(visited.size(), nodes_.size()) << "Some nodes are not reachable";
 }
 
-bool ComplexQuery::Impl::IsFinalized() {
-  return root_ != nullptr;
-}
+bool ComplexQuery::Impl::IsFinalized() { return root_ != nullptr; }
 
-ComplexQuery::ComplexQuery(std::string cq_id, int slo_us, int segments) :
-  impl_(new Impl(std::move(cq_id), slo_us, segments))
-{
-}
+ComplexQuery::ComplexQuery(std::string cq_id, int slo_us, int segments)
+    : impl_(new Impl(std::move(cq_id), slo_us, segments)) {}
 
 ComplexQuery::~ComplexQuery() = default;
 ComplexQuery::ComplexQuery(ComplexQuery &&other) noexcept = default;
-ComplexQuery& ComplexQuery::operator=(ComplexQuery &&other) noexcept = default;
+ComplexQuery &ComplexQuery::operator=(ComplexQuery &&other) noexcept = default;
 
 void ComplexQuery::AddNode(NodeID node_id, std::string current_model_sess_id,
-                           const ModelProfile& profile) {
+                           const ModelProfile &profile) {
   impl_->AddNode(std::move(node_id), std::move(current_model_sess_id), profile);
 }
 
@@ -214,30 +218,20 @@ std::unordered_map<ComplexQuery::NodeID, uint32_t> ComplexQuery::GetSLOms() {
   return impl_->GetSLOms();
 }
 
-double ComplexQuery::GetMinimalGPUs() {
-  return impl_->GetMinimalGPUs();
-}
+double ComplexQuery::GetMinimalGPUs() { return impl_->GetMinimalGPUs(); }
 
-void ComplexQuery::DynamicProgramming() {
-  impl_->DynamicProgramming();
-}
+void ComplexQuery::DynamicProgramming() { impl_->DynamicProgramming(); }
 
-void ComplexQuery::Finalize() {
-  impl_->Finalize();
-}
+void ComplexQuery::Finalize() { impl_->Finalize(); }
 
-bool ComplexQuery::IsFinalized() {
-  return impl_->IsFinalized();
-}
+bool ComplexQuery::IsFinalized() { return impl_->IsFinalized(); }
 
-ComplexQuery::NodeID::NodeID(std::string framework_, std::string model_name_) :
-  framework(std::move(framework_)), model_name(std::move(model_name_))
-{
-}
+ComplexQuery::NodeID::NodeID(std::string framework_, std::string model_name_)
+    : framework(std::move(framework_)), model_name(std::move(model_name_)) {}
 
 std::string ComplexQuery::NodeID::ToString() const {
   return framework + ':' + model_name;
 }
 
-} // namespace scheduler
-} // namespace nexus
+}  // namespace scheduler
+}  // namespace nexus

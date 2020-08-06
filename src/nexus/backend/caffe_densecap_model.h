@@ -61,7 +61,7 @@ class CaffeDenseCapModel : public ModelInstance {
   size_t input_size_;
   Shape input_shape_;
   std::unordered_map<std::string, Shape> output_shapes_;
-  //caffe::Blob<float>* input_blob_;
+  // caffe::Blob<float>* input_blob_;
   int feature_net_input_idx_;
   std::vector<boost::shared_ptr<caffe::Blob<float> > > input_blobs_;
   // temporary buffer
@@ -69,7 +69,7 @@ class CaffeDenseCapModel : public ModelInstance {
   std::unique_ptr<caffe::Blob<float> > multiplier_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_CAFFE_DENSECAP_MODEL_H_
+#endif  // NEXUS_BACKEND_CAFFE_DENSECAP_MODEL_H_

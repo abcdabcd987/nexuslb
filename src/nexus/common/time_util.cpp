@@ -36,13 +36,10 @@ TimePoint* Timer::GetTimepoint(const std::string& tag) {
   return &itr->second;
 }
 
-Tickable::Tickable(uint32_t tick_interval_sec) :
-      tick_interval_sec_(tick_interval_sec),
-      sec_since_last_tick_(0) {
-}
+Tickable::Tickable(uint32_t tick_interval_sec)
+    : tick_interval_sec_(tick_interval_sec), sec_since_last_tick_(0) {}
 
-Tickable::~Tickable() {
-}
+Tickable::~Tickable() {}
 
 void Tickable::Tick() {
   ++sec_since_last_tick_;
@@ -57,8 +54,7 @@ TimeSystem& TimeSystem::Singleton() {
   return time_system_;
 }
 
-TimeSystem::TimeSystem() :
-    running_(true) {
+TimeSystem::TimeSystem() : running_(true) {
   thread_ = std::thread(&TimeSystem::Run, this);
 }
 
@@ -104,4 +100,4 @@ void TimeSystem::Run() {
   }
 }
 
-} // namespace nexus
+}  // namespace nexus

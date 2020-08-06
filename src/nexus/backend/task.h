@@ -1,17 +1,18 @@
 #ifndef NEXUS_BACKEND_TASK_H_
 #define NEXUS_BACKEND_TASK_H_
 
+#include <yaml-cpp/yaml.h>
+
 #include <atomic>
 #include <chrono>
 #include <memory>
 #include <opencv2/opencv.hpp>
-#include <yaml-cpp/yaml.h>
 
 #include "nexus/common/block_queue.h"
 #include "nexus/common/connection.h"
 #include "nexus/common/data_type.h"
-#include "nexus/proto/nnquery.pb.h"
 #include "nexus/proto/control.pb.h"
+#include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
 namespace backend {
@@ -56,7 +57,7 @@ class Output {
    */
   Output(uint64_t tid, int idx,
          const std::unordered_map<std::string, ArrayPtr>& arrs);
-  
+
   /*! \brief Task id */
   uint64_t task_id;
   /*! \brief Index in the output vector of task. */
@@ -142,7 +143,7 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
   static std::atomic<uint64_t> global_task_id_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_TASK_H_
+#endif  // NEXUS_BACKEND_TASK_H_

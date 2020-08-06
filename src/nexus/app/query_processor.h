@@ -1,17 +1,17 @@
 #ifndef NEXUS_APP_QUERY_PROCESSOR_H_
 #define NEXUS_APP_QUERY_PROCESSOR_H_
 
+#include <glog/logging.h>
+
 #include "nexus/app/exec_block.h"
 #include "nexus/app/request_context.h"
-#include <glog/logging.h>
 
 namespace nexus {
 namespace app {
 
 class QueryProcessor {
  public:
-  QueryProcessor(std::vector<ExecBlock*> blocks) :
-      blocks_(blocks) {
+  QueryProcessor(std::vector<ExecBlock*> blocks) : blocks_(blocks) {
     std::unordered_set<int> block_ids;
     for (auto block : blocks) {
       if (block_ids.count(block->id()) > 0) {
@@ -50,7 +50,7 @@ class QueryProcessor {
   std::vector<ExecBlock*> blocks_;
 };
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus
 
-#endif // NEXUS_APP_QUERY_PROCESSOR_H_
+#endif  // NEXUS_APP_QUERY_PROCESSOR_H_

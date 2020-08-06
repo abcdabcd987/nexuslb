@@ -24,6 +24,7 @@ class ServerBase {
   virtual void Run();
   // Hanlde a stop operation.
   virtual void Stop();
+
  protected:
   // Asynchronously wait an accept request.
   void DoAccept();
@@ -40,6 +41,6 @@ class ServerBase {
   boost::asio::ip::tcp::socket socket_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_SERVER_BASE_H_
+#endif  // NEXUS_COMMON_SERVER_BASE_H_

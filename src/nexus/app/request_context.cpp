@@ -1,21 +1,23 @@
-#include "nexus/app/exec_block.h"
 #include "nexus/app/request_context.h"
-#include "nexus/common/model_def.h"
+
 #include <glog/logging.h>
+
+#include "nexus/app/exec_block.h"
+#include "nexus/common/model_def.h"
 
 namespace nexus {
 namespace app {
 
 RequestContext::RequestContext(std::shared_ptr<UserSession> user_sess,
                                std::shared_ptr<Message> msg,
-                               RequestPool& req_pool) :
-    DeadlineItem(),
-    user_session_(user_sess),
-    req_pool_(req_pool),
-    state_(kUninitialized),
-    slack_ms_(0.) {
+                               RequestPool& req_pool)
+    : DeadlineItem(),
+      user_session_(user_sess),
+      req_pool_(req_pool),
+      state_(kUninitialized),
+      slack_ms_(0.) {
   SetDeadline(std::chrono::milliseconds(50));
-  //beg_ = Clock::now();
+  // beg_ = Clock::now();
   msg->DecodeBody(&request_);
 }
 
@@ -87,8 +89,8 @@ ExecBlock* RequestContext::NextReadyBlock() {
 VariablePtr RequestContext::GetVariable(const std::string& var_name) {
   std::lock_guard<std::mutex> lock(mu_);
   auto itr = vars_.find(var_name);
-  CHECK(itr != vars_.end()) << "Variable " << var_name << " doesn't exist " <<
-      " or is not ready";
+  CHECK(itr != vars_.end()) << "Variable " << var_name << " doesn't exist "
+                            << " or is not ready";
   return itr->second;
 }
 
@@ -123,7 +125,8 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
 
   auto query_latency = reply_.add_query_latency();
   auto recv_ts = std::chrono::duration_cast<std::chrono::microseconds>(
-      Clock::now() - begin_).count();
+                     Clock::now() - begin_)
+                     .count();
   query_latency->set_query_id(qid);
   query_latency->set_model_session_id(result.model_session_id());
   query_latency->set_frontend_send_timestamp_us(query_send_.at(qid));
@@ -131,7 +134,7 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
   query_latency->set_backend_latency_us(result.latency_us());
   query_latency->set_backend_queuing_us(result.queuing_us());
   query_latency->set_use_backup(result.use_backup());
-  
+
   double latency = recv_ts - query_send_.at(qid);
   ModelSession model_sess;
   ParseModelSession(result.model_session_id(), &model_sess);
@@ -152,7 +155,7 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
   }
   std::string var_name = qid_itr->second;
   qid_var_map_.erase(qid_itr);
-  
+
   auto var = waiting_vars_.at(var_name);
   if (var->AddQueryResult(result)) {
     waiting_vars_.erase(var_name);
@@ -176,7 +179,8 @@ void RequestContext::HandleError(uint32_t status,
 void RequestContext::RecordQuerySend(uint64_t qid) {
   std::lock_guard<std::mutex> lock(mu_);
   uint64_t ts = std::chrono::duration_cast<std::chrono::microseconds>(
-      Clock::now() - begin_).count();
+                    Clock::now() - begin_)
+                    .count();
   query_send_.emplace(qid, ts);
 }
 
@@ -184,10 +188,10 @@ void RequestContext::SendReply() {
   reply_.set_user_id(request_.user_id());
   reply_.set_req_id(request_.req_id());
   auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
-      Clock::now() - begin_).count();
+                     Clock::now() - begin_)
+                     .count();
   reply_.set_latency_us(latency);
-  auto reply_msg = std::make_shared<Message>(kUserReply,
-                                             reply_.ByteSizeLong());
+  auto reply_msg = std::make_shared<Message>(kUserReply, reply_.ByteSizeLong());
   reply_msg->EncodeBody(reply_);
   user_session_->Write(std::move(reply_msg));
 }
@@ -221,5 +225,5 @@ void RequestContext::HandleErrorLocked(uint32_t status,
   SetState(kError);
 }
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus

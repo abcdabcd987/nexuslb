@@ -1,4 +1,5 @@
 #include "nexus/backend/model_ins.h"
+
 #include "nexus/backend/share_prefix_model.h"
 
 #ifdef USE_CAFFE
@@ -33,7 +34,7 @@ void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
     model->reset(new TFShareModel(gpu_id, config));
   } else
 #endif
-  if (config.model_session_size() > 1) {
+      if (config.model_session_size() > 1) {
     LOG(INFO) << "Create prefix model";
     model->reset(new SharePrefixModel(gpu_id, config));
   } else {
@@ -44,7 +45,7 @@ void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
     } else
 #endif
 #ifdef USE_CAFFE
-    if (framework == "caffe") {
+        if (framework == "caffe") {
       if (model_name == "densecap") {
         model->reset(new CaffeDenseCapModel(gpu_id, config));
       } else {
@@ -53,12 +54,12 @@ void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
     } else
 #endif
 #ifdef USE_CAFFE2
-    if (framework == "caffe2") {
+        if (framework == "caffe2") {
       model->reset(new Caffe2Model(gpu_id, config));
     } else
 #endif
 #ifdef USE_TENSORFLOW
-    if (framework == "tensorflow") {
+        if (framework == "tensorflow") {
       model->reset(new TensorflowModel(gpu_id, config));
     } else
 #endif
@@ -68,16 +69,16 @@ void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
   }
 
   auto end = Clock::now();
-  auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-      end - beg);
+  auto duration =
+      std::chrono::duration_cast<std::chrono::milliseconds>(end - beg);
   LOG(INFO) << "Loading model time: " << duration.count() << "ms";
 }
 
-ModelInstance::ModelInstance(int gpu_id, const ModelInstanceConfig &config) :
-    gpu_id_(gpu_id),
-    model_session_(config.model_session(0)),
-    batch_(config.batch()),
-    max_batch_(config.max_batch()) {
+ModelInstance::ModelInstance(int gpu_id, const ModelInstanceConfig& config)
+    : gpu_id_(gpu_id),
+      model_session_(config.model_session(0)),
+      batch_(config.batch()),
+      max_batch_(config.max_batch()) {
   CHECK_GT(batch_, 0) << "batch must be greater than 0";
   CHECK_GE(max_batch_, batch_) << "max_batch must be greater than batch";
   std::string model_id = ModelSessionToModelID(model_session_);
@@ -89,8 +90,8 @@ ModelInstance::ModelInstance(int gpu_id, const ModelInstanceConfig &config) :
 #ifdef USE_GPU
   gpu_device_ = DeviceManager::Singleton().GetGPUDevice(gpu_id);
 #endif
-  LOG(INFO) << "Construct model " << model_session_id_ << ", batch " <<
-            batch_ << ", max batch " << max_batch_;
+  LOG(INFO) << "Construct model " << model_session_id_ << ", batch " << batch_
+            << ", max batch " << max_batch_;
 }
 
 ModelInstance::~ModelInstance() {
@@ -100,7 +101,8 @@ void ModelInstance::set_batch(size_t batch) {
   CHECK_LE(batch, max_batch_) << "Batch size must be less than max_batch";
   batch_.store(batch);
 }
-ArrayPtr ModelInstance::CreateInputGpuArrayWithRawPointer(float *ptr, size_t nfloats) {
+ArrayPtr ModelInstance::CreateInputGpuArrayWithRawPointer(float* ptr,
+                                                          size_t nfloats) {
   LOG(ERROR) << "Don't support create input gpu array with raw pointer";
   return nullptr;
 }
@@ -117,5 +119,5 @@ void ModelInstance::WaitOutput(std::shared_ptr<BatchTask> batch_task) {
 uint64_t ModelInstance::GetPeakBytesInUse() {
   LOG(FATAL) << "GetPeakBytesInUse not implemented";
 }
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus

@@ -1,6 +1,8 @@
 #ifndef NEXUS_BACKEND_BACKEND_SERVER_H_
 #define NEXUS_BACKEND_BACKEND_SERVER_H_
 
+#include <yaml-cpp/yaml.h>
+
 #include <atomic>
 #include <memory>
 #include <random>
@@ -8,7 +10,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <yaml-cpp/yaml.h>
 
 #include "nexus/backend/backup_client.h"
 #include "nexus/backend/model_exec.h"
@@ -36,18 +37,18 @@ namespace backend {
 class BackendServer : public ServerBase, public MessageHandler {
  public:
   using ModelTable = std::unordered_map<std::string, ModelExecutorPtr>;
-  
+
   /*!
    * \brief Constructs a backend server
    * \param port Port number for receiving requests
    * \param rpc_port Port number for RPC server and control messages
-   * \param sch_addr Scheduler IP address, if no port specified, use default port 10001
-   * \param num_workers Number of worker threads
-   * \param gpu_id GPU device ID
-   * \param model_db_root Model database root directory path
+   * \param sch_addr Scheduler IP address, if no port specified, use default
+   * port 10001 \param num_workers Number of worker threads \param gpu_id GPU
+   * device ID \param model_db_root Model database root directory path
    */
   BackendServer(std::string port, std::string rpc_port, std::string sch_addr,
-                int gpu_id, size_t num_workers = 0, std::vector<int> cores = {});
+                int gpu_id, size_t num_workers = 0,
+                std::vector<int> cores = {});
   /*! \brief Deconstructs backend server */
   ~BackendServer();
   /*! \brief Get backend node ID */
@@ -167,7 +168,7 @@ class BackendServer : public ServerBase, public MessageHandler {
   std::mt19937 rand_gen_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_BACKEND_SERVER_H_
+#endif  // NEXUS_BACKEND_BACKEND_SERVER_H_

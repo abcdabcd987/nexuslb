@@ -1,8 +1,9 @@
 #ifndef NEXUS_SCHEDULER_FRONTEND_DELEGATE_H_
 #define NEXUS_SCHEDULER_FRONTEND_DELEGATE_H_
 
-#include <chrono>
 #include <grpc++/grpc++.h>
+
+#include <chrono>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -51,7 +52,7 @@ class FrontendDelegate {
   bool is_dispatcher_;
 };
 
-} // namespace scheduler
-} // namespace nexus
+}  // namespace scheduler
+}  // namespace nexus
 
-#endif // NEXUS_SCHEDULER_FRONTEND_DELEGATE_H_
+#endif  // NEXUS_SCHEDULER_FRONTEND_DELEGATE_H_

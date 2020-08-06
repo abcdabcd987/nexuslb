@@ -1,9 +1,11 @@
-#include <fstream>
+#include "nexus/backend/utils.h"
+
 #include <gflags/gflags.h>
 #include <glog/logging.h>
+
+#include <fstream>
 #include <unordered_set>
 
-#include "nexus/backend/utils.h"
 #include "nexus/common/util.h"
 
 DEFINE_bool(hack_reply_omit_output, false,
@@ -58,8 +60,7 @@ void PostprocessClassification(
   }
   if (max_idx > -1) {
     auto record = result->add_output();
-    if (FLAGS_hack_reply_omit_output)
-      return;
+    if (FLAGS_hack_reply_omit_output) return;
     for (auto field : output_fields) {
       if (field == "class_id") {
         auto value = record->add_named_value();
@@ -88,5 +89,5 @@ void PostprocessClassification(
   }
 }
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus

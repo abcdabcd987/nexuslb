@@ -1,11 +1,12 @@
 #ifndef NEXUS_SCHEDULER_BACKEND_DELEGATE_H_
 #define NEXUS_SCHEDULER_BACKEND_DELEGATE_H_
 
-#include <chrono>
 #include <grpc++/grpc++.h>
+#include <yaml-cpp/yaml.h>
+
+#include <chrono>
 #include <unordered_map>
 #include <vector>
-#include <yaml-cpp/yaml.h>
 
 #include "nexus/common/metric.h"
 #include "nexus/common/model_db.h"
@@ -24,11 +25,11 @@ class BackendDelegate {
  public:
   BackendDelegate(uint32_t node_id, const std::string& ip,
                   const std::string& server_port, const std::string& rpc_port,
-                  const std::string& gpu_device, const std::string& gpu_uuid, size_t gpu_available_memory,
-                  int beacon_sec);
+                  const std::string& gpu_device, const std::string& gpu_uuid,
+                  size_t gpu_available_memory, int beacon_sec);
 
   uint32_t node_id() const { return node_id_; }
- 
+
   std::string gpu_device() const { return gpu_device_; }
 
   size_t gpu_available_memory() const { return gpu_available_memory_; }
@@ -53,7 +54,7 @@ class BackendDelegate {
                         InstanceInfo* inst_info, double* occupancy) const;
 
   void LoadModel(const InstanceInfo& inst_info);
-  
+
   void LoadModel(const YAML::Node& model_info);
 
   void LoadPrefixModel(const ModelSession& model_session,
@@ -76,7 +77,8 @@ class BackendDelegate {
   double UpdateModelThroughput(const std::string& model_sess_id,
                                double throughput);
 
-  void SpillOutWorkload(std::vector<std::pair<SessionGroup, double> >* spillout);
+  void SpillOutWorkload(
+      std::vector<std::pair<SessionGroup, double> >* spillout);
 
   CtrlStatus UpdateModelTableRpc();
 
@@ -100,9 +102,9 @@ class BackendDelegate {
 
  private:
   void ComputeBatchSize(InstanceInfo* inst_info, double workload) const;
-  
+
   void UpdateCycle();
-  
+
   uint32_t node_id_;
   std::string ip_;
   std::string server_port_;
@@ -132,7 +134,7 @@ class BackendDelegate {
   std::chrono::time_point<std::chrono::system_clock> last_time_;
 };
 
-} // namespace scheduler
-} // namespace nexus
+}  // namespace scheduler
+}  // namespace nexus
 
-#endif // NEXUS_SCHEDULER_BACKEND_DELEGATE_H_
+#endif  // NEXUS_SCHEDULER_BACKEND_DELEGATE_H_

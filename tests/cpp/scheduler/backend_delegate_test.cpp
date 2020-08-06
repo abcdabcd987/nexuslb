@@ -1,15 +1,17 @@
-#include <chrono>
+#include "nexus/scheduler/backend_delegate.h"
+
 #include <glog/logging.h>
 #include <gtest/gtest.h>
+
+#include <chrono>
 #include <memory>
 
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
-#include "nexus/scheduler/backend_delegate.h"
 
-//DECLARE_string(model_db);
+// DECLARE_string(model_db);
 DECLARE_int32(beacon);
 DECLARE_int32(epoch);
 
@@ -23,9 +25,9 @@ class BackendDelegateTest : public ::testing::Test {
     gpu_available_memory_ = 12L * 1024L * 1024L * 1024L;
     FLAGS_beacon = 1;
     FLAGS_epoch = 5;
-    backend_.reset(new BackendDelegate(
-        1, "127.0.0.1", "8001", "8002", gpu_device_, gpu_available_memory_,
-        FLAGS_beacon));
+    backend_.reset(new BackendDelegate(1, "127.0.0.1", "8001", "8002",
+                                       gpu_device_, gpu_available_memory_,
+                                       FLAGS_beacon));
   }
 
   std::string gpu_device_;
@@ -50,8 +52,8 @@ TEST_F(BackendDelegateTest, PrepareLoadModel) {
   for (float workload : {50., 100., 150., 200., 250.}) {
     InstanceInfo info;
     double occupancy;
-    bool ret = backend_->PrepareLoadModel(vgg16_sess, workload, &info,
-                                          &occupancy);
+    bool ret =
+        backend_->PrepareLoadModel(vgg16_sess, workload, &info, &occupancy);
     ASSERT_TRUE(ret);
     ASSERT_GE(info.throughput, workload);
     ASSERT_GT(info.batch, 0);
@@ -62,8 +64,8 @@ TEST_F(BackendDelegateTest, PrepareLoadModel) {
   for (float workload : {300., 400., 500.}) {
     InstanceInfo info;
     double occupancy;
-    bool ret = backend_->PrepareLoadModel(vgg16_sess, workload, &info,
-                                          &occupancy);
+    bool ret =
+        backend_->PrepareLoadModel(vgg16_sess, workload, &info, &occupancy);
     ASSERT_TRUE(ret);
     ASSERT_GT(info.batch, 0);
     ASSERT_EQ(occupancy, 1.);
@@ -79,8 +81,8 @@ TEST_F(BackendDelegateTest, PrepareLoadModel) {
   for (float workload : {50, 100, 125}) {
     InstanceInfo info;
     double occupancy;
-    bool ret = backend_->PrepareLoadModel(vgg_face_sess, workload, &info,
-                                          &occupancy);
+    bool ret =
+        backend_->PrepareLoadModel(vgg_face_sess, workload, &info, &occupancy);
     LOG(INFO) << occupancy;
     ASSERT_TRUE(ret);
     ASSERT_GE(info.throughput, workload);
@@ -91,14 +93,14 @@ TEST_F(BackendDelegateTest, PrepareLoadModel) {
   for (float workload : {150, 200, 250}) {
     InstanceInfo info;
     double occupancy;
-    bool ret = backend_->PrepareLoadModel(vgg_face_sess, workload, &info,
-                                          &occupancy);
+    bool ret =
+        backend_->PrepareLoadModel(vgg_face_sess, workload, &info, &occupancy);
     ASSERT_FALSE(ret);
   }
-  
+
   InstanceInfo vgg_face_info;
   backend_->PrepareLoadModel(vgg_face_sess, 125., &vgg_face_info, &occupancy);
-  
+
   backend_->LoadModel(vgg_face_info);
   ASSERT_NEAR(backend_->Occupancy(), occupancy, 1e-3);
 }
@@ -110,5 +112,5 @@ TEST_F(BackendDelegateTest, CheckAlive) {
   ASSERT_TRUE(backend_->IsAlive());
 }
 
-} // namespace scheduler
-} // namespace nexus
+}  // namespace scheduler
+}  // namespace nexus

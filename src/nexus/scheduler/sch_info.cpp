@@ -1,14 +1,16 @@
 #include "nexus/scheduler/sch_info.h"
+
 #include <glog/logging.h>
 
 namespace nexus {
 namespace scheduler {
 
-void SessionInfo::UpdateWorkload(uint32_t frontend_id, const ModelStatsProto &model_stats) {
+void SessionInfo::UpdateWorkload(uint32_t frontend_id,
+                                 const ModelStatsProto &model_stats) {
   auto iter = workloads.find(frontend_id);
   if (iter == workloads.end()) {
-    LOG(ERROR) << "Cannot find rps for " << frontend_id << " in " <<
-               model_stats.model_session_id();
+    LOG(ERROR) << "Cannot find rps for " << frontend_id << " in "
+               << model_stats.model_session_id();
     return;
   }
   auto rps = iter->second;
@@ -26,16 +28,17 @@ double SessionInfo::TotalThroughput() const {
   }
   return total;
 }
-void SessionInfo::SubscribeModelSession(uint32_t frontend_id, const std::string &model_sess_id) {
+void SessionInfo::SubscribeModelSession(uint32_t frontend_id,
+                                        const std::string &model_sess_id) {
   if (session_subscribers.count(model_sess_id) == 0) {
     session_subscribers.emplace(model_sess_id, ServerList{frontend_id});
   } else {
     session_subscribers.at(model_sess_id).insert(frontend_id);
   }
-  workloads.emplace(frontend_id,
-                    std::make_shared<EWMA>(1, FLAGS_avg_interval));
+  workloads.emplace(frontend_id, std::make_shared<EWMA>(1, FLAGS_avg_interval));
 }
-bool SessionInfo::UnsubscribleModelSession(uint32_t frontend_id, const std::string &model_sess_id) {
+bool SessionInfo::UnsubscribleModelSession(uint32_t frontend_id,
+                                           const std::string &model_sess_id) {
   session_subscribers.at(model_sess_id).erase(frontend_id);
   workloads.erase(frontend_id);
   if (has_static_workload || !session_subscribers.at(model_sess_id).empty()) {
@@ -52,5 +55,5 @@ bool SessionInfo::UnsubscribleModelSession(uint32_t frontend_id, const std::stri
   }
   return true;
 }
-}
-}
+}  // namespace scheduler
+}  // namespace nexus

@@ -23,7 +23,7 @@ class BatchTask {
   /*!
    * \brief Set batch id
    * \param batch_id Batch id
-  */
+   */
   inline void set_batch_id(uint64_t batch_id) { batch_id_ = batch_id; }
   /*! \brief Return batch id */
   inline uint64_t batch_id() const { return batch_id_; }
@@ -110,7 +110,7 @@ class BatchTask {
   std::vector<std::shared_ptr<Output> > outputs_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_BATCH_TASK_H_
+#endif  // NEXUS_BACKEND_BATCH_TASK_H_

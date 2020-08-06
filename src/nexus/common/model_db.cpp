@@ -1,35 +1,39 @@
-#include <cmath>
-#include <fstream>
-#include <queue>
-#include <boost/filesystem.hpp>
+#include "nexus/common/model_db.h"
+
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
-#include "nexus/common/model_db.h"
+#include <boost/filesystem.hpp>
+#include <cmath>
+#include <fstream>
+#include <queue>
+
 #include "nexus/common/model_def.h"
 #include "nexus/common/util.h"
 
 std::pair<double, double> MergeMeanStd(double mean1, double std1, int n1,
                                        double mean2, double std2, int n2) {
   double mean = ((n1 - 1) * mean1 + (n2 - 1) * mean2) / (n1 + n2 - 1);
-  double var = ((n1 - 1) * std1 * std1 + (n2 - 1) * std2 * std2
-      + n1 * (mean1 - mean) * (mean1 - mean)
-      + n2 * (mean2 - mean) * (mean2 - mean)) / (n1 + n2 - 1);
+  double var = ((n1 - 1) * std1 * std1 + (n2 - 1) * std2 * std2 +
+                n1 * (mean1 - mean) * (mean1 - mean) +
+                n2 * (mean2 - mean) * (mean2 - mean)) /
+               (n1 + n2 - 1);
   return {mean, std::sqrt(var)};
 }
 
 namespace fs = boost::filesystem;
 
 DEFINE_string(model_root, "", "Model root dicrectory");
-DEFINE_double(profile_multiplier, 1.15, "Multiplier to forward latency in profile.");
+DEFINE_double(profile_multiplier, 1.15,
+              "Multiplier to forward latency in profile.");
 
 namespace nexus {
 
 void MergeMeanStd(ProfileEntry& dst, const ProfileEntry& src) {
   double mean, std;
-  std::tie(mean, std) = ::MergeMeanStd(
-      dst.latency_mean, dst.latency_std, dst.repeat,
-      src.latency_mean, src.latency_std, src.repeat);
+  std::tie(mean, std) =
+      ::MergeMeanStd(dst.latency_mean, dst.latency_std, dst.repeat,
+                     src.latency_mean, src.latency_std, src.repeat);
   dst.latency_mean = mean;
   dst.latency_std = std;
   dst.repeat += src.repeat;
@@ -42,8 +46,8 @@ ModelProfile::ModelProfile(const std::string& filepath) {
 void ModelProfile::MergeProfile(const ModelProfile& rhs) {
   uint32_t batch = 1;
   while (batch <= forward_lats_.size() && batch <= rhs.forward_lats_.size()) {
-    auto &rec1 = forward_lats_.at(batch);
-    const auto &rec2 = rhs.forward_lats_.at(batch);
+    auto& rec1 = forward_lats_.at(batch);
+    const auto& rec2 = rhs.forward_lats_.at(batch);
     MergeMeanStd(rec1, rec2);
     ++batch;
   }
@@ -63,12 +67,11 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
   std::string line;
   std::vector<std::string> tokens;
   std::getline(fin, gpu_uuid_);
-  std::getline(fin, line); // Forward latency
-  std::getline(fin, line); // batch,latency(us),std(us),memory(B),repeat
+  std::getline(fin, line);  // Forward latency
+  std::getline(fin, line);  // batch,latency(us),std(us),memory(B),repeat
   while (true) {
     std::getline(fin, line);
-    if (line.find("Preprocess latency (mean,std,repeat)") == 0)
-      break;
+    if (line.find("Preprocess latency (mean,std,repeat)") == 0) break;
     SplitString(line, ',', &tokens);
     ProfileEntry entry;
     uint32_t batch = stoi(tokens[0]);
@@ -83,7 +86,7 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
   preprocess_.latency_mean = stof(tokens[0]) * FLAGS_profile_multiplier;
   preprocess_.latency_std = stof(tokens[1]) * FLAGS_profile_multiplier;
   preprocess_.repeat = std::stoi(tokens[2]);
-  std::getline(fin, line); // Postprocess latency (mean,std,repeat)
+  std::getline(fin, line);  // Postprocess latency (mean,std,repeat)
   std::getline(fin, line);
   SplitString(line, ',', &tokens);
   postprocess_.latency_mean = stof(tokens[0]) * FLAGS_profile_multiplier;
@@ -93,7 +96,8 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
 
 float ModelProfile::GetForwardLatency(uint32_t batch) const {
   if (forward_lats_.find(batch) == forward_lats_.end()) {
-    LOG(FATAL) << "Cannot find forward latency: model=" << profile_id() << " batch=" << batch;
+    LOG(FATAL) << "Cannot find forward latency: model=" << profile_id()
+               << " batch=" << batch;
     return 0.;
   }
   auto entry = forward_lats_.at(batch);
@@ -137,14 +141,15 @@ uint32_t ModelProfile::GetMaxBatch(float latency_sla_ms) const {
   return batch;
 }
 
-std::pair<uint32_t, float> ModelProfile::GetMaxThroughput(float latency_sla_ms)
-    const {
+std::pair<uint32_t, float> ModelProfile::GetMaxThroughput(
+    float latency_sla_ms) const {
   float max_throughput = 0;
   uint32_t best_batch = 0;
   // divide by 2 is becuase half of time will spend in batching
   float exec_budget = (latency_sla_ms * 1000 - network_latency_us_ -
-                       GetPreprocessLatency() - GetPostprocessLatency()) * 0.5;
-  for (uint32_t batch = 1; batch <= forward_lats_.size() ; ++batch) {
+                       GetPreprocessLatency() - GetPostprocessLatency()) *
+                      0.5;
+  for (uint32_t batch = 1; batch <= forward_lats_.size(); ++batch) {
     float forward_lat = GetForwardLatency(batch);
     if (forward_lat < 0 || forward_lat > exec_budget) {
       break;
@@ -164,8 +169,8 @@ ModelDatabase& ModelDatabase::Singleton() {
   return model_db_;
 }
 
-const YAML::Node* ModelDatabase::GetModelInfo(const std::string& model_id)
-    const {
+const YAML::Node* ModelDatabase::GetModelInfo(
+    const std::string& model_id) const {
   auto itr = model_info_table_.find(model_id);
   if (itr == model_info_table_.end()) {
     LOG(ERROR) << "Cannot find model info for " << model_id;
@@ -174,9 +179,9 @@ const YAML::Node* ModelDatabase::GetModelInfo(const std::string& model_id)
   return &itr->second;
 }
 
-const YAML::Node* ModelDatabase::GetModelInfo(
-    const std::string& framework, const std::string& model_name,
-    uint32_t version) const {
+const YAML::Node* ModelDatabase::GetModelInfo(const std::string& framework,
+                                              const std::string& model_name,
+                                              uint32_t version) const {
   auto model_id = ModelID(framework, model_name, version);
   auto itr = model_info_table_.find(model_id);
   if (itr == model_info_table_.end()) {
@@ -187,8 +192,7 @@ const YAML::Node* ModelDatabase::GetModelInfo(
 }
 
 const ModelProfile* ModelDatabase::GetModelProfile(
-    const std::string& gpu_device,
-    const std::string& gpu_uuid,
+    const std::string& gpu_device, const std::string& gpu_uuid,
     const std::string& profile_id) const {
   auto itr = device_profile_table_.find(gpu_device);
   if (itr == device_profile_table_.end()) {
@@ -198,12 +202,11 @@ const ModelProfile* ModelDatabase::GetModelProfile(
   auto& profile_table = itr->second;
   auto key = profile_id + ":" + gpu_uuid;
   auto itr2 = profile_table.find(key);
-  if (itr2 != profile_table.end())
-    return &itr2->second;
+  if (itr2 != profile_table.end()) return &itr2->second;
 
   std::vector<std::string> tokens;
   SplitString(profile_id, ':', &tokens);
-  const auto &model = tokens[1];
+  const auto& model = tokens[1];
   auto pos = model.rfind('_');
   if (pos == std::string::npos) {
     LOG(ERROR) << "Cannot find model profile " << key << " on " << gpu_device;
@@ -217,17 +220,16 @@ const ModelProfile* ModelDatabase::GetModelProfile(
   }
   auto key3 = mirror_profile_id + ':' + gpu_uuid;
   auto itr3 = profile_table.find(key3);
-  if (itr3 != profile_table.end())
-    return &itr3->second;
-  LOG(ERROR) << "Cannot find model profile " << key
-             << " or " << key3 << " on " << gpu_device;
+  if (itr3 != profile_table.end()) return &itr3->second;
+  LOG(ERROR) << "Cannot find model profile " << key << " or " << key3 << " on "
+             << gpu_device;
   return nullptr;
 }
 
-std::shared_ptr<TFShareInfo> ModelDatabase::GetTFShareInfo(const std::string& model_name) const {
+std::shared_ptr<TFShareInfo> ModelDatabase::GetTFShareInfo(
+    const std::string& model_name) const {
   auto iter = tf_share_models_.find(model_name);
-  if (iter != tf_share_models_.end())
-    return iter->second;
+  if (iter != tf_share_models_.end()) return iter->second;
   return nullptr;
 }
 
@@ -261,12 +263,12 @@ std::vector<std::string> ModelDatabase::GetPrefixShareModels(
 ModelDatabase::ModelDatabase(const std::string& db_root_dir) {
   db_root_dir_ = db_root_dir;
   fs::path db_dir(db_root_dir);
-  CHECK(fs::is_directory(db_dir)) << "Database root directory " <<
-      db_dir << " doesn't exist";
+  CHECK(fs::is_directory(db_dir))
+      << "Database root directory " << db_dir << " doesn't exist";
   // Check model store directory exists
   fs::path model_store_dir = db_dir / "store";
-  CHECK(fs::is_directory(model_store_dir)) << "Model store directory " <<
-      model_store_dir << " doesn't exist";
+  CHECK(fs::is_directory(model_store_dir))
+      << "Model store directory " << model_store_dir << " doesn't exist";
   model_store_dir_ = model_store_dir.string();
   // Load model DB file
   fs::path db_file = db_dir / "db" / "model_db.yml";
@@ -274,8 +276,8 @@ ModelDatabase::ModelDatabase(const std::string& db_root_dir) {
   LoadModelInfo(db_file.string());
   // Load model profiles
   fs::path profile_dir = db_dir / "profiles";
-  CHECK(fs::is_directory(profile_dir)) << "Model profile directory " <<
-      profile_dir << " doesn't exist";
+  CHECK(fs::is_directory(profile_dir))
+      << "Model profile directory " << profile_dir << " doesn't exist";
   LoadModelProfiles(profile_dir.string());
 }
 
@@ -337,12 +339,13 @@ void ModelDatabase::LoadModelInfo(const std::string& db_file) {
     const auto& node = tf_share[i];
     auto info = std::make_shared<TFShareInfo>(node);
     std::vector<std::string> output_layers(info->suffix_models.size());
-    for (const auto &suffix_model : info->suffix_models) {
-      const auto &name = suffix_model.first;
+    for (const auto& suffix_model : info->suffix_models) {
+      const auto& name = suffix_model.first;
       CHECK(tf_share_models_.count(name) == 0) << "Duplicated model " << name;
       tf_share_models_[name] = info;
       CHECK(model_info_table_.count(name) == 0) << "Duplicated model " << name;
-      output_layers[suffix_model.second.suffix_index] = suffix_model.second.output_layer;
+      output_layers[suffix_model.second.suffix_index] =
+          suffix_model.second.output_layer;
 
       // FIXME: hack for the ModelInstance constructor
       YAML::Node model_info;
@@ -351,7 +354,8 @@ void ModelDatabase::LoadModelInfo(const std::string& db_file) {
       model_info_table_[model_id] = model_info;
     }
 
-    // TODO refactor ModelInstance constructor so that it doesn't look up the ModelDB Singleton
+    // TODO refactor ModelInstance constructor so that it doesn't look up the
+    // ModelDB Singleton
     YAML::Node model_info = node;
     model_info["framework"] = "tensorflow";
     model_info["model_name"] = info->hack_internal_id;
@@ -386,13 +390,13 @@ void ModelDatabase::LoadModelProfiles(const std::string& profile_dir) {
     }
   }
 
-  for (const auto &filepath : files) {
+  for (const auto& filepath : files) {
     ModelProfile profile(filepath.string());
     auto device = profile.gpu_device_name();
     if (device_profile_table_.find(device) == device_profile_table_.end()) {
       device_profile_table_.emplace(device, ProfileTable());
     }
-    auto &table = device_profile_table_[device];
+    auto& table = device_profile_table_[device];
 
     auto key_generic = profile.profile_id() + ":generic";
     auto it = table.find(key_generic);
@@ -409,31 +413,31 @@ void ModelDatabase::LoadModelProfiles(const std::string& profile_dir) {
   }
 }
 
-TFShareSuffixInfo::TFShareSuffixInfo(size_t suffix_index_, const YAML::Node &node) :
-    suffix_index(suffix_index_),
-    model_name(node["model_name"].as<std::string>()),
-    output_layer(node["output_layer"].as<std::string>()),
-    type(node["type"].as<std::string>()),
-    class_names(node["class_names"].as<std::string>()) {
-}
+TFShareSuffixInfo::TFShareSuffixInfo(size_t suffix_index_,
+                                     const YAML::Node& node)
+    : suffix_index(suffix_index_),
+      model_name(node["model_name"].as<std::string>()),
+      output_layer(node["output_layer"].as<std::string>()),
+      type(node["type"].as<std::string>()),
+      class_names(node["class_names"].as<std::string>()) {}
 
-TFShareInfo::TFShareInfo(const YAML::Node &node) :
-    model_file(node["model_file"].as<std::string>()),
-    input_layer(node["input_layer"].as<std::string>()),
-    slice_beg_vector(node["slice_beg_vector"].as<std::string>()),
-    slice_len_vector(node["slice_len_vector"].as<std::string>()),
-    image_height(node["image_height"].as<int>()),
-    image_width(node["image_width"].as<int>()) {
+TFShareInfo::TFShareInfo(const YAML::Node& node)
+    : model_file(node["model_file"].as<std::string>()),
+      input_layer(node["input_layer"].as<std::string>()),
+      slice_beg_vector(node["slice_beg_vector"].as<std::string>()),
+      slice_len_vector(node["slice_len_vector"].as<std::string>()),
+      image_height(node["image_height"].as<int>()),
+      image_width(node["image_width"].as<int>()) {
   hack_internal_id = "tf_share";
   const auto& models = node["suffix_models"];
   for (size_t i = 0; i < models.size(); ++i) {
     TFShareSuffixInfo suffix(i, models[i]);
-    CHECK(suffix_models.count(suffix.model_name) == 0) << "Duplicated model_name " << suffix.model_name;
+    CHECK(suffix_models.count(suffix.model_name) == 0)
+        << "Duplicated model_name " << suffix.model_name;
     suffix_models.emplace(suffix.model_name, suffix);
     hack_internal_id += '|';
     hack_internal_id += suffix.model_name;
   }
 }
 
-
-} // namespace nexus
+}  // namespace nexus

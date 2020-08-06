@@ -43,9 +43,9 @@ class ModelExecutor {
 
   void UpdateBackupBackends(const ModelInstanceConfig& config);
 
-  bool Preprocess(std::shared_ptr<Task> task, bool force=false);
+  bool Preprocess(std::shared_ptr<Task> task, bool force = false);
 
-  bool AddPreprocessedTask(std::shared_ptr<Task> task, bool force=false);
+  bool AddPreprocessedTask(std::shared_ptr<Task> task, bool force = false);
 
   void Postprocess(std::shared_ptr<Task> task);
 
@@ -58,8 +58,10 @@ class ModelExecutor {
   uint64_t GetPeakMemoryUsage();
 
  private:
-  std::pair<std::shared_ptr<BatchTask>, int> GetBatchTaskSlidingWindow(uint32_t batch_size);
-  std::pair<std::shared_ptr<BatchTask>, int> GetBatchTaskEarliest(uint32_t batch_size);
+  std::pair<std::shared_ptr<BatchTask>, int> GetBatchTaskSlidingWindow(
+      uint32_t batch_size);
+  std::pair<std::shared_ptr<BatchTask>, int> GetBatchTaskEarliest(
+      uint32_t batch_size);
 
   bool IncreaseOpenRequests(int cnt, bool limit_max_batch);
 
@@ -84,8 +86,8 @@ class ModelExecutor {
   std::unordered_map<uint64_t, std::shared_ptr<Task> > processing_tasks_;
   /*! \brief Priority queue of inputs based on deadline. Guarded by task_mu_. */
   std::priority_queue<std::shared_ptr<Input>,
-                      std::vector<std::shared_ptr<Input> >,
-                      CompareDeadlineItem> input_queue_;
+                      std::vector<std::shared_ptr<Input> >, CompareDeadlineItem>
+      input_queue_;
   /*! \brief Input array allocated in GPU memory to hold batch inputs. */
   std::shared_ptr<Array> input_array_;
   /*! \brief Batch index. */
@@ -116,7 +118,7 @@ class ModelExecutor {
 
 using ModelExecutorPtr = std::shared_ptr<ModelExecutor>;
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_MODEL_EXEC_H_
+#endif  // NEXUS_BACKEND_MODEL_EXEC_H_

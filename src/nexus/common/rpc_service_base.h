@@ -3,27 +3,25 @@
 
 #include <glog/logging.h>
 #include <grpc++/grpc++.h>
+
 #include <thread>
 #include <vector>
+
 #include "nexus/common/rpc_call.h"
 
 namespace nexus {
 
-template<class ServiceType>
+template <class ServiceType>
 class AsyncRpcServiceBase {
  public:
-  AsyncRpcServiceBase(std::string port, size_t nthreads):
-      AsyncRpcServiceBase("0.0.0.0", port, nthreads) {}
-  
-  AsyncRpcServiceBase(std::string ip, std::string port, size_t nthreads):
-      ip_(ip),
-      port_(port),
-      nthreads_(nthreads),
-      running_(false) {
-  }
+  AsyncRpcServiceBase(std::string port, size_t nthreads)
+      : AsyncRpcServiceBase("0.0.0.0", port, nthreads) {}
+
+  AsyncRpcServiceBase(std::string ip, std::string port, size_t nthreads)
+      : ip_(ip), port_(port), nthreads_(nthreads), running_(false) {}
 
   virtual ~AsyncRpcServiceBase() {
-  	if (running_) {
+    if (running_) {
       Stop();
     }
   }
@@ -51,10 +49,12 @@ class AsyncRpcServiceBase {
     server_->Shutdown();
     cq_->Shutdown();
 
-    void *tag;
+    void* tag;
     bool ok;
     while (cq_->Next(&tag, &ok)) {
-      LOG(WARNING) << "There is a event in the grpc::ServerCompletionQueue not handled at " << tag;
+      LOG(WARNING) << "There is a event in the grpc::ServerCompletionQueue not "
+                      "handled at "
+                   << tag;
     }
 
     for (auto& thread : thread_pool_) {
@@ -78,6 +78,6 @@ class AsyncRpcServiceBase {
   std::unique_ptr<grpc::Server> server_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_RPC_SERVICE_BASE_H_
+#endif  // NEXUS_COMMON_RPC_SERVICE_BASE_H_

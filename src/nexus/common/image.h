@@ -17,6 +17,6 @@ cv::Mat _Hack_DecodeImageByFilename(const ImageProto &image,
 
 cv::Mat DecodeImage(const ImageProto &image, ChannelOrder order);
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_IMAGE_H_
+#endif  // NEXUS_COMMON_IMAGE_H_

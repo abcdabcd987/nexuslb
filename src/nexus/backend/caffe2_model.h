@@ -62,8 +62,8 @@ class Caffe2Model : public ModelInstance {
   // size of output in a single batch
   size_t output_size_;
   // Input tensor
-  std::unordered_map<uint32_t,
-                     std::pair<std::string, caffe2::Blob*> > input_blobs_;
+  std::unordered_map<uint32_t, std::pair<std::string, caffe2::Blob*> >
+      input_blobs_;
   bool first_input_array_;
   // Output tensor
   caffe2::TensorCUDA* output_tensor_;
@@ -73,12 +73,12 @@ class Caffe2Model : public ModelInstance {
   std::vector<float> mean_value_;
   std::vector<float> mean_blob_;
   float scale_;
-  
+
   // transformer for input
-  //std::unique_ptr<caffe::DataTransformer<float> > transformer_;
+  // std::unique_ptr<caffe::DataTransformer<float> > transformer_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_CAFFE2_MODEL_H_
+#endif  // NEXUS_BACKEND_CAFFE2_MODEL_H_

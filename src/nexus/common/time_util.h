@@ -90,6 +90,6 @@ class TimeSystem {
   std::thread thread_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_TIME_UTIL_H_
+#endif  // NEXUS_COMMON_TIME_UTIL_H_

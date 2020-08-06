@@ -1,21 +1,22 @@
 #include <boost/filesystem.hpp>
 #include <opencv2/opencv.hpp>
-// #include <glog/logging.h>  // https://github.com/tensorflow/tensorflow/issues/25913
-#include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
-
+// #include <glog/logging.h>  //
+// https://github.com/tensorflow/tensorflow/issues/25913
 #include "nexus/backend/slice.h"
 #include "nexus/backend/tensorflow_model.h"
 #include "nexus/backend/utils.h"
 #include "nexus/common/image.h"
+#include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 
 namespace fs = boost::filesystem;
 
 namespace nexus {
 namespace backend {
 
-TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
-    ModelInstance(gpu_id, config),
-    first_input_array_(true), num_suffixes_(0) {
+TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
+    : ModelInstance(gpu_id, config),
+      first_input_array_(true),
+      num_suffixes_(0) {
   CHECK(model_info_["model_file"]) << "Missing model_file in the model info";
 
   // Init session options
@@ -26,8 +27,8 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
   if (config.memory_usage() > 0) {
     double memory_usage = config.memory_usage();
     LOG(INFO) << "model memory usage: " << memory_usage << " B";
-    gpu_opt->set_per_process_gpu_memory_fraction(
-        memory_usage / gpu_device_->TotalMemory());
+    gpu_opt->set_per_process_gpu_memory_fraction(memory_usage /
+                                                 gpu_device_->TotalMemory());
   }
   (*cpu_option_.config.mutable_device_count())["GPU"] = 0;
 
@@ -35,15 +36,15 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
   session_.reset(tf::NewSession(gpu_option_));
   fs::path model_dir = fs::path(model_info_["model_dir"].as<std::string>());
   fs::path model_file = model_dir / model_info_["model_file"].as<std::string>();
-  CHECK(fs::exists(model_file)) << "model file " << model_file <<
-      " doesn't exist";
+  CHECK(fs::exists(model_file))
+      << "model file " << model_file << " doesn't exist";
   tf::GraphDef graph_def;
   tf::Status status;
-  status = tf::ReadBinaryProto(gpu_option_.env, model_file.string(),
-                               &graph_def);
+  status =
+      tf::ReadBinaryProto(gpu_option_.env, model_file.string(), &graph_def);
   if (!status.ok()) {
-    LOG(FATAL) << "Failed to load model " << model_file << " : " <<
-        status.ToString();
+    LOG(FATAL) << "Failed to load model " << model_file << " : "
+               << status.ToString();
   }
   status = session_->Create(graph_def);
   if (!status.ok()) {
@@ -60,20 +61,21 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
   }
   // Tensorflow uses NHWC by default. More details see
   // https://www.tensorflow.org/versions/master/performance/performance_guide
-  input_shape_.set_dims({static_cast<int>(max_batch_), image_height_, image_width_, 3});
+  input_shape_.set_dims(
+      {static_cast<int>(max_batch_), image_height_, image_width_, 3});
   input_size_ = input_shape_.NumElements(1);
   input_layer_ = model_info_["input_layer"].as<std::string>();
 
   if (model_info_["output_layer"].IsSequence()) {
     for (size_t i = 0; i < model_info_["output_layer"].size(); ++i) {
-      output_layers_.push_back(model_info_["output_layer"][i].as<std::string>());
+      output_layers_.push_back(
+          model_info_["output_layer"][i].as<std::string>());
     }
   } else {
     output_layers_.push_back(model_info_["output_layer"].as<std::string>());
   }
-  LOG(INFO) << "Model " << model_session_id_ << ", input: " <<
-      input_layer_ << ", shape: " << input_shape_ << " (" << input_size_ <<
-      ")";
+  LOG(INFO) << "Model " << model_session_id_ << ", input: " << input_layer_
+            << ", shape: " << input_shape_ << " (" << input_size_ << ")";
 
   if (model_name() == "ssd_mobilenet" || model_name() == "ssd_mobilenet_0.75") {
     input_data_type_ = DT_UINT8;
@@ -98,17 +100,21 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
     num_suffixes_ = model_info_["suffix_models"].size();
     tf::TensorShape shape;
     shape.AddDim(num_suffixes_);
-    slice_beg_tensor_.reset(new tf::Tensor(/* gpu_allocator_, */tf::DT_INT32, shape));
-    slice_end_tensor_.reset(new tf::Tensor(/* gpu_allocator_, */tf::DT_INT32, shape));
+    slice_beg_tensor_.reset(
+        new tf::Tensor(/* gpu_allocator_, */ tf::DT_INT32, shape));
+    slice_end_tensor_.reset(
+        new tf::Tensor(/* gpu_allocator_, */ tf::DT_INT32, shape));
     set_slice_tensor(slice_beg_tensor_, std::vector<int32_t>(num_suffixes_, 0));
     set_slice_tensor(slice_end_tensor_, std::vector<int32_t>(num_suffixes_, 1));
-    inputs.emplace_back(slice_beg_vector, slice_beg_tensor_->Slice(0, num_suffixes_));
-    inputs.emplace_back(slice_end_vector, slice_end_tensor_->Slice(0, num_suffixes_));
+    inputs.emplace_back(slice_beg_vector,
+                        slice_beg_tensor_->Slice(0, num_suffixes_));
+    inputs.emplace_back(slice_end_vector,
+                        slice_end_tensor_->Slice(0, num_suffixes_));
   }
   status = session_->Run(inputs, output_layers_, {}, &out_tensors);
   if (!status.ok()) {
-    LOG(FATAL) << "Failed to run " << model_session_id_ << ": " <<
-        status.ToString();
+    LOG(FATAL) << "Failed to run " << model_session_id_ << ": "
+               << status.ToString();
   }
   for (uint i = 0; i < out_tensors.size(); ++i) {
     tf::TensorShape tf_shape = out_tensors[i].shape();
@@ -123,21 +129,21 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
     size_t out_size = shape.NumElements(1);
     output_shapes_.emplace(output_layers_[i], shape);
     output_sizes_.emplace(output_layers_[i], out_size);
-    LOG(INFO) << "Output " << output_layers_[i] << ", shape: " << shape <<
-        " (" << out_size << ")";
+    LOG(INFO) << "Output " << output_layers_[i] << ", shape: " << shape << " ("
+              << out_size << ")";
   }
 
   // Load preprocessing configs
   if (model_info_["input_mean"]) {
-    CHECK_EQ(model_info_["input_mean"].size(), 3) << "input_mean must have " <<
-        "3 values";
+    CHECK_EQ(model_info_["input_mean"].size(), 3) << "input_mean must have "
+                                                  << "3 values";
     for (uint i = 0; i < model_info_["input_mean"].size(); ++i) {
       input_mean_.push_back(model_info_["input_mean"][i].as<float>());
     }
   }
   if (model_info_["input_std"]) {
-    CHECK_EQ(model_info_["input_std"].size(), 3) << "input_std must have " <<
-        "3 values";
+    CHECK_EQ(model_info_["input_std"].size(), 3) << "input_std must have "
+                                                 << "3 values";
     for (uint i = 0; i < model_info_["input_std"].size(); ++i) {
       input_std_.push_back(model_info_["input_std"][i].as<float>());
     }
@@ -145,19 +151,15 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config):
 
   // Load class names
   if (model_info_["class_names"]) {
-    fs::path cns_path = model_dir / model_info_["class_names"].
-                        as<std::string>();
+    fs::path cns_path =
+        model_dir / model_info_["class_names"].as<std::string>();
     LoadClassnames(cns_path.string(), &classnames_);
   }
 }
 
-TensorflowModel::~TensorflowModel() {
-  session_->Close();
-}
+TensorflowModel::~TensorflowModel() { session_->Close(); }
 
-Shape TensorflowModel::InputShape() {
-  return input_shape_;
-}
+Shape TensorflowModel::InputShape() { return input_shape_; }
 
 std::unordered_map<std::string, Shape> TensorflowModel::OutputShapes() {
   return output_shapes_;
@@ -174,13 +176,14 @@ ArrayPtr TensorflowModel::CreateInputGpuArray() {
   char* gpu_data = const_cast<char*>(tensor->tensor_data().data());
   size_t nbytes = tensor->NumElements() * type_size(input_data_type_);
   auto buf = std::make_shared<Buffer>(gpu_data, nbytes, gpu_device_);
-  auto arr = std::make_shared<Array>(input_data_type_, tensor->NumElements(),
-                                     buf);
+  auto arr =
+      std::make_shared<Array>(input_data_type_, tensor->NumElements(), buf);
   arr->set_tag(input_tensors_.size() - 1);
   return arr;
 }
 
-std::unordered_map<std::string, ArrayPtr> TensorflowModel::GetOutputGpuArrays(){
+std::unordered_map<std::string, ArrayPtr>
+TensorflowModel::GetOutputGpuArrays() {
   // Because TF always returns output in CPU memory, doesn't support in-place
   // output in GPU memory
   return {};
@@ -205,8 +208,7 @@ void TensorflowModel::Preprocess(std::shared_ptr<Task> task) {
   auto prepare_image_ssd = [&](cv::Mat& image) {
     auto in_arr = std::make_shared<Array>(DT_UINT8, input_size_, cpu_device_);
     // create a cv::Mat using buffer allocated in the in_arr
-    cv::Mat resized(image_width_, image_height_, CV_8UC3,
-                    in_arr->Data<void>());
+    cv::Mat resized(image_width_, image_height_, CV_8UC3, in_arr->Data<void>());
     cv::resize(image, resized, cv::Size(image_width_, image_height_));
     task->AppendInput(in_arr);
   };
@@ -228,9 +230,9 @@ void TensorflowModel::Preprocess(std::shared_ptr<Task> task) {
       if (query.window_size() > 0) {
         for (int i = 0; i < query.window_size(); ++i) {
           const auto& rect = query.window(i);
-          cv::Mat crop_img = img(cv::Rect(
-              rect.left(), rect.top(), rect.right() - rect.left(),
-              rect.bottom() - rect.top()));
+          cv::Mat crop_img =
+              img(cv::Rect(rect.left(), rect.top(), rect.right() - rect.left(),
+                           rect.bottom() - rect.top()));
           prepare_image(crop_img);
         }
       } else {
@@ -248,11 +250,11 @@ void TensorflowModel::Preprocess(std::shared_ptr<Task> task) {
 
 void TensorflowModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   size_t batch_size = batch_task->batch_size();
-  auto in_tensor = input_tensors_[batch_task->GetInputArray()->tag()]->Slice(
-      0, batch_size);
+  auto in_tensor =
+      input_tensors_[batch_task->GetInputArray()->tag()]->Slice(0, batch_size);
   std::vector<tf::Tensor> out_tensors;
-  tf::Status status = session_->Run({{input_layer_, in_tensor}},
-                                    output_layers_, {}, &out_tensors);
+  tf::Status status = session_->Run({{input_layer_, in_tensor}}, output_layers_,
+                                    {}, &out_tensors);
   if (!status.ok()) {
     LOG(ERROR) << "Failed to run tensorflow: " << status.ToString();
     return;
@@ -321,11 +323,12 @@ tf::Tensor* TensorflowModel::NewInputTensor() {
   return tensor;
 }
 
-void TensorflowModel::MarshalDetectionResult(
-    const QueryProto& query, std::shared_ptr<Output> output,
-    int im_height, int im_width, QueryResultProto* result) {
-  int num_boxes = static_cast<int>(output->arrays.at("num_detections")->
-                                   Data<float>()[0]);
+void TensorflowModel::MarshalDetectionResult(const QueryProto& query,
+                                             std::shared_ptr<Output> output,
+                                             int im_height, int im_width,
+                                             QueryResultProto* result) {
+  int num_boxes =
+      static_cast<int>(output->arrays.at("num_detections")->Data<float>()[0]);
   float* boxes = output->arrays.at("detection_boxes")->Data<float>();
   float* scores = output->arrays.at("detection_scores")->Data<float>();
   float* classes = output->arrays.at("detection_classes")->Data<float>();
@@ -338,8 +341,7 @@ void TensorflowModel::MarshalDetectionResult(
   }
   for (int i = 0; i < num_boxes; ++i) {
     auto record = result->add_output();
-    if (FLAGS_hack_reply_omit_output)
-      continue;
+    if (FLAGS_hack_reply_omit_output) continue;
     int class_id = static_cast<int>(classes[i]);
     for (auto field : output_fields) {
       if (field == "rect") {
@@ -376,12 +378,13 @@ void TensorflowModel::MarshalDetectionResult(
   }
 }
 
-void TensorflowModel::set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst, const std::vector<int32_t> &src) {
+void TensorflowModel::set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst,
+                                       const std::vector<int32_t>& src) {
   CHECK_EQ(dst->dtype(), tf::DT_INT32);
   CHECK_EQ(dst->NumElements(), src.size());
-  Memcpy(const_cast<char*>(dst->tensor_data().data()), cpu_device_,
-      src.data(), cpu_device_, sizeof(int32_t) * src.size());
+  Memcpy(const_cast<char*>(dst->tensor_data().data()), cpu_device_, src.data(),
+         cpu_device_, sizeof(int32_t) * src.size());
 }
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus

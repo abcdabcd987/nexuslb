@@ -1,5 +1,8 @@
-#include <chrono>
+#include "nexus/scheduler/scheduler.h"
+
 #include <gtest/gtest.h>
+
+#include <chrono>
 #include <memory>
 
 #include "nexus/common/config.h"
@@ -8,7 +11,6 @@
 #include "nexus/proto/nnquery.pb.h"
 #include "nexus/scheduler/backend_delegate.h"
 #include "nexus/scheduler/frontend_delegate.h"
-#include "nexus/scheduler/scheduler.h"
 
 DECLARE_string(model_db);
 DECLARE_int32(beacon);
@@ -83,7 +85,7 @@ class SchedulerTest : public ::testing::Test {
     scheduler_->UpdateBackendStats(ctx, request, &reply);
     ASSERT_EQ(reply.status(), CTRL_OK);
   }
-  
+
   void TickAll() {
     for (auto backend : backends_) {
       backend->Tick();
@@ -128,5 +130,5 @@ TEST_F(SchedulerTest, EpochSchedule) {
   scheduler_->EpochSchedule();
 }
 
-} // namespace scheduler
-} // namespace nexus
+}  // namespace scheduler
+}  // namespace nexus

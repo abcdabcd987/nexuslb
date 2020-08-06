@@ -15,9 +15,8 @@ using ExecFunc = std::function<std::vector<VariablePtr>(
 
 class ExecBlock {
  public:
-  ExecBlock(int id, ExecFunc func, std::vector<std::string> required_vars) :
-      id_(id),
-      func_(func) {
+  ExecBlock(int id, ExecFunc func, std::vector<std::string> required_vars)
+      : id_(id), func_(func) {
     for (auto var_name : required_vars) {
       dependency_.insert(var_name);
     }
@@ -37,7 +36,7 @@ class ExecBlock {
   std::unordered_set<std::string> dependency_;
 };
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus
 
-#endif // NEXUS_APP_EXEC_BLOCK_H_
+#endif  // NEXUS_APP_EXEC_BLOCK_H_

@@ -1,32 +1,31 @@
+#include "nexus/common/backend_pool.h"
+
 #include <glog/logging.h>
 #include <grpc++/grpc++.h>
 
-#include "nexus/common/backend_pool.h"
 #include "nexus/common/util.h"
 
 namespace nexus {
 
 BackendSession::BackendSession(const BackendInfo& info,
                                boost::asio::io_context& io_context,
-                               MessageHandler* handler):
-    Connection(io_context, handler),
-    io_context_(io_context),
-    node_id_(info.node_id()),
-    ip_(info.ip()),
-    server_port_(info.server_port()),
-    rpc_port_(info.rpc_port()),
-    running_(false),
-    utilization_(-1.) {
+                               MessageHandler* handler)
+    : Connection(io_context, handler),
+      io_context_(io_context),
+      node_id_(info.node_id()),
+      ip_(info.ip()),
+      server_port_(info.server_port()),
+      rpc_port_(info.rpc_port()),
+      running_(false),
+      utilization_(-1.) {
   std::stringstream rpc_addr;
   rpc_addr << ip_ << ":" << rpc_port_;
-  auto channel = grpc::CreateChannel(rpc_addr.str(),
-                                     grpc::InsecureChannelCredentials());
+  auto channel =
+      grpc::CreateChannel(rpc_addr.str(), grpc::InsecureChannelCredentials());
   stub_ = BackendCtrl::NewStub(channel);
 }
 
-BackendSession::~BackendSession() {
-  Stop();
-}
+BackendSession::~BackendSession() { Stop(); }
 
 void BackendSession::Start() {
   // Connect to backend server
@@ -44,21 +43,21 @@ void BackendSession::Stop() {
 void BackendSession::DoConnect() {
   boost::asio::ip::tcp::resolver::iterator endpoint;
   boost::asio::ip::tcp::resolver resolver(io_context_);
-  endpoint = resolver.resolve({ ip_, server_port_ });
-  boost::asio::async_connect(
-      socket_, endpoint,
-      [this](boost::system::error_code ec,
-             boost::asio::ip::tcp::resolver::iterator) {
-        if (ec) {
-          handler_->HandleError(shared_from_this(), ec);
-        } else {
-          boost::asio::ip::tcp::no_delay option(true);
-          socket_.set_option(option);
-          running_ = true;
-          LOG(INFO) << "Connected to backend " << node_id_;
-          DoReadHeader();
-        }
-      });
+  endpoint = resolver.resolve({ip_, server_port_});
+  boost::asio::async_connect(socket_, endpoint,
+                             [this](boost::system::error_code ec,
+                                    boost::asio::ip::tcp::resolver::iterator) {
+                               if (ec) {
+                                 handler_->HandleError(shared_from_this(), ec);
+                               } else {
+                                 boost::asio::ip::tcp::no_delay option(true);
+                                 socket_.set_option(option);
+                                 running_ = true;
+                                 LOG(INFO)
+                                     << "Connected to backend " << node_id_;
+                                 DoReadHeader();
+                               }
+                             });
 }
 
 double BackendSession::GetUtilization() {
@@ -78,7 +77,7 @@ double BackendSession::GetUtilization() {
   }
   utilization_ = reply.utilization();
   expire_ = Clock::now() + std::chrono::milliseconds(reply.valid_ms());
-  //LOG(INFO) << "Backup " << node_id_ << " utilization " << utilization_;
+  // LOG(INFO) << "Backup " << node_id_ << " utilization " << utilization_;
   return utilization_;
 }
 
@@ -119,7 +118,7 @@ std::vector<uint32_t> BackendPool::UpdateBackendList(
     std::unordered_set<uint32_t> list) {
   std::lock_guard<std::mutex> lock(mu_);
   // Remove backends that are not on the list
-  for (auto iter = backends_.begin(); iter != backends_.end(); ) {
+  for (auto iter = backends_.begin(); iter != backends_.end();) {
     if (list.count(iter->first) == 0) {
       auto backend_id = iter->first;
       iter->second->Stop();
@@ -147,4 +146,4 @@ void BackendPool::StopAll() {
   backends_.clear();
 }
 
-} // namespace nexus
+}  // namespace nexus

@@ -1,9 +1,10 @@
 #ifndef NEXUS_COMMON_MODEL_DB_H_
 #define NEXUS_COMMON_MODEL_DB_H_
 
+#include <yaml-cpp/yaml.h>
+
 #include <memory>
 #include <unordered_map>
-#include <yaml-cpp/yaml.h>
 
 namespace nexus {
 
@@ -58,7 +59,7 @@ class ModelProfile {
   std::unordered_map<uint32_t, ProfileEntry> forward_lats_;
   ProfileEntry preprocess_;
   ProfileEntry postprocess_;
-  float network_latency_us_ = 2000; // us
+  float network_latency_us_ = 2000;  // us
 };
 
 struct TFShareSuffixInfo {
@@ -68,7 +69,7 @@ struct TFShareSuffixInfo {
   std::string type;
   std::string class_names;
 
-  TFShareSuffixInfo(size_t suffix_index_, const YAML::Node &node);
+  TFShareSuffixInfo(size_t suffix_index_, const YAML::Node& node);
 };
 
 struct TFShareInfo {
@@ -81,7 +82,7 @@ struct TFShareInfo {
   std::unordered_map<std::string, TFShareSuffixInfo> suffix_models;
 
   std::string hack_internal_id;
-  explicit TFShareInfo(const YAML::Node &node);
+  explicit TFShareInfo(const YAML::Node& node);
 };
 
 class ModelDatabase {
@@ -101,10 +102,11 @@ class ModelDatabase {
   int GetSharePrefixLength(const std::string& model_id1,
                            const std::string& model_id2) const;
 
-  std::vector<std::string> GetPrefixShareModels(const std::string& model_id)
-      const;
+  std::vector<std::string> GetPrefixShareModels(
+      const std::string& model_id) const;
 
-  std::shared_ptr<TFShareInfo> GetTFShareInfo(const std::string& model_name) const;
+  std::shared_ptr<TFShareInfo> GetTFShareInfo(
+      const std::string& model_name) const;
 
  private:
   ModelDatabase(const std::string& model_root);
@@ -128,9 +130,10 @@ class ModelDatabase {
 
   std::unordered_map<std::string, PrefixMap> share_prefix_models_;
   /*! \brief Map from model name to TFShareInfo */
-  std::unordered_map<std::string, std::shared_ptr<TFShareInfo>> tf_share_models_;
+  std::unordered_map<std::string, std::shared_ptr<TFShareInfo>>
+      tf_share_models_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_MODEL_DB_H_
+#endif  // NEXUS_COMMON_MODEL_DB_H_

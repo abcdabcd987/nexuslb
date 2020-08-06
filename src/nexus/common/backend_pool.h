@@ -72,6 +72,6 @@ class BackendPool {
   std::mutex mu_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_BACKEND_POOL_H_
+#endif  // NEXUS_COMMON_BACKEND_POOL_H_

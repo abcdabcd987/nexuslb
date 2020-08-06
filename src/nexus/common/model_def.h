@@ -12,8 +12,7 @@
 namespace nexus {
 
 inline std::string ModelID(const std::string& framework,
-                           const std::string& model_name,
-                           uint32_t version) {
+                           const std::string& model_name, uint32_t version) {
   std::stringstream ss;
   ss << framework << ":" << model_name << ":" << version;
   return ss.str();
@@ -40,19 +39,19 @@ inline std::string ModelSessionToProfileID(const ModelSession& model_session) {
   ss << model_session.framework() << ":" << model_session.model_name() << ":"
      << model_session.version();
   if (model_session.image_height() > 0) {
-    ss << ":" << model_session.image_height() << "x" <<
-        model_session.image_width();
+    ss << ":" << model_session.image_height() << "x"
+       << model_session.image_width();
   }
   return ss.str();
 }
 
 inline std::string ModelSessionToString(const ModelSession& model_session) {
   std::stringstream ss;
-  ss << model_session.framework() << ":" <<
-      model_session.model_name() << ":" << model_session.version();
+  ss << model_session.framework() << ":" << model_session.model_name() << ":"
+     << model_session.version();
   if (model_session.image_height() > 0) {
-    ss << ":" << model_session.image_height() << "x" <<
-        model_session.image_width();
+    ss << ":" << model_session.image_height() << "x"
+       << model_session.image_width();
   }
   ss << ":" << model_session.latency_sla();
   return ss.str();
@@ -83,6 +82,6 @@ inline bool ParseModelSession(const std::string& str, ModelSession* sess) {
   return true;
 }
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_MODEL_DEF_H_
+#endif  // NEXUS_COMMON_MODEL_DEF_H_

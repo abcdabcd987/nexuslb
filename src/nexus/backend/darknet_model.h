@@ -20,7 +20,7 @@ class DarknetModel : public ModelInstance {
   ~DarknetModel();
 
   Shape InputShape() final;
-  
+
   std::unordered_map<std::string, Shape> OutputShapes() final;
 
   ArrayPtr CreateInputGpuArray() final;
@@ -34,9 +34,9 @@ class DarknetModel : public ModelInstance {
   void Postprocess(std::shared_ptr<Task> task) final;
 
  private:
-  void MarshalDetectionResult(
-      const QueryProto& query, const float* probs, size_t nprobs,
-      const int* boxes, size_t nboxes, QueryResultProto* result);
+  void MarshalDetectionResult(const QueryProto& query, const float* probs,
+                              size_t nprobs, const int* boxes, size_t nboxes,
+                              QueryResultProto* result);
 
   network* net_;
   int image_height_;
@@ -51,7 +51,7 @@ class DarknetModel : public ModelInstance {
   bool first_input_array_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_DARKNET_MODEL_H_
+#endif  // NEXUS_BACKEND_DARKNET_MODEL_H_

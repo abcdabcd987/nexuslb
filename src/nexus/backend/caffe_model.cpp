@@ -1,11 +1,13 @@
+#include "nexus/backend/caffe_model.h"
+
+#include <glog/logging.h>
+
 #include <boost/filesystem.hpp>
 #include <boost/make_shared.hpp>
 #include <fstream>
-#include <glog/logging.h>
 #include <opencv2/opencv.hpp>
 #include <sstream>
 
-#include "nexus/backend/caffe_model.h"
 #include "nexus/backend/slice.h"
 #include "nexus/backend/utils.h"
 #include "nexus/common/image.h"
@@ -16,8 +18,8 @@ namespace fs = boost::filesystem;
 namespace nexus {
 namespace backend {
 
-CaffeModel::CaffeModel(int gpu_id, const ModelInstanceConfig& config) :
-    ModelInstance(gpu_id, config) {
+CaffeModel::CaffeModel(int gpu_id, const ModelInstanceConfig& config)
+    : ModelInstance(gpu_id, config) {
   CHECK(model_info_["cfg_file"]) << "Missing cfg_file in the model info";
   CHECK(model_info_["weight_file"]) << "Missing weight_file in the model info";
   CHECK(model_info_["mean_file"] || model_info_["mean_value"])
@@ -25,12 +27,11 @@ CaffeModel::CaffeModel(int gpu_id, const ModelInstanceConfig& config) :
   // load caffe model
   fs::path model_dir = fs::path(model_info_["model_dir"].as<std::string>());
   fs::path cfg_path = model_dir / model_info_["cfg_file"].as<std::string>();
-  fs::path weight_path = model_dir / model_info_["weight_file"].
-                         as<std::string>();
-  CHECK(fs::exists(cfg_path)) << "cfg file " << cfg_path <<
-      " doesn't exist";
-  CHECK(fs::exists(weight_path)) << "weight file " << weight_path <<
-      " doesn't exist";
+  fs::path weight_path =
+      model_dir / model_info_["weight_file"].as<std::string>();
+  CHECK(fs::exists(cfg_path)) << "cfg file " << cfg_path << " doesn't exist";
+  CHECK(fs::exists(weight_path))
+      << "weight file " << weight_path << " doesn't exist";
 
   // init gpu device
   caffe::Caffe::SetDevice(gpu_id);
@@ -55,11 +56,11 @@ CaffeModel::CaffeModel(int gpu_id, const ModelInstanceConfig& config) :
   output_size_ = output_shape_.NumElements(1);
   image_height_ = input_shape_.dim(2);
   image_width_ = input_shape_.dim(3);
-  
-  LOG(INFO) << "Model " << model_session_id_ << ": input shape " <<
-      input_shape_ << " (" << input_size_ << "), output shape " <<
-      output_shape_ << " (" << output_size_ << ")";
-  
+
+  LOG(INFO) << "Model " << model_session_id_ << ": input shape " << input_shape_
+            << " (" << input_size_ << "), output shape " << output_shape_
+            << " (" << output_size_ << ")";
+
   // Set up data transformer
   caffe::TransformationParameter transform_param;
   if (model_info_["scale"]) {
@@ -71,39 +72,37 @@ CaffeModel::CaffeModel(int gpu_id, const ModelInstanceConfig& config) :
     transform_param.set_mean_file(mean_file.string());
   } else {
     const YAML::Node& mean_values = model_info_["mean_value"];
-    CHECK(mean_values.IsSequence()) <<
-        "mean_value in the config is not sequence";
+    CHECK(mean_values.IsSequence())
+        << "mean_value in the config is not sequence";
     for (uint i = 0; i < mean_values.size(); ++i) {
       transform_param.add_mean_value(mean_values[i].as<float>());
     }
   }
-  transformer_.reset(new caffe::DataTransformer<float>(
-      transform_param, net_->phase()));
+  transformer_.reset(
+      new caffe::DataTransformer<float>(transform_param, net_->phase()));
 
   // whether enbable prefix batching
   if (model_info_["prefix_layer"]) {
     prefix_layer_ = model_info_["prefix_layer"].as<std::string>();
     prefix_index_ = net_->layer_index_by_name(prefix_layer_);
-    LOG(INFO) << "Prefix layer up to " << prefix_layer_ << "(" <<
-        prefix_index_ << ")";
+    LOG(INFO) << "Prefix layer up to " << prefix_layer_ << "(" << prefix_index_
+              << ")";
   } else {
     prefix_layer_ = "";
     prefix_index_ = -1;
   }
   // load classnames
   if (model_info_["class_names"]) {
-    fs::path cns_path = model_dir / model_info_["class_names"].
-                        as<std::string>();
+    fs::path cns_path =
+        model_dir / model_info_["class_names"].as<std::string>();
     LoadClassnames(cns_path.string(), &classnames_);
   }
 }
 
-Shape CaffeModel::InputShape() {
-  return input_shape_;
-}
+Shape CaffeModel::InputShape() { return input_shape_; }
 
 std::unordered_map<std::string, Shape> CaffeModel::OutputShapes() {
-  return {{ output_blob_name_, output_shape_ }};
+  return {{output_blob_name_, output_shape_}};
 }
 
 ArrayPtr CaffeModel::CreateInputGpuArray() {
@@ -128,7 +127,7 @@ std::unordered_map<std::string, ArrayPtr> CaffeModel::GetOutputGpuArrays() {
   auto buf = std::make_shared<Buffer>(blob->mutable_gpu_data(),
                                       nfloats * sizeof(float), gpu_device_);
   auto arr = std::make_shared<Array>(DT_FLOAT, nfloats, buf);
-  return {{ output_blob_name_, arr }};
+  return {{output_blob_name_, arr}};
 }
 
 void CaffeModel::Preprocess(std::shared_ptr<Task> task) {
@@ -152,9 +151,9 @@ void CaffeModel::Preprocess(std::shared_ptr<Task> task) {
       if (query.window_size() > 0) {
         for (int i = 0; i < query.window_size(); ++i) {
           const auto& rect = query.window(i);
-          cv::Mat crop_img = cv_img_bgr(cv::Rect(
-              rect.left(), rect.top(), rect.right() - rect.left(),
-              rect.bottom() - rect.top()));
+          cv::Mat crop_img = cv_img_bgr(cv::Rect(rect.left(), rect.top(),
+                                                 rect.right() - rect.left(),
+                                                 rect.bottom() - rect.top()));
           prepare_image(crop_img);
         }
       } else {
@@ -186,8 +185,8 @@ void CaffeModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   auto out_arr = batch_task->GetOutputArray(output_blob_name_);
   Memcpy(out_arr->Data<void>(), cpu_device_, output_blob->gpu_data(),
          gpu_device_, output_blob->count() * sizeof(float));
-  batch_task->SliceOutputBatch({{
-        output_blob_name_, Slice(batch, output_size_) }});
+  batch_task->SliceOutputBatch(
+      {{output_blob_name_, Slice(batch, output_size_)}});
 }
 
 void CaffeModel::Postprocess(std::shared_ptr<Task> task) {
@@ -224,5 +223,5 @@ void CaffeModel::LoadClassnames(const std::string& filepath) {
   fs.close();
 }
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus

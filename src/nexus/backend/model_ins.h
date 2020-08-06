@@ -86,7 +86,8 @@ class ModelInstance {
                                                      size_t nfloats);
   /*!
    * \brief Remove the input gpu array.
-   * \param arr Input array geneated by CreateInputGpuArray or CreateInputGpuArrayWithRawPointer
+   * \param arr Input array geneated by CreateInputGpuArray or
+   * CreateInputGpuArrayWithRawPointer
    */
   virtual void RemoveInputGpuArray(ArrayPtr arr);
   /*!
@@ -94,7 +95,8 @@ class ModelInstance {
    * max batch size. This function should be only called once.
    * \return Map from output name to array pointer with buffer allocated
    * in GPU memory.
-   * Empty map might be returned if a model doesn't support output in GPU memory.
+   * Empty map might be returned if a model doesn't support output in GPU
+   * memory.
    */
   virtual std::unordered_map<std::string, ArrayPtr> GetOutputGpuArrays() = 0;
   /*!
@@ -149,7 +151,7 @@ class ModelInstance {
 void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
                          std::unique_ptr<ModelInstance>* model);
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_MODEL_INS_H_
+#endif  // NEXUS_BACKEND_MODEL_INS_H_

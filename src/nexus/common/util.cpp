@@ -2,6 +2,7 @@
 #include <glog/logging.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+
 #include <sstream>
 
 #ifdef USE_GPU
@@ -34,13 +35,13 @@ void Memcpy(void* dst, const Device* dst_device, const void* src,
   if (dst_type == kCPU) {
     if (src_type == kCPU) {
       memcpy(dst, src, nbytes);
-    } else { // src_type == kGPU
+    } else {  // src_type == kGPU
       NEXUS_CUDA_CHECK(cudaMemcpy(dst, src, nbytes, cudaMemcpyDeviceToHost));
     }
-  } else { // dst_type == kGPU
+  } else {  // dst_type == kGPU
     if (src_type == kCPU) {
       NEXUS_CUDA_CHECK(cudaMemcpy(dst, src, nbytes, cudaMemcpyHostToDevice));
-    } else { // src_type == kGPU
+    } else {  // src_type == kGPU
       NEXUS_CUDA_CHECK(cudaMemcpy(dst, src, nbytes, cudaMemcpyDeviceToDevice));
     }
   }
@@ -54,7 +55,7 @@ void Memcpy(void* dst, const Device* dst_device, const void* src,
 namespace {
 /*! \brief the list of all IPv4 addresses */
 std::vector<in_addr> Ipv4Interfaces;
-} // namespace
+}  // namespace
 
 void ListIpv4Address() {
   if (Ipv4Interfaces.size() > 0) {
@@ -71,7 +72,7 @@ void ListIpv4Address() {
     }
     if (ifa->ifa_addr->sa_family == AF_INET) {
       // IPv4 Address
-      in_addr* addr = &((sockaddr_in*) ifa->ifa_addr)->sin_addr;
+      in_addr* addr = &((sockaddr_in*)ifa->ifa_addr)->sin_addr;
       Ipv4Interfaces.push_back(*addr);
     } else if (ifa->ifa_addr->sa_family == AF_INET6) {
       continue;
@@ -89,9 +90,9 @@ void ListIpv4Address() {
 }
 
 void ConvertPrefix(const std::string& prefix, uint32_t* addr, uint32_t* mask) {
-  char *pref = new char[prefix.length() + 1];
+  char* pref = new char[prefix.length() + 1];
   strcpy(pref, prefix.c_str());
-  char *pch = strchr(pref, '/');
+  char* pch = strchr(pref, '/');
   if (pch == nullptr) {
     *mask = 0xffffffff;
   } else {
@@ -106,7 +107,7 @@ void ConvertPrefix(const std::string& prefix, uint32_t* addr, uint32_t* mask) {
   uint32_t prefix_addr = 0;
   pch = strtok(pref, ".");
   while (pch != nullptr) {
-    prefix_addr = (prefix_addr << 8) | (uint8_t) atoi(pch);
+    prefix_addr = (prefix_addr << 8) | (uint8_t)atoi(pch);
     pch = strtok(NULL, ".");
   }
   *addr = prefix_addr & *mask;
@@ -131,4 +132,4 @@ std::string GetIpAddress(const std::string& prefix) {
   return "";
 }
 
-} // namespace nexus
+}  // namespace nexus

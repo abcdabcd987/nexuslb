@@ -15,9 +15,8 @@ void PostprocessClassification(
     const QueryProto& query, const float* prob, size_t nprobs,
     QueryResultProto* result,
     const std::unordered_map<int, std::string>* classnames = nullptr);
-                               
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_UTILS_H_
+#endif  // NEXUS_BACKEND_UTILS_H_

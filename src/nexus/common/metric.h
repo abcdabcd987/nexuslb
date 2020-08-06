@@ -23,7 +23,7 @@ class Counter : public Metric {
   void Increase(uint64_t value);
 
   void Reset() final;
-  
+
  private:
   std::atomic<uint64_t> count_;
 };
@@ -83,11 +83,11 @@ class MetricRegistry {
 
  private:
   MetricRegistry() {}
-  
+
   std::mutex mutex_;
   std::unordered_set<std::shared_ptr<Metric> > metrics_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_METRIC_H_
+#endif  // NEXUS_COMMON_METRIC_H_

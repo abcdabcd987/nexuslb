@@ -31,7 +31,7 @@ class Worker {
   std::thread thread_;
 };
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus
 
-#endif // NEXUS_APP_MESSAGE_PROCESSOR_H_
+#endif  // NEXUS_APP_MESSAGE_PROCESSOR_H_

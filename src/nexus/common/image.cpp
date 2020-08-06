@@ -1,33 +1,30 @@
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/operations.hpp>
+#include "nexus/common/image.h"
+
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include <opencv2/opencv.hpp>
 
+#include <boost/filesystem.hpp>
+#include <boost/filesystem/operations.hpp>
 #include <fstream>
 #include <iterator>
+#include <opencv2/opencv.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "nexus/common/image.h"
-
 DEFINE_string(hack_image_root, "", "HACK: path to directory of images");
 
 class _Hack_Images {
-public:
+ public:
   _Hack_Images(const std::string &root) {
-    if (root.empty())
-      return;
+    if (root.empty()) return;
     LOG(INFO) << "Initializing _Hack_Images, root: " << root;
     auto root_path = boost::filesystem::absolute(root);
     for (auto it = boost::filesystem::recursive_directory_iterator(root_path),
               end = boost::filesystem::recursive_directory_iterator();
          it != end; ++it) {
-      if (!boost::filesystem::is_regular_file(it->path()))
-        continue;
-      if (it->path().extension().string() != ".jpg")
-        continue;
+      if (!boost::filesystem::is_regular_file(it->path())) continue;
+      if (it->path().extension().string() != ".jpg") continue;
 
       std::ifstream fin(it->path().string(), std::ios::binary);
       std::istreambuf_iterator<char> fin_beg(fin), fin_end;
@@ -52,7 +49,7 @@ public:
     return iter != data_.end() ? iter->second : empty_;
   }
 
-private:
+ private:
   std::unordered_map<std::string, std::vector<char>> data_;
   std::vector<char> empty_;
 };
@@ -97,4 +94,4 @@ cv::Mat DecodeImage(const ImageProto &image, ChannelOrder order) {
   }
 }
 
-} // namespace nexus
+}  // namespace nexus

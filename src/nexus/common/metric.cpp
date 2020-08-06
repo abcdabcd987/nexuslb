@@ -1,25 +1,19 @@
-#include <cmath>
-
 #include "nexus/common/metric.h"
+
+#include <cmath>
 
 namespace nexus {
 
-Counter::Counter() :
-    count_(0) {
-}
+Counter::Counter() : count_(0) {}
 
 void Counter::Increase(uint64_t value) {
   count_.fetch_add(value, std::memory_order_relaxed);
 }
 
-void Counter::Reset() {
-  count_.exchange(0, std::memory_order_relaxed);
-}
+void Counter::Reset() { count_.exchange(0, std::memory_order_relaxed); }
 
-IntervalCounter::IntervalCounter(uint32_t interval_sec) :
-    Tickable(interval_sec),
-    count_(0) {
-}
+IntervalCounter::IntervalCounter(uint32_t interval_sec)
+    : Tickable(interval_sec), count_(0) {}
 
 void IntervalCounter::Increase(uint64_t value) {
   count_.fetch_add(value, std::memory_order_relaxed);
@@ -44,18 +38,18 @@ void IntervalCounter::TickImpl() {
   history_.push_back(count);
 }
 
-EWMA::EWMA(uint32_t sample_interval_sec, uint32_t avg_interval_sec) :
-    sample_interval_sec_(sample_interval_sec),
-    avg_interval_sec_(avg_interval_sec),
-    rate_() {
+EWMA::EWMA(uint32_t sample_interval_sec, uint32_t avg_interval_sec)
+    : sample_interval_sec_(sample_interval_sec),
+      avg_interval_sec_(avg_interval_sec),
+      rate_() {
   alpha_ = 1 - exp(-1. * sample_interval_sec_ / avg_interval_sec_);
 }
 
-EWMA::EWMA(const EWMA& other) :
-    sample_interval_sec_(other.sample_interval_sec_),
-    avg_interval_sec_(other.avg_interval_sec_),
-    rate_(other.rate_),
-    alpha_(other.alpha_) {}
+EWMA::EWMA(const EWMA& other)
+    : sample_interval_sec_(other.sample_interval_sec_),
+      avg_interval_sec_(other.avg_interval_sec_),
+      rate_(other.rate_),
+      alpha_(other.alpha_) {}
 
 void EWMA::AddSample(uint64_t count) {
   double current_rate = static_cast<double>(count) / sample_interval_sec_;
@@ -77,8 +71,8 @@ EWMA& EWMA::operator=(const EWMA& other) {
 }
 
 MetricRegistry& MetricRegistry::Singleton() {
-    static MetricRegistry metric_registry_;
-    return metric_registry_;
+  static MetricRegistry metric_registry_;
+  return metric_registry_;
 }
 
 std::shared_ptr<Counter> MetricRegistry::CreateCounter() {
@@ -103,4 +97,4 @@ void MetricRegistry::RemoveMetric(std::shared_ptr<IntervalCounter> metric) {
   metrics_.erase(metric);
 }
 
-} // namespace nexus
+}  // namespace nexus

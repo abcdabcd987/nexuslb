@@ -1,34 +1,31 @@
 #ifndef NEXUS_APP_REQUEST_CONTEXT_H_
 #define NEXUS_APP_REQUEST_CONTEXT_H_
 
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <mutex>
 
 #include "nexus/app/model_handler.h"
 #include "nexus/app/user_session.h"
 #include "nexus/common/block_queue.h"
-#include "nexus/proto/nnquery.pb.h"
 #include "nexus/proto/control.pb.h"
+#include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
 namespace app {
 
 class Variable {
  public:
-  Variable(std::string name, std::shared_ptr<QueryResult> result) :
-      name_(name),
-      data_{result} {
+  Variable(std::string name, std::shared_ptr<QueryResult> result)
+      : name_(name), data_{result} {
     if (!result->ready()) {
       pending_results_.emplace(result->query_id(), result);
     }
   }
-  
-  Variable(std::string name,
-           std::vector<std::shared_ptr<QueryResult> > results) :
-      name_(name),
-      data_(results) {
+
+  Variable(std::string name, std::vector<std::shared_ptr<QueryResult> > results)
+      : name_(name), data_(results) {
     for (auto& r : results) {
       if (!r->ready()) {
         pending_results_.emplace(r->query_id(), r);
@@ -148,11 +145,11 @@ class RequestContext : public DeadlineItem,
   double slack_ms_;
   QueryProto backend_query_proto_;
   bool has_backend_query_sent_ = false;
-  
+
   std::deque<ExecBlock*> ready_blocks_;
   std::unordered_map<int, ExecBlock*> pending_blocks_;
   std::unordered_map<int, std::unordered_set<std::string> > block_deps_;
-  
+
   std::unordered_map<std::string, VariablePtr> vars_;
   std::unordered_map<std::string, VariablePtr> waiting_vars_;
   std::unordered_map<uint64_t, std::string> qid_var_map_;
@@ -178,7 +175,8 @@ class RequestPool {
     block_requests_.erase(req);
   }
 
-  std::shared_ptr<RequestContext> GetRequest(std::chrono::milliseconds timeout) {
+  std::shared_ptr<RequestContext> GetRequest(
+      std::chrono::milliseconds timeout) {
     return ready_requests_.pop(timeout);
   }
 
@@ -188,7 +186,7 @@ class RequestPool {
   std::mutex mu_;
 };
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus
 
-#endif // NEXUS_APP_REQUEST_CONTEXT_H_
+#endif  // NEXUS_APP_REQUEST_CONTEXT_H_

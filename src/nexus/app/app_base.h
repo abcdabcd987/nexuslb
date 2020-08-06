@@ -2,6 +2,7 @@
 #define NEXUS_APP_APP_BASE_H_
 
 #include <gflags/gflags.h>
+
 #include "nexus/app/frontend.h"
 
 DECLARE_int32(load_balance);
@@ -11,12 +12,9 @@ namespace app {
 
 class AppBase : public Frontend {
  public:
-  AppBase(const std::string& port,
-          const std::string& rpc_port,
-          const std::string& sch_addr,
-          const std::string& dispatcher_addr,
-          uint32_t dispatcher_rpc_timeout_us,
-          size_t nthreads);
+  AppBase(const std::string& port, const std::string& rpc_port,
+          const std::string& sch_addr, const std::string& dispatcher_addr,
+          uint32_t dispatcher_rpc_timeout_us, size_t nthreads);
 
   ~AppBase() override;
 
@@ -26,7 +24,8 @@ class AppBase : public Frontend {
 
   bool IsComplexQuery() const;
 
-  void ComplexQuerySetup(const std::string &cq_name, uint32_t slo_us, uint32_t step_us);
+  void ComplexQuerySetup(const std::string& cq_name, uint32_t slo_us,
+                         uint32_t step_us);
 
   void ComplexQueryAddEdge(const std::shared_ptr<ModelHandler>& source,
                            const std::shared_ptr<ModelHandler>& target);
@@ -34,9 +33,9 @@ class AppBase : public Frontend {
  protected:
   std::shared_ptr<ModelHandler> GetModelHandler(
       const std::string& framework, const std::string& model_name,
-      uint32_t version, uint64_t latency_sla, float estimate_workload=0.,
-      std::vector<uint32_t> image_size={},
-      LoadBalancePolicy lb_policy=LoadBalancePolicy(FLAGS_load_balance));
+      uint32_t version, uint64_t latency_sla, float estimate_workload = 0.,
+      std::vector<uint32_t> image_size = {},
+      LoadBalancePolicy lb_policy = LoadBalancePolicy(FLAGS_load_balance));
   size_t nthreads_;
   QueryProcessor* qp_;
 
@@ -47,7 +46,7 @@ class AppBase : public Frontend {
 
 void LaunchApp(AppBase* app);
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus
 
-#endif // NEXUS_APP_APP_BASE_H_
+#endif  // NEXUS_APP_APP_BASE_H_

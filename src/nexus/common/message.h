@@ -3,6 +3,7 @@
 
 #include <arpa/inet.h>
 #include <google/protobuf/message.h>
+
 #include <string>
 
 namespace nexus {
@@ -38,9 +39,9 @@ struct MessageHeader {
 };
 
 /*! \brief Magic number for Nexus service */
-#define NEXUS_SERVICE_MAGIC_NUMBER  0xDEADBEEF
+#define NEXUS_SERVICE_MAGIC_NUMBER 0xDEADBEEF
 /*! \brief Header length in bytes */
-#define MESSAGE_HEADER_SIZE         sizeof(MessageHeader)
+#define MESSAGE_HEADER_SIZE sizeof(MessageHeader)
 
 bool DecodeHeader(const char* buffer, MessageHeader* header);
 
@@ -56,11 +57,11 @@ class Message {
    * It allocates the data buffer with maximal size. This constructor is mainly
    * used to hold an inbound packet when the message size is unknown.
    */
-  //Message();
+  // Message();
   Message(const MessageHeader& header);
   /*!
    * \brief Construct a nessage with explicit body length.
-   * 
+   *
    * It allocates the data buffer with body length plus header size. This
    * constructor is mainly used to hold an outbound packet when the message
    * size is known
@@ -109,6 +110,6 @@ class Message {
   size_t body_length_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_MESSAGE_H_
+#endif  // NEXUS_COMMON_MESSAGE_H_

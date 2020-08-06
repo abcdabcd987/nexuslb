@@ -10,39 +10,47 @@
 
 namespace nexus {
 
-template<DataType> struct TypeMap;
+template <DataType>
+struct TypeMap;
 
-template<> struct TypeMap<DT_BOOL> {
+template <>
+struct TypeMap<DT_BOOL> {
   using type = bool;
   static constexpr size_t size = 1;
 };
 
-template<> struct TypeMap<DT_INT8> {
+template <>
+struct TypeMap<DT_INT8> {
   using type = int8_t;
   static constexpr size_t size = 1;
 };
 
-template<> struct TypeMap<DT_UINT8> {
+template <>
+struct TypeMap<DT_UINT8> {
   using type = uint8_t;
   static constexpr size_t size = 1;
 };
 
-template<> struct TypeMap<DT_INT32> {
+template <>
+struct TypeMap<DT_INT32> {
   using type = int32_t;
   static constexpr size_t size = 4;
 };
 
-template<> struct TypeMap<DT_UINT32> {
+template <>
+struct TypeMap<DT_UINT32> {
   using type = uint32_t;
   static constexpr size_t size = 4;
 };
 
-template<> struct TypeMap<DT_FLOAT> {
+template <>
+struct TypeMap<DT_FLOAT> {
   using type = float;
   static constexpr size_t size = 4;
 };
 
-template<> struct TypeMap<DT_DOUBLE> {
+template <>
+struct TypeMap<DT_DOUBLE> {
   using type = double;
   static constexpr size_t size = 8;
 };
@@ -89,10 +97,14 @@ class Array {
   int tag() const { return tag_; }
 
   template <typename T>
-  T* Data() { return (T*) buffer_->data(); }
+  T* Data() {
+    return (T*)buffer_->data();
+  }
 
   template <typename T>
-  const T* Data() const { return (const T*) buffer_->data(); }
+  const T* Data() const {
+    return (const T*)buffer_->data();
+  }
 
   std::shared_ptr<Array> Slice(size_t offset, size_t num_elements);
 
@@ -141,11 +153,11 @@ class Value {
  public:
   Value(const ValueProto& value);
 
-  template<class T>
+  template <class T>
   const T& as() const;
 
   void ToProto(ValueProto* proto) const;
-  
+
  private:
   DataType data_type_;
   bool b_;
@@ -165,11 +177,11 @@ class Record {
   void ToProto(RecordProto* proto) const;
 
   const Value& operator[](const std::string&& key) const;
-  
+
  private:
   std::unordered_map<std::string, Value> values_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_DATA_TYPE_H_
+#endif  // NEXUS_COMMON_DATA_TYPE_H_

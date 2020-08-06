@@ -4,8 +4,8 @@
 #include <atomic>
 #include <memory>
 #include <thread>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
 #include "nexus/backend/model_exec.h"
 
@@ -21,7 +21,7 @@ class GpuExecutor {
   void SetDutyCycle(double duty_cycle_us) {
     duty_cycle_us_.store(duty_cycle_us);
   }
-  
+
   virtual void Start(int core = -1) = 0;
   virtual void Stop() = 0;
   virtual void AddModel(std::shared_ptr<ModelExecutor> model) = 0;
@@ -82,11 +82,11 @@ class GpuExecutorNoMultiBatching : public GpuExecutor {
   int gpu_id_;
   int core_;
   std::mutex mu_;
-  std::unordered_map<std::string,
-                     std::unique_ptr<GpuExecutorMultiBatching> > threads_;
+  std::unordered_map<std::string, std::unique_ptr<GpuExecutorMultiBatching> >
+      threads_;
 };
 
-} // namespace backend
-} // namespace nexus
+}  // namespace backend
+}  // namespace nexus
 
-#endif // NEXUS_BACKEND_BASE_GPU_EXECUTOR_H_
+#endif  // NEXUS_BACKEND_BASE_GPU_EXECUTOR_H_

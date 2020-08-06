@@ -1,22 +1,23 @@
-#include <boost/filesystem.hpp>
-#include <cmath>
-#include <fstream>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include <iostream>
-#include <cstdlib>
-#include <string>
 #include <time.h>
-#include <thread>
-#include <vector>
-#include <unordered_map>
 #include <yaml-cpp/yaml.h>
 
-#include "nexus/common/device.h"
-#include "nexus/common/block_queue.h"
-#include "nexus/common/model_db.h"
+#include <boost/filesystem.hpp>
+#include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
 #include "nexus/backend/model_exec.h"
 #include "nexus/backend/model_ins.h"
+#include "nexus/common/block_queue.h"
+#include "nexus/common/device.h"
+#include "nexus/common/model_db.h"
 #include "nexus/proto/nnquery.pb.h"
 
 DEFINE_int32(gpu, 0, "GPU device id");
@@ -38,12 +39,12 @@ class ModelProfiler {
  public:
   ModelProfiler(int gpu, const std::string& framework,
                 const std::string& model_name, int model_version,
-                const std::string& image_dir, int height=0, int width=0) :
-      gpu_(gpu) {
-    model_info_ = ModelDatabase::Singleton().GetModelInfo(
-        framework, model_name, model_version);
-    CHECK(model_info_ != nullptr) << "Cannot find model info for " <<
-        framework << ":" << model_name << ":" << model_version;
+                const std::string& image_dir, int height = 0, int width = 0)
+      : gpu_(gpu) {
+    model_info_ = ModelDatabase::Singleton().GetModelInfo(framework, model_name,
+                                                          model_version);
+    CHECK(model_info_ != nullptr) << "Cannot find model info for " << framework
+                                  << ":" << model_name << ":" << model_version;
     // Init model session
     model_sess_.set_framework(framework);
     model_sess_.set_model_name(model_name);
@@ -90,7 +91,7 @@ class ModelProfiler {
     LOG(INFO) << "Memory use: " << memory_use << " B";
   }
 
-  void Profile(int batch, int repeat=100) {
+  void Profile(int batch, int repeat = 100) {
     size_t origin_freemem = gpu_device_->FreeMemory();
     LOG(INFO) << "Origin free memory: " << origin_freemem;
 
@@ -99,7 +100,8 @@ class ModelProfiler {
     std::vector<std::string> share_models =
         ModelDatabase::Singleton().GetPrefixShareModels(
             ModelSessionToModelID(model_sess_));
-    CHECK_GE(share_models.size(), FLAGS_num_models - 1) << "Number of models is too large";
+    CHECK_GE(share_models.size(), FLAGS_num_models - 1)
+        << "Number of models is too large";
     for (int i = 0; i < FLAGS_num_models - 1; ++i) {
       auto model_id = share_models[i];
       LOG(INFO) << model_id;
@@ -116,7 +118,7 @@ class ModelProfiler {
     {
       config.set_batch(1);
       config.set_max_batch(1);
-      //auto model = CreateModelInstance(gpu_, config);
+      // auto model = CreateModelInstance(gpu_, config);
       std::unique_ptr<ModelInstance> model;
       CreateModelInstance(gpu_, config, &model);
       // prepare the input
@@ -179,8 +181,8 @@ class ModelProfiler {
     size_t memory_usage = origin_freemem - curr_freemem;
     for (int i = 0; i < batch * (repeat + dryrun); ++i) {
       auto task = task_queue.pop();
-      CHECK_EQ(task->result.status(), CTRL_OK) << "Error detected: " <<
-          task->result.status();
+      CHECK_EQ(task->result.status(), CTRL_OK)
+          << "Error detected: " << task->result.status();
       auto beg = std::chrono::high_resolution_clock::now();
       model->Postprocess(task);
       auto end = std::chrono::high_resolution_clock::now();
@@ -194,18 +196,18 @@ class ModelProfiler {
 
     LOG(INFO) << "Final free memory: " << gpu_device_->FreeMemory();
     preproc_tasks.clear();
-    
+
     // output to file
     std::cout << gpu_device_->device_name() << "\n";
     std::cout << "Forward latency\n";
     std::cout << "batch size: " << batch << "\n";
-    std::cout << "Forwared latency (min/mean/std): " << min << " us, " <<
-        mean << " us, " << std << " us\n";
+    std::cout << "Forwared latency (min/mean/std): " << min << " us, " << mean
+              << " us, " << std << " us\n";
     std::cout << "Memory usage: " << memory_usage << " B\n";
   }
 
  private:
-  template<class T>
+  template <class T>
   std::tuple<float, float, float> GetStats(const std::vector<T>& lats) {
     float min = lats[0];
     float mean = 0.;
@@ -255,14 +257,13 @@ class ModelProfiler {
   GPUDevice* gpu_device_;
 };
 
-} // namespace backend
-} // namespace nexus
-
+}  // namespace backend
+}  // namespace nexus
 
 int main(int argc, char** argv) {
   using namespace nexus;
   using namespace nexus::backend;
-  
+
   // log to stderr
   FLAGS_logtostderr = 1;
   // Init glog
@@ -281,5 +282,5 @@ int main(int argc, char** argv) {
   ModelProfiler profiler(FLAGS_gpu, FLAGS_framework, FLAGS_model,
                          FLAGS_model_version, FLAGS_image_dir);
   profiler.Profile(FLAGS_batch, FLAGS_repeat);
-  //profiler.LoadModel(FLAGS_batch);
+  // profiler.LoadModel(FLAGS_batch);
 }

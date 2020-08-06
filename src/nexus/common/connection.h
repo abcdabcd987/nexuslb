@@ -10,7 +10,7 @@
 
 namespace nexus {
 
-class Connection; // forward declare
+class Connection;  // forward declare
 
 class MessageHandler {
  public:
@@ -66,7 +66,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
   /*! \brief Wrong header indicator */
   bool wrong_header_;
   /*! \brief Receiving message */
-  //std::shared_ptr<Message> recv_message_;
+  // std::shared_ptr<Message> recv_message_;
   char msg_header_buffer_[MESSAGE_HEADER_SIZE];
   /*! \brief Queue for outbound messages */
   std::deque<std::shared_ptr<Message> > write_queue_;
@@ -74,6 +74,6 @@ class Connection : public std::enable_shared_from_this<Connection> {
   std::mutex write_queue_mutex_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_CONNECTION_H_
+#endif  // NEXUS_COMMON_CONNECTION_H_

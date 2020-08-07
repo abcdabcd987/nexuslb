@@ -154,9 +154,9 @@ def run_profiler(gpu, prof_id, input_queue, output_queue):
         for line in lines:
             if line.startswith('Preprocess latency (mean,std,repeat)'):
                 break
-            batch_size, lat, std, mem, repeat = line.split(',')
+            batch_size, lat, std, static_mem, peak_mem, repeat = line.split(',')
             forward_stats.append((int(batch_size), float(
-                lat), float(std), int(mem), int(repeat)))
+                lat), float(std), int(static_mem), int(peak_mem), int(repeat)))
 
         mean, std, repeat = next(lines).split(',')
         preprocess_lats = (float(mean), float(std), int(repeat))
@@ -176,9 +176,9 @@ def print_profile(output, prof_id, gpu_name, gpu_uuid, forward_stats, preprocess
         f.write(f'{gpu_name}\n')
         f.write(f'{gpu_uuid}\n')
         f.write('Forward latency\n')
-        f.write('batch,latency(us),std(us),memory(B),repeat\n')
-        for batch_size, lat, std, mem, repeat in forward_stats:
-            f.write(f'{batch_size},{lat},{std},{mem},{repeat}\n')
+        f.write('batch,latency(us),std(us),static memory(B),peak memory(B),repeat\n')
+        for batch_size, lat, std, static_mem, peak_mem, repeat in forward_stats:
+            f.write(f'{batch_size},{lat},{std},{static_mem},{peak_mem},{repeat}\n')
         f.write('Preprocess latency (mean,std,repeat)\n')
         mean, std, repeat = preprocess_lats
         f.write(f'{mean},{std},{repeat}\n')

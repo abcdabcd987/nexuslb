@@ -308,6 +308,11 @@ uint64_t TensorflowModel::GetPeakBytesInUse() {
   return stats->peak_bytes_in_use;
 }
 
+uint64_t TensorflowModel::GetBytesInUse() {
+  auto stats = gpu_allocator_->GetStats();
+  return stats->bytes_in_use;
+}
+
 tf::Tensor* TensorflowModel::NewInputTensor() {
   tf::TensorShape shape;
   for (auto dim : input_shape_.dims()) {

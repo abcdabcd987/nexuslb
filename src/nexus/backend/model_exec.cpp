@@ -213,6 +213,10 @@ uint64_t ModelExecutor::GetPeakMemoryUsage() {
   return model_->GetPeakBytesInUse();
 }
 
+uint64_t ModelExecutor::GetStaticMemoryUsage() {
+  return model_->GetBytesInUse();
+}
+
 TimePoint ModelExecutor::LastExecuteFinishTime() {
   std::lock_guard<std::mutex> lock(time_mu_);
   return last_exec_finish_;

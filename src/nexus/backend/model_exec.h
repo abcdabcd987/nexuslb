@@ -57,6 +57,8 @@ class ModelExecutor {
 
   uint64_t GetPeakMemoryUsage();
 
+  uint64_t GetStaticMemoryUsage();
+
  private:
   std::pair<std::shared_ptr<BatchTask>, int> GetBatchTaskSlidingWindow(
       uint32_t batch_size);

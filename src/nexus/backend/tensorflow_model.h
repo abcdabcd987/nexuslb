@@ -34,6 +34,8 @@ class TensorflowModel : public ModelInstance {
 
   uint64_t GetPeakBytesInUse() override;
 
+  uint64_t GetBytesInUse() override;
+
  private:
   tf::Tensor* NewInputTensor();
 

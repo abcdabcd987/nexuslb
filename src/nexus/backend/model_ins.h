@@ -120,6 +120,8 @@ class ModelInstance {
   virtual void Postprocess(std::shared_ptr<Task> task) = 0;
   /*! \brief Get peak memory usage. */
   virtual uint64_t GetPeakBytesInUse();
+  /*! \brief Get static memory usage. */
+  virtual uint64_t GetBytesInUse();
 
  protected:
   /*! \brief GPU index */

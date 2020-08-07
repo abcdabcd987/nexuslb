@@ -119,5 +119,8 @@ void ModelInstance::WaitOutput(std::shared_ptr<BatchTask> batch_task) {
 uint64_t ModelInstance::GetPeakBytesInUse() {
   LOG(FATAL) << "GetPeakBytesInUse not implemented";
 }
+uint64_t ModelInstance::GetBytesInUse() {
+  LOG(FATAL) << "GetBytesInUse not implemented";
+}
 }  // namespace backend
 }  // namespace nexus

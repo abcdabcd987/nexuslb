@@ -98,20 +98,6 @@ if [ ! -d "$INSTALL_DIR/gtest" ]; then
     cd ../..
 fi
 
-###### protobuf 3.8.0 (need to sync with TensorFlow) ######
-# TensorFlow dependency: https://github.com/tensorflow/tensorflow/blob/906f537c0be010929a0bda3c7d061de9d3d8d5b0/tensorflow/workspace.bzl#L472
-# ref: https://github.com/protocolbuffers/protobuf/blob/master/src/README.md
-if [ ! -d "$INSTALL_DIR/protobuf" ]; then
-    wget -N https://github.com/protocolbuffers/protobuf/archive/v3.8.0.tar.gz -O protobuf-3.8.0.tar.gz
-    tar xf protobuf-3.8.0.tar.gz
-    cd protobuf-3.8.0/
-    ./autogen.sh
-    ./configure --prefix="$INSTALL_DIR/protobuf"
-    make -j$(nproc)
-    make install
-    cd ..
-fi
-
 ###### grpc 1.27.0 ######
 # ref: https://github.com/grpc/grpc/blob/master/BUILDING.md
 if [ ! -d "$INSTALL_DIR/grpc" ]; then
@@ -125,15 +111,6 @@ if [ ! -d "$INSTALL_DIR/grpc" ]; then
     make -j$(nproc)
     make install prefix="$INSTALL_DIR/grpc"
     cd ..
-fi
-
-###### bazel 1.2.1 ######
-if [ ! -d "$INSTALL_DIR/bazel" ]; then
-    wget -N https://github.com/bazelbuild/bazel/releases/download/1.2.1/bazel-1.2.1-linux-x86_64 -O bazel-1.2.1-linux-x86_64
-    chmod +x bazel-1.2.1-linux-x86_64
-    mkdir -p "$INSTALL_DIR/bazel"
-    mv bazel-1.2.1-linux-x86_64 "$INSTALL_DIR/bazel/"
-    ln -sf bazel-1.2.1-linux-x86_64 "$INSTALL_DIR/bazel/bazel"
 fi
 
 exit 0

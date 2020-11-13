@@ -11,6 +11,8 @@ bin/
 build/
 build-dep-src/
 build-dep-install/
+build-dep-install.tar.bz2
+libtensorflow_cc-*
 python/nexus/proto/
 python/nexus.egg-info/
 

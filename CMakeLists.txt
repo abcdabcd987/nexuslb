@@ -3,14 +3,15 @@ project(nexus LANGUAGES CXX)
 list(INSERT CMAKE_MODULE_PATH 0 ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 set(NEXUS_DEP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build-dep-install)
+set(LIBTF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libtensorflow_cc)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/boost)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/gflags)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/glog)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/grpc)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/gtest)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/opencv)
-list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/protobuf)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/yaml-cpp)
+list(INSERT CMAKE_PREFIX_PATH 0 ${LIBTF_DIR}/protobuf)
 
 # We don't support caffe2/caffe/darknet any more
 option(USE_GPU        "Use GPU"        ON )
@@ -186,10 +187,9 @@ if(USE_TENSORFLOW)
     target_sources(backend_obj PRIVATE
             src/nexus/backend/tensorflow_model.cpp
             src/nexus/backend/tf_share_model.cpp)
-    set(TENSORFLOW_BUILD_ROOT ${NEXUS_DEP_DIR}/tensorflow)
-    target_include_directories(backend_obj PRIVATE ${TENSORFLOW_BUILD_ROOT}/include)
-    target_link_libraries(backend_obj PRIVATE ${TENSORFLOW_BUILD_ROOT}/libtensorflow_cc.so)
-    target_link_libraries(backend_obj PRIVATE ${TENSORFLOW_BUILD_ROOT}/libtensorflow_framework.so)
+    target_include_directories(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/include)
+    target_link_libraries(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_cc.so)
+    target_link_libraries(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_framework.so)
 endif()
 
 ## backend: Caffe2 support ##

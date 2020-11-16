@@ -7,6 +7,7 @@
 #include <string>
 
 #include "nexus/proto/control.grpc.pb.h"
+#include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
 namespace dispatcher {
@@ -24,6 +25,7 @@ class BackendDelegate {
 
   void Tick();
   bool IsAlive();
+  void SendLoadModelCommand(const ModelSession& model_session);
 
  private:
   uint32_t node_id_;

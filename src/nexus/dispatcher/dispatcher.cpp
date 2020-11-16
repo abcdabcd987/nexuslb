@@ -13,9 +13,11 @@
 #include <sstream>
 
 #include "nexus/common/config.h"
+#include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/frontend_delegate.h"
+#include "nexus/dispatcher/session_context.h"
 
 using boost::asio::ip::udp;
 
@@ -367,6 +369,8 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
           request.node_id(), ip, request.server_port(), request.rpc_port(),
           request.gpu_device_name(), request.gpu_uuid(),
           request.gpu_available_memory(), beacon_interval_sec_);
+      std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
+          sessions;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         if (backends_.find(backend->node_id()) != backends_.end()) {
@@ -374,7 +378,14 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
           return;
         }
         backends_[backend->node_id()] = backend;
+        sessions = sessions_;
       }
+
+      // Load Models
+      for (auto iter : sessions) {
+        backend->SendLoadModelCommand(iter.second->model_session());
+      }
+
       reply->set_status(CtrlStatus::CTRL_OK);
       reply->set_beacon_interval_sec(BEACON_INTERVAL_SEC);
       break;
@@ -398,10 +409,32 @@ void Dispatcher::HandleUnregister(const grpc::ServerContext& ctx,
 void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
                                  const LoadModelRequest& request,
                                  LoadModelReply* reply) {
-  // TODO
-  LOG(ERROR) << "HandleLoadModel not implemented. Request: "
-             << request.DebugString();
-  reply->set_status(CtrlStatus::CTRL_OK);
+  auto model_info = ModelDatabase::Singleton().GetModelInfo(
+      ModelSessionToModelID(request.model_session()));
+  if (!model_info) {
+    reply->set_status(MODEL_NOT_FOUND);
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto model_sess_id = ModelSessionToString(request.model_session());
+  {
+    auto it = sessions_.find(model_sess_id);
+    if (it != sessions_.end()) {
+      // Model already loaded. Just skip.
+      reply->set_status(CtrlStatus::CTRL_OK);
+      return;
+    }
+  }
+
+  // Add the model session
+  auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
+  sessions_[model_sess_id] = sctx;
+
+  // Ask backends to load the model
+  for (auto backend_iter : backends_) {
+    backend_iter.second->SendLoadModelCommand(request.model_session());
+  }
 }
 
 void Dispatcher::HandleKeepAlive(const grpc::ServerContext& ctx,

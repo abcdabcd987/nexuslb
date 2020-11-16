@@ -23,6 +23,8 @@ service BackendCtrl {
   rpc UpdateModelTable(ModelTableConfig) returns (RpcReply) {}
   rpc CheckAlive(CheckAliveRequest) returns (RpcReply) {}
   rpc CurrentUtilization(UtilizationRequest) returns (UtilizationReply) {}
+
+  rpc LoadModel(BackendLoadModelCommand) returns (RpcReply) {}
 }
 
 service DispatcherCtrl {
@@ -206,4 +208,8 @@ message DispatchReply {
   uint64 query_id = 2;
   CtrlStatus status = 3;
   BackendInfo backend = 4;
+}
+
+message BackendLoadModelCommand {
+  ModelSession model_session = 1;
 }

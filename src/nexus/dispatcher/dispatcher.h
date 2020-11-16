@@ -25,6 +25,7 @@ namespace dispatcher {
 class Dispatcher;
 class FrontendDelegate;
 class BackendDelegate;
+class ModelSessionContext;
 
 class ModelRoute {
  public:
@@ -124,6 +125,9 @@ class Dispatcher {
   std::unordered_map<uint32_t, std::shared_ptr<FrontendDelegate>> frontends_;
   /*! \brief Mapping from backend node id to backend client */
   std::unordered_map<uint32_t, std::shared_ptr<BackendDelegate>> backends_;
+  /*! \brief Mapping from model session ID to session information */
+  std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
+      sessions_;
 
   // Big lock for the model routes
   std::mutex mutex_;

@@ -56,5 +56,18 @@ bool BackendDelegate::IsAlive() {
   return true;
 }
 
+void BackendDelegate::SendLoadModelCommand(const ModelSession& model_session) {
+  grpc::ClientContext context;
+  BackendLoadModelCommand request;
+  *request.mutable_model_session() = model_session;
+  RpcReply reply;
+  grpc::Status status = stub_->LoadModel(&context, request, &reply);
+  if (!status.ok()) {
+    LOG(ERROR) << "SendLoadModelCommand error " << status.error_code() << ": "
+               << status.error_message();
+  }
+  last_time_ = std::chrono::system_clock::now();
+}
+
 }  // namespace dispatcher
 }  // namespace nexus

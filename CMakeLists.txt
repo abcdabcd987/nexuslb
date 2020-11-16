@@ -88,7 +88,7 @@ add_library(common OBJECT
 target_include_directories(common PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${GENERATED_SRC_DIR}/src)
-target_compile_features(common PUBLIC cxx_std_11)
+target_compile_features(common PUBLIC cxx_std_17)
 target_link_libraries(common PUBLIC
         yaml-cpp gflags glog::glog gRPC::grpc++ GTest::GTest protobuf::libprotobuf
         ${OpenCV_LIBS} Boost::filesystem Boost::system)
@@ -107,27 +107,21 @@ add_executable(scheduler
 target_include_directories(scheduler PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${GENERATED_SRC_DIR}/src)
-target_compile_features(scheduler PRIVATE cxx_std_11)
 target_link_libraries(scheduler PRIVATE common)
 
 
 
 ###### dispatcher ######
 add_executable(dispatcher
+        src/nexus/dispatcher/backend_delegate.cpp
         src/nexus/dispatcher/dispatcher.cpp
         src/nexus/dispatcher/dispatcher_main.cpp
+        src/nexus/dispatcher/frontend_delegate.cpp
         src/nexus/dispatcher/rpc_service.cpp)
 target_include_directories(dispatcher PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${GENERATED_SRC_DIR}/src)
-target_compile_features(dispatcher PRIVATE cxx_std_11)
 target_link_libraries(dispatcher PRIVATE common)
-option(NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
-       "Avoid grpc in dispatcher. Useful for benchmarking the network performance."
-       OFF)
-if(NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER)
-    target_compile_definitions(dispatcher PRIVATE NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER)
-endif()
 
 
 
@@ -143,7 +137,6 @@ add_library(nexus SHARED
 target_include_directories(nexus PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${GENERATED_SRC_DIR}/src)
-target_compile_features(nexus PUBLIC cxx_std_11)
 target_link_libraries(nexus PUBLIC common)
 
 
@@ -161,12 +154,10 @@ add_library(backend_obj
         src/nexus/backend/task.cpp
         src/nexus/backend/utils.cpp
         src/nexus/backend/worker.cpp)
-target_compile_features(backend_obj PUBLIC cxx_std_11)
 target_link_libraries(backend_obj PUBLIC common)
 
 add_executable(backend
         src/nexus/backend/backend_main.cpp)
-target_compile_features(backend PRIVATE cxx_std_11)
 target_link_libraries(backend PRIVATE backend_obj)
 
 ## backend: CUDA support ##
@@ -262,7 +253,6 @@ endif()
 ###### tools/profiler ######
 if(USE_GPU)
     add_executable(profiler tools/profiler/profiler.cpp)
-    target_compile_features(profiler PRIVATE cxx_std_11)
     target_link_libraries(profiler PRIVATE common backend_obj)
 endif()
 
@@ -271,7 +261,6 @@ endif()
 ###### tools/test_pb ######
 if(USE_GPU)
     add_executable(test_pb tools/profiler/test_pb.cpp)
-    target_compile_features(test_pb PRIVATE cxx_std_11)
     target_link_libraries(test_pb PRIVATE common backend_obj)
 endif()
 
@@ -282,7 +271,6 @@ add_executable(test_complex_query
         src/nexus/scheduler/complex_query.cpp
         src/nexus/scheduler/sch_info.cpp
         tools/test_complex_query.cpp)
-target_compile_features(test_complex_query PRIVATE cxx_std_11)
 target_link_libraries(test_complex_query PRIVATE common)
 
 
@@ -290,7 +278,6 @@ target_link_libraries(test_complex_query PRIVATE common)
 ###### tools/bench_tfshare ######
 if(USE_TENSORFLOW)
     add_executable(bench_tfshare tools/bench_tfshare.cpp)
-    target_compile_features(bench_tfshare PRIVATE cxx_std_11)
     target_link_libraries(bench_tfshare PRIVATE common backend_obj)
 endif()
 
@@ -301,7 +288,6 @@ add_executable(bench_dispatcher
         tools/bench_dispatcher.cpp)
 target_include_directories(bench_dispatcher PRIVATE
         ${GENERATED_SRC_DIR}/src)
-target_compile_features(bench_dispatcher PRIVATE cxx_std_11)
 target_link_libraries(bench_dispatcher PRIVATE common)
 
 
@@ -311,12 +297,10 @@ target_link_libraries(bench_dispatcher PRIVATE common)
 #         tests/cpp/scheduler/backend_delegate_test.cpp
 #         tests/cpp/scheduler/scheduler_test.cpp
 #         tests/cpp/test_main.cpp)
-# target_compile_features(runtest PRIVATE cxx_std_11)
 # target_link_libraries(runtest PRIVATE common backend_obj)
 
 
 
 ###### examples/simple_app ######
 add_executable(simple examples/simple_app/src/frontend.cpp)
-target_compile_features(simple PRIVATE cxx_std_11)
 target_link_libraries(simple PRIVATE nexus gflags)

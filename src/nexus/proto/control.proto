@@ -25,6 +25,13 @@ service BackendCtrl {
   rpc CurrentUtilization(UtilizationRequest) returns (UtilizationReply) {}
 }
 
+service DispatcherCtrl {
+  rpc Register(RegisterRequest) returns (RegisterReply) {}
+  rpc Unregister(UnregisterRequest) returns (RpcReply) {}
+  rpc LoadModel(LoadModelRequest) returns (LoadModelReply) {}
+  rpc KeepAlive(KeepAliveRequest) returns (RpcReply) {}
+}
+
 enum NodeType {
   FRONTEND_NODE = 0;
   BACKEND_NODE = 1;

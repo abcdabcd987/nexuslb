@@ -14,6 +14,8 @@
 
 #include "nexus/common/config.h"
 #include "nexus/common/model_def.h"
+#include "nexus/dispatcher/backend_delegate.h"
+#include "nexus/dispatcher/frontend_delegate.h"
 
 using boost::asio::ip::udp;
 
@@ -184,12 +186,8 @@ Dispatcher::Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
                        int num_udp_threads, std::vector<int> pin_cpus)
     : udp_port_(udp_port),
       num_udp_threads_(num_udp_threads),
-      pin_cpus_(std::move(pin_cpus))
-#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
-      ,
-      rpc_service_(this, rpc_port, 1)
-#endif
-{
+      pin_cpus_(std::move(pin_cpus)),
+      rpc_service_(this, rpc_port, 1) {
 #ifndef SO_REUSEPORT
   CHECK_EQ(num_udp_threads, 1) << "SO_REUSEPORT is not supported. UDP RPC "
                                   "server must be run in single threaded mode.";
@@ -199,17 +197,6 @@ Dispatcher::Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
         << "UDP RPC thread affinity settings should contain exactly twice the "
            "number of thread.";
   }
-
-  // Init scheduler client
-  if (sch_addr.find(':') == std::string::npos) {
-    // Add default scheduler port if no port specified
-    sch_addr += ":" + std::to_string(SCHEDULER_DEFAULT_PORT);
-  }
-#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
-  auto channel =
-      grpc::CreateChannel(sch_addr, grpc::InsecureChannelCredentials());
-  sch_stub_ = SchedulerCtrl::NewStub(channel);
-#endif
 }
 
 Dispatcher::~Dispatcher() {
@@ -221,12 +208,8 @@ Dispatcher::~Dispatcher() {
 void Dispatcher::Run() {
   running_ = true;
 
-#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
   // Start RPC service
   rpc_service_.Start();
-  // Init Node ID and register frontend to scheduler
-  Register();
-#endif
 
   // Run UDP RPC server
   for (int i = 0; i < num_udp_threads_; ++i) {
@@ -247,12 +230,8 @@ void Dispatcher::Stop() {
   LOG(INFO) << "Shutting down the dispatcher.";
   running_ = false;
 
-#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
-  // Unregister frontend
-  Unregister();
   // Stop RPC service
   rpc_service_.Stop();
-#endif
 
   // Stop UDP RPC server
   for (auto& server : udp_rpc_servers_) {
@@ -274,64 +253,6 @@ void Dispatcher::GetBackend(const std::string& model_sess_id,
     reply->set_status(CtrlStatus::CTRL_OK);
   }
 }
-
-#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
-void Dispatcher::Register() {
-  // Init node id
-  std::random_device rd;
-  std::mt19937 rand_gen(rd());
-  std::uniform_int_distribution<uint32_t> dis(
-      1, std::numeric_limits<uint32_t>::max());
-  node_id_ = dis(rand_gen);
-
-  // Prepare request
-  RegisterRequest request;
-  request.set_node_type(NodeType::DISPATCHER_NODE);
-  request.set_node_id(node_id_);
-  request.set_rpc_port(rpc_service_.port());
-
-  while (true) {
-    grpc::ClientContext context;
-    RegisterReply reply;
-    grpc::Status status = sch_stub_->Register(&context, request, &reply);
-    if (!status.ok()) {
-      LOG(FATAL) << "Failed to connect to scheduler: " << status.error_message()
-                 << "(" << status.error_code() << ")";
-    }
-    CtrlStatus ret = reply.status();
-    if (ret == CTRL_OK) {
-      beacon_interval_sec_ = reply.beacon_interval_sec();
-      return;
-    }
-    if (ret != CTRL_FRONTEND_NODE_ID_CONFLICT) {
-      LOG(FATAL) << "Failed to register frontend to scheduler: "
-                 << CtrlStatus_Name(ret);
-    }
-    // Frontend ID conflict, need to generate a new one
-    node_id_ = dis(rand_gen);
-    request.set_node_id(node_id_);
-  }
-}
-
-void Dispatcher::Unregister() {
-  UnregisterRequest request;
-  request.set_node_type(NodeType::DISPATCHER_NODE);
-  request.set_node_id(node_id_);
-
-  grpc::ClientContext context;
-  RpcReply reply;
-  grpc::Status status = sch_stub_->Unregister(&context, request, &reply);
-  if (!status.ok()) {
-    LOG(ERROR) << "Failed to connect to scheduler: " << status.error_message()
-               << "(" << status.error_code() << ")";
-    return;
-  }
-  CtrlStatus ret = reply.status();
-  if (ret != CTRL_OK) {
-    LOG(ERROR) << "Failed to unregister frontend: " << CtrlStatus_Name(ret);
-  }
-}
-#endif
 
 void Dispatcher::UpdateModelRoutes(const ModelRouteUpdates& request,
                                    RpcReply* reply) {
@@ -414,6 +335,104 @@ BackendInfo ModelRoute::GetBackend() {
     }
 
     CHECK_LE(i, backends_.size()) << "DRR could not decide.";
+  }
+}
+
+void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
+                                const RegisterRequest& request,
+                                RegisterReply* reply) {
+  std::vector<std::string> tokens;
+  SplitString(ctx.peer(), ':', &tokens);
+  std::string ip = tokens[1];
+  LOG(INFO) << "Register server: " << request.DebugString();
+  switch (request.node_type()) {
+    case NodeType::FRONTEND_NODE: {
+      auto frontend = std::make_shared<FrontendDelegate>(
+          request.node_id(), ip, request.server_port(), request.rpc_port(),
+          beacon_interval_sec_);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (frontends_.find(frontend->node_id()) != frontends_.end()) {
+          reply->set_status(CtrlStatus::CTRL_FRONTEND_NODE_ID_CONFLICT);
+          return;
+        }
+        frontends_[frontend->node_id()] = frontend;
+      }
+      reply->set_status(CtrlStatus::CTRL_OK);
+      reply->set_beacon_interval_sec(BEACON_INTERVAL_SEC);
+      break;
+    }
+    case NodeType::BACKEND_NODE: {
+      auto backend = std::make_shared<BackendDelegate>(
+          request.node_id(), ip, request.server_port(), request.rpc_port(),
+          request.gpu_device_name(), request.gpu_uuid(),
+          request.gpu_available_memory(), beacon_interval_sec_);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (backends_.find(backend->node_id()) != backends_.end()) {
+          reply->set_status(CtrlStatus::CTRL_BACKEND_NODE_ID_CONFLICT);
+          return;
+        }
+        backends_[backend->node_id()] = backend;
+      }
+      reply->set_status(CtrlStatus::CTRL_OK);
+      reply->set_beacon_interval_sec(BEACON_INTERVAL_SEC);
+      break;
+    }
+    default: {
+      LOG(ERROR) << "Unknown node type: " << NodeType_Name(request.node_type());
+      reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
+    }
+  }
+}
+
+void Dispatcher::HandleUnregister(const grpc::ServerContext& ctx,
+                                  const UnregisterRequest& request,
+                                  RpcReply* reply) {
+  // TODO
+  LOG(ERROR) << "HandleUnregister not implemented. Request: "
+             << request.DebugString();
+  reply->set_status(CtrlStatus::CTRL_OK);
+}
+
+void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
+                                 const LoadModelRequest& request,
+                                 LoadModelReply* reply) {
+  // TODO
+  LOG(ERROR) << "HandleLoadModel not implemented. Request: "
+             << request.DebugString();
+  reply->set_status(CtrlStatus::CTRL_OK);
+}
+
+void Dispatcher::HandleKeepAlive(const grpc::ServerContext& ctx,
+                                 const KeepAliveRequest& request,
+                                 RpcReply* reply) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  switch (request.node_type()) {
+    case NodeType::FRONTEND_NODE: {
+      auto it = frontends_.find(request.node_id());
+      if (it == frontends_.end()) {
+        reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
+      } else {
+        it->second->Tick();
+        reply->set_status(CtrlStatus::CTRL_OK);
+      }
+      break;
+    }
+    case NodeType::BACKEND_NODE: {
+      auto it = backends_.find(request.node_id());
+      if (it == backends_.end()) {
+        reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
+      } else {
+        it->second->Tick();
+        reply->set_status(CtrlStatus::CTRL_OK);
+      }
+      break;
+    }
+    default: {
+      LOG(ERROR) << "Unknown node type: " << NodeType_Name(request.node_type());
+      reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
+    }
   }
 }
 

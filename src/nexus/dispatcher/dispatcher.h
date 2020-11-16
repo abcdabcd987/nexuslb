@@ -16,13 +16,15 @@
 
 #include "nexus/common/connection.h"
 #include "nexus/common/server_base.h"
-#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
 #include "nexus/dispatcher/rpc_service.h"
-#endif
 #include "nexus/proto/control.pb.h"
 
 namespace nexus {
 namespace dispatcher {
+
+class Dispatcher;
+class FrontendDelegate;
+class BackendDelegate;
 
 class ModelRoute {
  public:
@@ -46,8 +48,6 @@ struct RequestContext {
   size_t len;
   boost::asio::ip::udp::endpoint endpoint;
 };
-
-class Dispatcher;
 
 class UdpRpcServer {
  public:
@@ -96,12 +96,18 @@ class Dispatcher {
 
   void GetBackend(const std::string& model_sess_id, DispatchReply* reply);
 
- private:
-#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
-  void Register();
-  void Unregister();
-#endif
+  // gRPC handlers
 
+  void HandleRegister(const grpc::ServerContext& ctx,
+                      const RegisterRequest& request, RegisterReply* reply);
+  void HandleUnregister(const grpc::ServerContext& ctx,
+                        const UnregisterRequest& request, RpcReply* reply);
+  void HandleLoadModel(const grpc::ServerContext& ctx,
+                       const LoadModelRequest& request, LoadModelReply* reply);
+  void HandleKeepAlive(const grpc::ServerContext& ctx,
+                       const KeepAliveRequest& request, RpcReply* reply);
+
+ private:
   const int udp_port_;
   const int num_udp_threads_;
   const std::vector<int> pin_cpus_;
@@ -112,12 +118,12 @@ class Dispatcher {
   uint32_t beacon_interval_sec_;
   /*! \brief Frontend node ID */
   uint32_t node_id_;
-#ifndef NEXUS_DISPATCHER_DEBUG_NO_SCHEDULER
   /*! \brief RPC service */
   RpcService rpc_service_;
-  /*! \brief RPC client connected to scheduler */
-  std::unique_ptr<SchedulerCtrl::Stub> sch_stub_;
-#endif
+  /*! \brief Mapping from frontend node id to frontend client */
+  std::unordered_map<uint32_t, std::shared_ptr<FrontendDelegate>> frontends_;
+  /*! \brief Mapping from backend node id to backend client */
+  std::unordered_map<uint32_t, std::shared_ptr<BackendDelegate>> backends_;
 
   // Big lock for the model routes
   std::mutex mutex_;

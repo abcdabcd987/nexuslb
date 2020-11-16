@@ -5,22 +5,29 @@
 namespace nexus {
 namespace dispatcher {
 
-INSTANTIATE_RPC_CALL(AsyncService, UpdateModelRoutes, ModelRouteUpdates,
-                     RpcReply);
-INSTANTIATE_RPC_CALL(AsyncService, CheckAlive, CheckAliveRequest, RpcReply);
+INSTANTIATE_RPC_CALL(AsyncService, Register, RegisterRequest, RegisterReply);
+INSTANTIATE_RPC_CALL(AsyncService, Unregister, UnregisterRequest, RpcReply);
+INSTANTIATE_RPC_CALL(AsyncService, LoadModel, LoadModelRequest, LoadModelReply);
+INSTANTIATE_RPC_CALL(AsyncService, KeepAlive, KeepAliveRequest, RpcReply);
 
 RpcService::RpcService(Dispatcher* dispatcher, std::string port,
                        size_t nthreads)
     : AsyncRpcServiceBase(port, nthreads), dispatcher_(dispatcher) {}
 
 void RpcService::HandleRpcs() {
-  new UpdateModelRoutes_Call(
+  using namespace std::placeholders;
+  new Register_Call(
       &service_, cq_.get(),
-      [this](const grpc::ServerContext&, const ModelRouteUpdates& req,
-             RpcReply* reply) { dispatcher_->UpdateModelRoutes(req, reply); });
-  new CheckAlive_Call(&service_, cq_.get(),
-                      [](const grpc::ServerContext&, const CheckAliveRequest&,
-                         RpcReply* reply) { reply->set_status(CTRL_OK); });
+      std::bind(&Dispatcher::HandleRegister, dispatcher_, _1, _2, _3));
+  new Unregister_Call(
+      &service_, cq_.get(),
+      std::bind(&Dispatcher::HandleUnregister, dispatcher_, _1, _2, _3));
+  new LoadModel_Call(
+      &service_, cq_.get(),
+      std::bind(&Dispatcher::HandleLoadModel, dispatcher_, _1, _2, _3));
+  new KeepAlive_Call(
+      &service_, cq_.get(),
+      std::bind(&Dispatcher::HandleKeepAlive, dispatcher_, _1, _2, _3));
   void* tag;
   bool ok;
   while (running_) {

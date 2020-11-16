@@ -10,7 +10,7 @@
 namespace nexus {
 namespace dispatcher {
 
-using AsyncService = nexus::FrontendCtrl::AsyncService;
+using AsyncService = nexus::DispatcherCtrl::AsyncService;
 
 class Dispatcher;
 
@@ -22,7 +22,7 @@ class RpcService : public AsyncRpcServiceBase<AsyncService> {
   void HandleRpcs() final;
 
  private:
-  Dispatcher* dispatcher_;
+  Dispatcher* const dispatcher_;
 };
 
 }  // namespace dispatcher

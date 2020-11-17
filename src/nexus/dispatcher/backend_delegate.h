@@ -5,12 +5,15 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 #include "nexus/proto/control.grpc.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
 namespace dispatcher {
+
+class InstanceInfo;
 
 class BackendDelegate {
  public:
@@ -20,12 +23,19 @@ class BackendDelegate {
                   size_t gpu_available_memory, int beacon_sec);
 
   uint32_t node_id() const { return node_id_; }
-  std::string gpu_device() const { return gpu_device_; }
+  const std::string& gpu_device() const { return gpu_device_; }
+  const std::string& gpu_uuid() const { return gpu_uuid_; }
   size_t gpu_available_memory() const { return gpu_available_memory_; }
+
+  std::shared_ptr<InstanceInfo> GetInstanceInfo(
+      const std::string& model_sess_id) const;
+  void AddInstanceInfo(const std::string& model_sess_id,
+                       std::shared_ptr<InstanceInfo> inst);
 
   void Tick();
   bool IsAlive();
-  void SendLoadModelCommand(const ModelSession& model_session);
+  void SendLoadModelCommand(const ModelSession& model_session,
+                            uint32_t max_batch);
 
  private:
   uint32_t node_id_;
@@ -39,6 +49,7 @@ class BackendDelegate {
   long timeout_ms_;
   std::unique_ptr<BackendCtrl::Stub> stub_;
   std::chrono::time_point<std::chrono::system_clock> last_time_;
+  std::unordered_map<std::string, std::shared_ptr<InstanceInfo>> instances_;
 };
 
 }  // namespace dispatcher

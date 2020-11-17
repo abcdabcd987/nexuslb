@@ -76,13 +76,9 @@ class BackendServer : public ServerBase, public MessageHandler {
   void HandleError(std::shared_ptr<Connection> conn,
                    boost::system::error_code ec) final;
 
-  void UpdateModelTableAsync(const ModelTableConfig& req);
-  /*!
-   * \brief Updates model table
-   * \param req Update model table requests
-   * \param reply Replies to update model tabel requests
-   */
-  void UpdateModelTable(const ModelTableConfig& req);
+  void LoadModelEnqueue(const BackendLoadModelCommand& req);
+  void LoadModel(const BackendLoadModelCommand& req);
+
   /*!
    * \brief Gets the model instance given model session ID
    * \param model_session_id Model session ID
@@ -158,11 +154,9 @@ class BackendServer : public ServerBase, public MessageHandler {
    */
   ModelTable model_table_;
 
-  BlockQueue<ModelTableConfig> model_table_requests_;
+  BlockQueue<BackendLoadModelCommand> model_table_requests_;
   /*! \brief Mutex for accessing model_table_ */
   std::mutex model_table_mu_;
-  /*! \brief Backend pool for backup servers. */
-  BackendPool backend_pool_;
   /*! \brief Random number genertor */
   std::random_device rd_;
   std::mt19937 rand_gen_;

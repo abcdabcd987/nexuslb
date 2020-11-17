@@ -45,6 +45,9 @@ class ModelProfile {
    * \return max batch size
    */
   uint32_t GetMaxBatch(float latency_sla_ms) const;
+
+  uint32_t GetMaxBatchWithFullBudget(float time_budget_ms) const;
+
   /*!
    * \brief Computes the maximum throughput can be achieved within latency_sla
    * \param latency_sla Latency SLA in ms

@@ -141,6 +141,26 @@ uint32_t ModelProfile::GetMaxBatch(float latency_sla_ms) const {
   return batch;
 }
 
+uint32_t ModelProfile::GetMaxBatchWithFullBudget(float time_budget_ms) const {
+  float latency_budget = time_budget_ms * 1000 - network_latency_us_;
+  latency_budget -= GetPreprocessLatency();
+  latency_budget -= GetPostprocessLatency();
+  uint32_t batch = 1;
+  while (true) {
+    if (forward_lats_.find(batch) == forward_lats_.end()) {
+      break;
+    }
+    auto entry = forward_lats_.at(batch);
+    if (entry.latency_mean + entry.latency_std > latency_budget) {
+      break;
+    }
+    ++batch;
+  }
+  --batch;
+  batch = (batch == 0) ? 1 : batch;
+  return batch;
+}
+
 std::pair<uint32_t, float> ModelProfile::GetMaxThroughput(
     float latency_sla_ms) const {
   float max_throughput = 0;

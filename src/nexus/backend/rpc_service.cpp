@@ -12,7 +12,7 @@ DECLARE_int32(occupancy_valid);
 namespace nexus {
 namespace backend {
 
-INSTANTIATE_RPC_CALL(AsyncService, UpdateModelTable, ModelTableConfig,
+INSTANTIATE_RPC_CALL(AsyncService, LoadModel, BackendLoadModelCommand,
                      RpcReply);
 INSTANTIATE_RPC_CALL(AsyncService, CheckAlive, CheckAliveRequest, RpcReply);
 #ifdef USE_GPU
@@ -25,13 +25,11 @@ BackendRpcService::BackendRpcService(BackendServer* backend, std::string port,
     : AsyncRpcServiceBase(port, nthreads), backend_(backend) {}
 
 void BackendRpcService::HandleRpcs() {
-  new UpdateModelTable_Call(
+  new LoadModel_Call(
       &service_, cq_.get(),
-      [this](const grpc::ServerContext&, const ModelTableConfig& req,
+      [this](const grpc::ServerContext&, const BackendLoadModelCommand& req,
              RpcReply* reply) {
-        // std::thread (&BackendServer::UpdateModelTable, backend_,
-        // req).detach();
-        backend_->UpdateModelTableAsync(req);
+        backend_->LoadModelEnqueue(req);
         reply->set_status(CTRL_OK);
       });
   new CheckAlive_Call(&service_, cq_.get(),

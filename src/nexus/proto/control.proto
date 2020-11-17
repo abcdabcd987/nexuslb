@@ -212,4 +212,5 @@ message DispatchReply {
 
 message BackendLoadModelCommand {
   ModelSession model_session = 1;
+  uint32 max_batch = 2;
 }

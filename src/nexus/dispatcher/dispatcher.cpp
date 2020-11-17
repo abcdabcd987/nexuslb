@@ -17,6 +17,7 @@
 #include "nexus/common/model_def.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/frontend_delegate.h"
+#include "nexus/dispatcher/inst_info.h"
 #include "nexus/dispatcher/session_context.h"
 
 using boost::asio::ip::udp;
@@ -383,7 +384,22 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
 
       // Load Models
       for (auto iter : sessions) {
-        backend->SendLoadModelCommand(iter.second->model_session());
+        const auto& model_session = iter.second->model_session();
+        auto profile_id = ModelSessionToProfileID(model_session);
+        auto* profile = ModelDatabase::Singleton().GetModelProfile(
+            backend->gpu_device(), backend->gpu_uuid(), profile_id);
+        if (!profile) {
+          reply->set_status(CtrlStatus::CTRL_INVALID_LOAD_MODEL_REQUEST);
+          continue;
+        }
+        auto inst = std::make_shared<InstanceInfo>(
+            model_session, backend->node_id(), *profile);
+        auto model_sess_id = ModelSessionToString(model_session);
+        backend->AddInstanceInfo(model_sess_id, inst);
+        iter.second->AddInstanceInfo(backend->node_id(), inst);
+
+        // LoadModel RPC
+        backend->SendLoadModelCommand(model_session, inst->max_batch());
       }
 
       reply->set_status(CtrlStatus::CTRL_OK);
@@ -412,7 +428,7 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
   auto model_info = ModelDatabase::Singleton().GetModelInfo(
       ModelSessionToModelID(request.model_session()));
   if (!model_info) {
-    reply->set_status(MODEL_NOT_FOUND);
+    reply->set_status(CtrlStatus::MODEL_NOT_FOUND);
     return;
   }
 
@@ -426,14 +442,29 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
       return;
     }
   }
+  reply->set_status(CtrlStatus::CTRL_OK);
 
   // Add the model session
   auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
   sessions_[model_sess_id] = sctx;
 
   // Ask backends to load the model
+  auto profile_id = ModelSessionToProfileID(request.model_session());
   for (auto backend_iter : backends_) {
-    backend_iter.second->SendLoadModelCommand(request.model_session());
+    auto backend = backend_iter.second;
+    auto* profile = ModelDatabase::Singleton().GetModelProfile(
+        backend->gpu_device(), backend->gpu_uuid(), profile_id);
+    if (!profile) {
+      reply->set_status(CtrlStatus::CTRL_INVALID_LOAD_MODEL_REQUEST);
+      continue;
+    }
+    auto inst = std::make_shared<InstanceInfo>(request.model_session(),
+                                               backend->node_id(), *profile);
+    backend->AddInstanceInfo(model_sess_id, inst);
+    sctx->AddInstanceInfo(backend->node_id(), inst);
+
+    // LoadModel RPC
+    backend->SendLoadModelCommand(request.model_session(), inst->max_batch());
   }
 }
 

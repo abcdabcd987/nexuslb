@@ -175,224 +175,48 @@ void BackendServer::HandleError(std::shared_ptr<Connection> conn,
   conn->Stop();
 }
 
-void BackendServer::UpdateModelTableAsync(const ModelTableConfig& request) {
-  auto cfg = std::make_shared<ModelTableConfig>();
-  cfg->CopyFrom(request);
-  model_table_requests_.push(std::move(cfg));
+void BackendServer::LoadModelEnqueue(const BackendLoadModelCommand& request) {
+  auto req = std::make_shared<BackendLoadModelCommand>();
+  req->CopyFrom(request);
+  model_table_requests_.push(std::move(req));
 }
 
-void BackendServer::UpdateModelTable(const ModelTableConfig& request) {
+void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
 #ifdef USE_GPU
-  // Update backend pool
-  std::unordered_set<uint32_t> backend_list;
-  std::unordered_map<uint32_t, BackendInfo> backend_infos;
-  for (auto config : request.model_instance_config()) {
-    for (auto const& info : config.backup_backend()) {
-      backend_list.insert(info.node_id());
-      backend_infos.emplace(info.node_id(), info);
-    }
-  }
-  auto new_backends = backend_pool_.UpdateBackendList(backend_list);
-  for (auto backend_id : new_backends) {
-    backend_pool_.AddBackend(std::make_shared<BackupClient>(
-        backend_infos.at(backend_id), io_context_, this));
-  }
-
-  // Count all sessions in model table
-  std::unordered_set<std::string> all_sessions;
-  for (auto const& config : request.model_instance_config()) {
-    for (auto const& model_sess : config.model_session()) {
-      all_sessions.insert(ModelSessionToString(model_sess));
-    }
-  }
-
   // Start to update model table
   std::lock_guard<std::mutex> lock(model_table_mu_);
-  // Remove unused model instances
-  std::vector<std::string> to_remove;
-  for (auto iter : model_table_) {
-    if (all_sessions.count(iter.first) == 0) {
-      to_remove.push_back(iter.first);
-    }
-  }
-  for (auto session_id : to_remove) {
-    auto model = model_table_.at(session_id);
-    model_table_.erase(session_id);
-    if (model->IsTFShareModel()) {
-      auto tf_model = dynamic_cast<TFShareModel*>(model->model());
-      LOG(INFO) << "Remove model session " << session_id
-                << " from TFShare model " << tf_model->model_session_id();
-      ModelSession model_sess;
-      ParseModelSession(session_id, &model_sess);
-      bool ok = tf_model->RemoveModelSession(model_sess);
-      if (!ok)
-        LOG(ERROR) << "Cannot find session " << session_id
-                   << " in TFShare model " << tf_model->model_session_id();
-      if (tf_model->num_model_sessions() == 0) {
-        LOG(INFO) << "Remove TFShare model " << tf_model->model_session_id();
-        gpu_executor_->RemoveModel(model);
-      }
-    } else if (model->IsSharePrefixModel()) {
-      auto sp_internal = dynamic_cast<SharePrefixModel*>(model->model());
-      LOG(INFO) << "Remove model session " << session_id
-                << " from prefix model " << sp_internal->model_session_id();
-      sp_internal->RemoveModelSession(session_id);
-      if (sp_internal->num_model_sessions() == 0) {
-        LOG(INFO) << "Remove prefix model instance " << session_id;
-        gpu_executor_->RemoveModel(model);
-      }
-    } else {
-      LOG(INFO) << "Remove model instance " << session_id;
-      gpu_executor_->RemoveModel(model);
-    }
+  auto model_sess_id = ModelSessionToString(request.model_session());
+  auto model_iter = model_table_.find(model_sess_id);
+  if (model_iter != model_table_.end()) {
+    LOG(INFO) << "Skip loading model session " << model_sess_id
+              << " because already loaded.";
+    return;
   }
 
-  // Add new models and update model batch size
-  for (auto config : request.model_instance_config()) {
-    if (config.model_session_size() > 1) {
-      if (config.model_session(0).framework() == "tf_share") {
-        // TFShareModel
-        auto tf_share_info = ModelDatabase::Singleton().GetTFShareInfo(
-            config.model_session(0).model_name());
-        CHECK(tf_share_info != nullptr) << "Cannot find TFShare suffix model "
-                                        << config.model_session(0).model_name();
-        std::string str_model_sessions =
-            ModelSessionToString(config.model_session(0));
-        for (int i = 1; i < config.model_session_size(); ++i) {
-          const auto& model_sess = config.model_session(i);
-          str_model_sessions += '|';
-          str_model_sessions += ModelSessionToString(model_sess);
-          CHECK(tf_share_info->suffix_models.count(model_sess.model_name()) ==
-                1)
-              << "Cannot find suffix model " << model_sess.model_name()
-              << " in TFShare model " << tf_share_info->hack_internal_id;
-        }
-        std::shared_ptr<ModelExecutor> sp_model = nullptr;
-        for (const auto& model_sess : config.model_session()) {
-          auto session_id = ModelSessionToString(model_sess);
-          auto iter = model_table_.find(session_id);
-          if (iter != model_table_.end()) {
-            auto model = iter->second;
-            CHECK(model->IsTFShareModel());
-            sp_model = model;
-            break;
-          }
-        }
-        if (sp_model == nullptr) {
-          // Create a new prefix model
-          LOG(INFO) << "Load TFShareModel instance [" << str_model_sessions
-                    << "] batch=" << config.batch();
-          auto model =
-              std::make_shared<ModelExecutor>(gpu_id_, config, task_queue_);
-          gpu_executor_->AddModel(model);
-          for (const auto& model_sess : config.model_session()) {
-            std::string session_id = ModelSessionToString(model_sess);
-            model_table_.emplace(session_id, model);
-          }
-        } else {
-          // Prefix model already exists
-          auto* tf_model = dynamic_cast<TFShareModel*>(sp_model->model());
-          CHECK(tf_model != nullptr);
-          if (tf_model->batch() != config.batch()) {
-            LOG(INFO) << "Update TFShareModel " << tf_model->model_name()
-                      << ", batch: " << tf_model->batch() << " -> "
-                      << config.batch();
-            sp_model->SetBatch(config.batch());
-          }
-          for (const auto& model_sess : config.model_session()) {
-            auto session_id = ModelSessionToString(model_sess);
-            auto not_exist = tf_model->AddModelSession(model_sess);
-            if (not_exist) model_table_.emplace(session_id, sp_model);
-          }
-          sp_model->UpdateBackupBackends(config);
-        }
-      } else {
-        // SharePrefixModel
-        std::shared_ptr<ModelExecutor> sp_model = nullptr;
-        for (auto model_sess : config.model_session()) {
-          std::string session_id = ModelSessionToString(model_sess);
-          auto iter = model_table_.find(session_id);
-          if (iter != model_table_.end()) {
-            auto model = iter->second;
-            if (model->IsSharePrefixModel()) {
-              sp_model = model;
-              break;
-            } else {
-              // Remove its original model
-              gpu_executor_->RemoveModel(model);
-              model_table_.erase(session_id);
-            }
-          }
-        }
-        if (sp_model == nullptr) {
-          // Create a new prefix model
-          LOG(INFO) << "Load prefix model instance "
-                    << ModelSessionToString(config.model_session(0))
-                    << ", batch: " << config.batch()
-                    << ", backup: " << config.backup();
-          auto model =
-              std::make_shared<ModelExecutor>(gpu_id_, config, task_queue_);
-          gpu_executor_->AddModel(model);
-          for (auto model_sess : config.model_session()) {
-            std::string session_id = ModelSessionToString(model_sess);
-            model_table_.emplace(session_id, model);
-          }
-        } else {
-          // Prefix model already exists
-          // Need to update batch size, and add new model sessions sharing
-          // prefix
-          auto sp_internal = dynamic_cast<SharePrefixModel*>(sp_model->model());
-          if (sp_internal->batch() != config.batch()) {
-            LOG(INFO) << "Update prefix model instance "
-                      << sp_internal->model_session_id()
-                      << ", batch: " << sp_internal->batch() << " -> "
-                      << config.batch();
-            sp_model->SetBatch(config.batch());
-          }
-          for (auto model_sess : config.model_session()) {
-            std::string session_id = ModelSessionToString(model_sess);
-            if (!sp_internal->HasModelSession(session_id)) {
-              LOG(INFO) << "Add model session " << session_id
-                        << " to prefix model "
-                        << sp_internal->model_session_id();
-              sp_internal->AddModelSession(model_sess);
-              model_table_.emplace(session_id, sp_model);
-            }
-          }
-          sp_model->UpdateBackupBackends(config);
-        }
-      }
-    } else {
-      // Regular model session
-      auto model_sess = config.model_session(0);
-      std::string session_id = ModelSessionToString(model_sess);
-      auto model_iter = model_table_.find(session_id);
-      if (model_iter == model_table_.end()) {
-        // Load new model instance
-        auto model =
-            std::make_shared<ModelExecutor>(gpu_id_, config, task_queue_);
-        model_table_.emplace(session_id, model);
-        gpu_executor_->AddModel(model);
-        LOG(INFO) << "Load model instance " << session_id
-                  << ", batch: " << config.batch()
-                  << ", backup: " << config.backup();
-      } else {
-        auto model = model_iter->second;
-        if (model->model()->batch() != config.batch()) {
-          // Update the batch size
-          LOG(INFO) << "Update model instance " << session_id
-                    << ", batch: " << model->model()->batch() << " -> "
-                    << config.batch();
-          model->SetBatch(config.batch());
-        }
-        model->UpdateBackupBackends(config);
-      }
-    }
-  }
+  // Temporary adaptor to use existing ModelExecutor constructor.
+  ModelInstanceConfig config;
+  *config.add_model_session() = request.model_session();
+  config.set_batch(1);
+  config.set_max_batch(request.max_batch());
+  auto gpu_device = DeviceManager::Singleton().GetGPUDevice(gpu_id_);
+  auto profile_id = ModelSessionToProfileID(request.model_session());
+  auto* profile = ModelDatabase::Singleton().GetModelProfile(
+      gpu_device->device_name(), gpu_device->uuid(), profile_id);
+  if (!profile) return;
+  auto memory_usage = profile->GetMemoryUsage(request.max_batch());
+  config.set_memory_usage(memory_usage);
 
-  // Update duty cycle
-  gpu_executor_->SetDutyCycle(request.duty_cycle_us());
-  LOG(INFO) << "Duty cycle: " << request.duty_cycle_us() << " us";
+  // Load new model instance
+  auto model = std::make_shared<ModelExecutor>(gpu_id_, config, task_queue_);
+  model_table_.emplace(model_sess_id, model);
+  gpu_executor_->AddModel(model);
+  LOG(INFO) << "Load model instance " << model_sess_id
+            << ", max_batch: " << config.max_batch();
+
+  // Update duty cycle (Deprecated)
+  auto duty_cycle = request.model_session().latency_sla() * 1e3 / 2;
+  gpu_executor_->SetDutyCycle(duty_cycle);
+  LOG(INFO) << "Duty cycle: " << duty_cycle << " us";
 #else
   LOG(FATAL) << "backend needs the USE_GPU flag set at compile-time.";
 #endif
@@ -415,11 +239,7 @@ BackendServer::ModelTable BackendServer::GetModelTable() {
 
 std::shared_ptr<BackupClient> BackendServer::GetBackupClient(
     uint32_t backend_id) {
-  auto backup = backend_pool_.GetBackend(backend_id);
-  if (backup == nullptr) {
-    return nullptr;
-  }
-  return std::static_pointer_cast<BackupClient>(backup);
+  return nullptr;
 }
 
 void BackendServer::Daemon() {
@@ -454,11 +274,11 @@ void BackendServer::Daemon() {
 void BackendServer::ModelTableDaemon() {
   auto timeout = std::chrono::milliseconds(500);
   while (running_) {
-    auto model_table_cfg = model_table_requests_.pop(timeout);
-    if (model_table_cfg == nullptr) {
+    auto req = model_table_requests_.pop(timeout);
+    if (req == nullptr) {
       continue;
     }
-    UpdateModelTable(*model_table_cfg);
+    LoadModel(*req);
   }
 }
 

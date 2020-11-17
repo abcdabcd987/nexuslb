@@ -5,6 +5,8 @@
 
 #include <sstream>
 
+#include "nexus/dispatcher/inst_info.h"
+
 namespace nexus {
 namespace dispatcher {
 
@@ -56,10 +58,12 @@ bool BackendDelegate::IsAlive() {
   return true;
 }
 
-void BackendDelegate::SendLoadModelCommand(const ModelSession& model_session) {
+void BackendDelegate::SendLoadModelCommand(const ModelSession& model_session,
+                                           uint32_t max_batch) {
   grpc::ClientContext context;
   BackendLoadModelCommand request;
   *request.mutable_model_session() = model_session;
+  request.set_max_batch(max_batch);
   RpcReply reply;
   grpc::Status status = stub_->LoadModel(&context, request, &reply);
   if (!status.ok()) {
@@ -67,6 +71,16 @@ void BackendDelegate::SendLoadModelCommand(const ModelSession& model_session) {
                << status.error_message();
   }
   last_time_ = std::chrono::system_clock::now();
+}
+
+std::shared_ptr<InstanceInfo> BackendDelegate::GetInstanceInfo(
+    const std::string& model_sess_id) const {
+  return instances_.at(model_sess_id);
+}
+
+void BackendDelegate::AddInstanceInfo(const std::string& model_sess_id,
+                                      std::shared_ptr<InstanceInfo> inst) {
+  instances_[model_sess_id] = inst;
 }
 
 }  // namespace dispatcher

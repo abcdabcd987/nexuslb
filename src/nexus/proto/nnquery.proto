@@ -135,6 +135,9 @@ message QueryProto {
   int32 slack_ms = 40;
   // Show breakdown latency in the result
   bool debug = 100;
+
+  // Assigned by the dispatcher.
+  uint64 global_id = 4;
 }
 
 message QueryResultProto {

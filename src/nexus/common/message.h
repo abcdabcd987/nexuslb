@@ -26,6 +26,10 @@ enum MessageType {
   kBackendRelay = 102,
   /*! \brief relay reply from backup */
   kBackendRelayReply = 103,
+  /*! \brief request from backend to frontend to fetch image */
+  kFetchImageRequest = 104,
+  /*! \brief reply from frontend to backend */
+  kFetchImageReply = 105,
 };
 
 /*! \brief Message header format */

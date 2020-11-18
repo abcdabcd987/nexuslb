@@ -214,3 +214,14 @@ message BackendLoadModelCommand {
   ModelSession model_session = 1;
   uint32 max_batch = 2;
 }
+
+message FetchImageRequest {
+  uint64 global_id = 1;
+  uint64 query_id = 2;
+}
+
+message FetchImageReply {
+  uint64 global_id = 1;
+  uint64 query_id = 2;
+  ValueProto input = 3;
+}

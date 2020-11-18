@@ -150,15 +150,45 @@ void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
     case kBackendRelay: {
       auto task = std::make_shared<Task>(conn);
       task->DecodeQuery(message);
-      task_queue_.push(std::move(task));
+      auto global_id = GlobalId(task->query.global_id());
+      std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
+      if (tasks_pending_fetch_image_.count(global_id)) {
+        LOG(ERROR) << "GlobalId of the incoming request is not unique. Skip. "
+                   << "global_id=" << global_id.t;
+        break;
+      }
+      tasks_pending_fetch_image_[global_id] = std::move(task);
       break;
     }
     case kBackendRelayReply: {
       std::static_pointer_cast<BackupClient>(conn)->Reply(std::move(message));
       break;
     }
+    case kFetchImageReply: {
+      FetchImageReply reply;
+      message->DecodeBody(&reply);
+      auto global_id = GlobalId(reply.global_id());
+      std::shared_ptr<Task> task;
+      {
+        std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
+        auto iter = tasks_pending_fetch_image_.find(global_id);
+        if (iter == tasks_pending_fetch_image_.end()) {
+          LOG(ERROR) << "Cannot find Task pending FetchImage. "
+                     << "global_id=" << global_id.t;
+          break;
+        }
+        task = iter->second;
+        CHECK_EQ(task->query.query_id(), reply.query_id())
+            << "FetchImageReply.query_id should match Task.query_id.";
+        tasks_pending_fetch_image_.erase(iter);
+      }
+      task->query.mutable_input()->Swap(reply.mutable_input());
+      task->stage = Stage::kPreprocess;
+      task_queue_.push(std::move(task));
+      break;
+    }
     default:
-      LOG(INFO) << "Wrong message type: " << message->type();
+      LOG(ERROR) << "Wrong message type: " << message->type();
   }
 }
 

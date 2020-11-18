@@ -21,6 +21,7 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/server_base.h"
 #include "nexus/common/spinlock.h"
+#include "nexus/common/typedef.h"
 #include "nexus/proto/control.grpc.pb.h"
 
 #ifdef USE_GPU
@@ -137,13 +138,13 @@ class BackendServer : public ServerBase, public MessageHandler {
 
   std::thread model_table_thread_;
   /*! \brief Frontend connection pool. Guraded by frontend_mutex_. */
-  std::set<std::shared_ptr<Connection> > frontend_connections_;
+  std::set<std::shared_ptr<Connection>> frontend_connections_;
   /*! \brief Mutex for frontend_connections_ */
   std::mutex frontend_mutex_;
   /*! \brief Task queue for workers to work on */
   BlockPriorityQueue<Task> task_queue_;
   /*! \brief Worker thread pool */
-  std::vector<std::unique_ptr<Worker> > workers_;
+  std::vector<std::unique_ptr<Worker>> workers_;
 #ifdef USE_GPU
   /*! \brief GPU executor */
   std::unique_ptr<GpuExecutor> gpu_executor_;
@@ -160,6 +161,11 @@ class BackendServer : public ServerBase, public MessageHandler {
   /*! \brief Random number genertor */
   std::random_device rd_;
   std::mt19937 rand_gen_;
+
+  // Tasks pending FetchImageReply
+  std::mutex mu_tasks_pending_fetch_image_;
+  std::unordered_map<GlobalId, std::shared_ptr<Task>>
+      tasks_pending_fetch_image_;
 };
 
 }  // namespace backend

@@ -68,8 +68,10 @@ class Output {
 
 /*! \brief Stage indicates the context processing stage */
 enum Stage {
+  /* !\brief Task is waiting for frontend to reply to FetchImage call */
+  kFetchImage = 0,
   /* !\brief Task at the pre-processing stage */
-  kPreprocess = 0,
+  kPreprocess,
   /* !\brief Task at the forwarding model stage */
   kForward,
   /* !\brief Task at the post-processing stage */

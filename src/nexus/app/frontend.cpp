@@ -346,10 +346,19 @@ bool Frontend::UpdateBackendPoolAndModelRoute(const ModelRouteProto& route) {
     for (auto backend : route.backend_rate()) {
       uint32_t backend_id = backend.info().node_id();
       if (backend_sessions_.count(backend_id) == 0) {
+        // Establish connection to the backend and send frontend_id.
+        auto conn =
+            std::make_shared<BackendSession>(backend.info(), io_context_, this);
+        TellNodeIdMessage msg;
+        msg.set_node_id(node_id_);
+        auto message = std::make_shared<Message>(MessageType::kConnFrontBack,
+                                                 msg.ByteSizeLong());
+        conn->Write(message);
+
+        // Add to backend pool
         backend_sessions_.emplace(
             backend_id, std::unordered_set<std::string>{model_session_id});
-        backend_pool_.AddBackend(std::make_shared<BackendSession>(
-            backend.info(), io_context_, this));
+        backend_pool_.AddBackend(conn);
       } else {
         backend_sessions_.at(backend_id).insert(model_session_id);
       }

@@ -141,7 +141,8 @@ class BackendServer : public ServerBase, public MessageHandler {
   /*! \brief Connection pool. Guraded by mu_connections_. */
   std::unordered_set<std::shared_ptr<Connection>> all_connections_;
   std::unordered_map<NodeId, std::shared_ptr<Connection>> node_connections_;
-  std::unordered_map<std::shared_ptr<Connection>, NodeId> map_connection_nodeid_;
+  std::unordered_map<std::shared_ptr<Connection>, NodeId>
+      map_connection_nodeid_;
   /*! \brief Mutex for connections_ */
   std::mutex mu_connections_;
   /*! \brief Task queue for workers to work on */

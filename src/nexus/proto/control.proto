@@ -64,6 +64,7 @@ enum CtrlStatus {
   CTRL_SERVER_NOT_REGISTERED = 101;
   CTRL_MODEL_NOT_SUPPORTED = 102;
   CTRL_ROUTE_TABLE_VERSION_MISMATCH = 103;
+  CTRL_IMAGE_NOT_FOUND = 104;
 
   CTRL_BACKEND_NODE_ID_CONFLICT = 200;
 
@@ -226,6 +227,7 @@ message FetchImageRequest {
 }
 
 message FetchImageReply {
+  CtrlStatus status = 3;
   uint64 global_id = 1;
   ValueProto input = 2;
 }

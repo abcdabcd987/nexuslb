@@ -192,7 +192,7 @@ void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
       request.set_global_id(global_id.t);
       auto msg = std::make_shared<Message>(MessageType::kFetchImageRequest,
                                            request.ByteSizeLong());
-      msg->EncodeBody(task->result);
+      msg->EncodeBody(request);
       frontend_conn->Write(std::move(msg));
       break;
     }
@@ -204,6 +204,12 @@ void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
       FetchImageReply reply;
       message->DecodeBody(&reply);
       auto global_id = GlobalId(reply.global_id());
+      if (reply.status() != CtrlStatus::CTRL_OK) {
+        LOG(ERROR) << "FetchImageReply not ok. status="
+                   << CtrlStatus_Name(reply.status())
+                   << ", global_id=" << global_id.t;
+        break;
+      }
       std::shared_ptr<Task> task;
       {
         std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);

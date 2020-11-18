@@ -13,6 +13,7 @@
 #include "nexus/common/backend_pool.h"
 #include "nexus/common/data_type.h"
 #include "nexus/common/metric.h"
+#include "nexus/common/typedef.h"
 #include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
@@ -105,6 +106,8 @@ class ModelHandler {
 
   void HandleDispatcherReply(const DispatchReply& reply);
 
+  bool FetchImage(QueryId query_id, ValueProto* output);
+
   void UpdateRoute(const ModelRouteProto& route);
 
   std::vector<uint32_t> BackendList();
@@ -139,7 +142,7 @@ class ModelHandler {
    */
   std::shared_ptr<IntervalCounter> counter_;
 
-  std::unordered_map<uint64_t, std::shared_ptr<RequestContext> > query_ctx_;
+  std::unordered_map<QueryId, std::shared_ptr<RequestContext>> query_ctx_;
   std::mutex route_mu_;
   std::mutex query_ctx_mu_;
   /*! \brief random number generator */

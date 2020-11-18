@@ -134,6 +134,32 @@ void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
       itr->second->HandleBackendReply(result);
       break;
     }
+    case kFetchImageRequest: {
+      FetchImageRequest request;
+      message->DecodeBody(&request);
+      auto iter = model_pool_.find(request.model_session_id());
+      if (iter == model_pool_.end()) {
+        LOG(ERROR) << "Cannot find model handler for "
+                   << request.model_session_id();
+        break;
+      }
+      auto qid = request.query_id();
+      FetchImageReply reply;
+      reply.set_global_id(request.global_id());
+      bool ok = iter->second->FetchImage(QueryId(qid), reply.mutable_input());
+      if (ok) {
+        reply.set_status(CtrlStatus::CTRL_OK);
+      } else {
+        reply.set_status(CtrlStatus::CTRL_IMAGE_NOT_FOUND);
+        LOG(ERROR) << "FetchImage not found. model_session_id="
+                   << request.model_session_id()
+                   << ", global_id=" << request.global_id();
+      }
+      auto msg = std::make_shared<Message>(MessageType::kFetchImageReply,
+                                           reply.ByteSizeLong());
+      msg->EncodeBody(reply);
+      conn->Write(std::move(msg));
+    }
     default: {
       LOG(ERROR) << "Wrong message type: " << message->type();
       // TODO: handle wrong type

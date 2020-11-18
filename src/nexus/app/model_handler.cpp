@@ -162,12 +162,12 @@ void ModelHandler::SendBackendQuery(std::shared_ptr<RequestContext> ctx,
 
 void ModelHandler::HandleBackendReply(const QueryResultProto& result) {
   std::lock_guard<std::mutex> lock(query_ctx_mu_);
-  uint64_t qid = result.query_id();
+  auto qid = QueryId(result.query_id());
   auto iter = query_ctx_.find(qid);
   if (iter == query_ctx_.end()) {
     // FIXME why this happens? lower from FATAL to ERROR temporarily
     LOG(ERROR) << model_session_id_ << " cannot find query context for query "
-               << qid;
+               << qid.t;
     return;
   }
   auto ctx = iter->second;
@@ -176,7 +176,7 @@ void ModelHandler::HandleBackendReply(const QueryResultProto& result) {
 }
 
 void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
-  uint64_t qid = reply.query_id();
+  auto qid = QueryId(reply.query_id());
   std::shared_ptr<RequestContext> ctx;
   {
     std::lock_guard<std::mutex> lock(query_ctx_mu_);
@@ -221,6 +221,15 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
   }
 
   SendBackendQuery(ctx, qid, backend);
+}
+
+bool ModelHandler::FetchImage(QueryId query_id, ValueProto* output) {
+  auto iter = query_ctx_.find(query_id);
+  if (iter == query_ctx_.end()) {
+    return false;
+  }
+  *output = iter->second->backend_query_proto().input();
+  return true;
 }
 
 void ModelHandler::UpdateRoute(const ModelRouteProto& route) {

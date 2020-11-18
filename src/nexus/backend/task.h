@@ -111,6 +111,8 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
    */
   bool AddVirtualOutput(int index);
 
+  void SetConnection(std::shared_ptr<Connection> conn);
+
   /*! \brief Task id */
   uint64_t task_id;
   /*! \brief Connection to frontend. */

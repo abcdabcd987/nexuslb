@@ -111,10 +111,12 @@ void BackendServer::Stop() {
   // Stop accept new connections
   ServerBase::Stop();
   // Stop all frontend connections
-  for (auto conn : frontend_connections_) {
+  for (auto conn : all_connections_) {
     conn->Stop();
   }
-  frontend_connections_.clear();
+  all_connections_.clear();
+  node_connections_.clear();
+  map_connection_nodeid_.clear();
 #ifdef USE_GPU
   // Stop GPU executor
   gpu_executor_->Stop();
@@ -137,27 +139,61 @@ void BackendServer::Stop() {
 }
 
 void BackendServer::HandleAccept() {
-  std::lock_guard<std::mutex> lock(frontend_mutex_);
+  std::lock_guard<std::mutex> lock(mu_connections_);
   auto conn = std::make_shared<Connection>(std::move(socket_), this);
-  frontend_connections_.insert(conn);
+  all_connections_.insert(conn);
   conn->Start();
 }
 
 void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
                                   std::shared_ptr<Message> message) {
   switch (message->type()) {
+    case kConnFrontBack: {
+      TellNodeIdMessage msg;
+      message->DecodeBody(&msg);
+      auto node_id = NodeId(msg.node_id());
+      node_connections_[node_id] = conn;
+      map_connection_nodeid_[conn] = node_id;
+      break;
+    }
     case kBackendRequest:
     case kBackendRelay: {
-      auto task = std::make_shared<Task>(conn);
+      auto task = std::make_shared<Task>(nullptr);
       task->DecodeQuery(message);
-      auto global_id = GlobalId(task->query.global_id());
-      std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
-      if (tasks_pending_fetch_image_.count(global_id)) {
-        LOG(ERROR) << "GlobalId of the incoming request is not unique. Skip. "
-                   << "global_id=" << global_id.t;
-        break;
+      std::shared_ptr<Connection> frontend_conn;
+      {
+        auto frontend_id = NodeId(task->query.frontend_id());
+        auto iter = node_connections_.find(frontend_id);
+        if (iter == node_connections_.end()) {
+          LOG(ERROR) << "Cannot find connection to Frontend " << frontend_id.t
+                     << ". Ignore the incoming query. "
+                     << "query_id=" << task->query.query_id()
+                     << ", global_id=" << task->query.global_id();
+          break;
+        }
+        frontend_conn = iter->second;
       }
-      tasks_pending_fetch_image_[global_id] = std::move(task);
+      task->SetConnection(frontend_conn);
+      auto global_id = GlobalId(task->query.global_id());
+      {
+        std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
+        if (tasks_pending_fetch_image_.count(global_id)) {
+          LOG(ERROR) << "GlobalId of the incoming request is not unique. Skip. "
+                     << "global_id=" << global_id.t;
+          break;
+        }
+        tasks_pending_fetch_image_[global_id] = std::move(task);
+      }
+
+      // Send FetchImage rpc
+      FetchImageRequest request;
+      *request.mutable_model_session_id() = task->query.model_session_id();
+      request.set_query_id(task->query.query_id());
+      request.set_global_id(global_id.t);
+      auto msg = std::make_shared<Message>(MessageType::kFetchImageRequest,
+                                           request.ByteSizeLong());
+      msg->EncodeBody(task->result);
+      frontend_conn->Write(std::move(msg));
       break;
     }
     case kBackendRelayReply: {
@@ -178,8 +214,6 @@ void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
           break;
         }
         task = iter->second;
-        CHECK_EQ(task->query.query_id(), reply.query_id())
-            << "FetchImageReply.query_id should match Task.query_id.";
         tasks_pending_fetch_image_.erase(iter);
       }
       task->query.mutable_input()->Swap(reply.mutable_input());
@@ -198,10 +232,15 @@ void BackendServer::HandleError(std::shared_ptr<Connection> conn,
       ec == boost::asio::error::connection_reset) {
     // frontend disconnects
   } else {
-    LOG(ERROR) << "Frontend connection error (" << ec << "): " << ec.message();
+    LOG(ERROR) << "Connection error (" << ec << "): " << ec.message();
   }
-  std::lock_guard<std::mutex> lock(frontend_mutex_);
-  frontend_connections_.erase(conn);
+  std::lock_guard<std::mutex> lock(mu_connections_);
+  auto iter = map_connection_nodeid_.find(conn);
+  if (iter != map_connection_nodeid_.end()) {
+    node_connections_.erase(iter->second);
+    map_connection_nodeid_.erase(iter);
+  }
+  all_connections_.erase(conn);
   conn->Stop();
 }
 

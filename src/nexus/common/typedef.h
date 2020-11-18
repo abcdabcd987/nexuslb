@@ -18,6 +18,10 @@
   };                                                        \
   }
 
+// NodeId
+NS_STRONG_TYPEDEF(nexus, uint32_t, NodeId)
+
+// GlobalId is assigned by Dispatcher.
 NS_STRONG_TYPEDEF(nexus, uint64_t, GlobalId)
 
 #endif

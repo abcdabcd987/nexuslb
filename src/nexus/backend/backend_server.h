@@ -9,6 +9,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "nexus/backend/backup_client.h"
@@ -137,10 +138,12 @@ class BackendServer : public ServerBase, public MessageHandler {
   std::thread daemon_thread_;
 
   std::thread model_table_thread_;
-  /*! \brief Frontend connection pool. Guraded by frontend_mutex_. */
-  std::set<std::shared_ptr<Connection>> frontend_connections_;
-  /*! \brief Mutex for frontend_connections_ */
-  std::mutex frontend_mutex_;
+  /*! \brief Connection pool. Guraded by mu_connections_. */
+  std::unordered_set<std::shared_ptr<Connection>> all_connections_;
+  std::unordered_map<NodeId, std::shared_ptr<Connection>> node_connections_;
+  std::unordered_map<std::shared_ptr<Connection>, NodeId> map_connection_nodeid_;
+  /*! \brief Mutex for connections_ */
+  std::mutex mu_connections_;
   /*! \brief Task queue for workers to work on */
   BlockPriorityQueue<Task> task_queue_;
   /*! \brief Worker thread pool */

@@ -30,6 +30,8 @@ enum MessageType {
   kFetchImageRequest = 104,
   /*! \brief reply from frontend to backend */
   kFetchImageReply = 105,
+  /*! \brief create a connection to backend from frontend */
+  kConnFrontBack = 106,
 };
 
 /*! \brief Message header format */

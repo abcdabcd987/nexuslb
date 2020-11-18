@@ -20,10 +20,14 @@ Task::Task(std::shared_ptr<Connection> conn)
     : DeadlineItem(),
       connection(conn),
       model(nullptr),
-      stage(kPreprocess),
+      stage(Stage::kFetchImage),
       filled_outputs(0) {
   task_id = global_task_id_.fetch_add(1, std::memory_order_relaxed);
   timer.Record("begin");
+}
+
+void Task::SetConnection(std::shared_ptr<Connection> conn) {
+  connection = std::move(conn);
 }
 
 void Task::DecodeQuery(std::shared_ptr<Message> message) {

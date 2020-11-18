@@ -138,6 +138,8 @@ message QueryProto {
 
   // Assigned by the dispatcher.
   uint64 global_id = 4;
+  // Frontend that holds the input.
+  uint32 frontend_id = 5;
 }
 
 message QueryResultProto {

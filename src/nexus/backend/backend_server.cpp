@@ -156,46 +156,6 @@ void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
       map_connection_nodeid_[conn] = node_id;
       break;
     }
-    case kBackendRequest:
-    case kBackendRelay: {
-      auto task = std::make_shared<Task>(nullptr);
-      task->DecodeQuery(message);
-      std::shared_ptr<Connection> frontend_conn;
-      {
-        auto frontend_id = NodeId(task->query.frontend_id());
-        auto iter = node_connections_.find(frontend_id);
-        if (iter == node_connections_.end()) {
-          LOG(ERROR) << "Cannot find connection to Frontend " << frontend_id.t
-                     << ". Ignore the incoming query. "
-                     << "query_id=" << task->query.query_id()
-                     << ", global_id=" << task->query.global_id();
-          break;
-        }
-        frontend_conn = iter->second;
-      }
-      task->SetConnection(frontend_conn);
-      auto global_id = GlobalId(task->query.global_id());
-      {
-        std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
-        if (tasks_pending_fetch_image_.count(global_id)) {
-          LOG(ERROR) << "GlobalId of the incoming request is not unique. Skip. "
-                     << "global_id=" << global_id.t;
-          break;
-        }
-        tasks_pending_fetch_image_[global_id] = std::move(task);
-      }
-
-      // Send FetchImage rpc
-      FetchImageRequest request;
-      *request.mutable_model_session_id() = task->query.model_session_id();
-      request.set_query_id(task->query.query_id());
-      request.set_global_id(global_id.t);
-      auto msg = std::make_shared<Message>(MessageType::kFetchImageRequest,
-                                           request.ByteSizeLong());
-      msg->EncodeBody(request);
-      frontend_conn->Write(std::move(msg));
-      break;
-    }
     case kBackendRelayReply: {
       std::static_pointer_cast<BackupClient>(conn)->Reply(std::move(message));
       break;
@@ -295,6 +255,48 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
 #else
   LOG(FATAL) << "backend needs the USE_GPU flag set at compile-time.";
 #endif
+}
+
+void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
+                                       const EnqueueQueryCommand& req,
+                                       RpcReply* reply) {
+  auto task = std::make_shared<Task>(nullptr);
+  task->SetQuery(req.query());
+  std::shared_ptr<Connection> frontend_conn;
+  {
+    auto frontend_id = NodeId(task->query.frontend_id());
+    auto iter = node_connections_.find(frontend_id);
+    if (iter == node_connections_.end()) {
+      LOG(ERROR) << "Cannot find connection to Frontend " << frontend_id.t
+                 << ". Ignore the incoming query. "
+                 << "query_id=" << task->query.query_id()
+                 << ", global_id=" << task->query.global_id();
+      return;
+    }
+    frontend_conn = iter->second;
+  }
+  task->SetConnection(frontend_conn);
+  auto global_id = GlobalId(task->query.global_id());
+  {
+    std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
+    if (tasks_pending_fetch_image_.count(global_id)) {
+      LOG(ERROR) << "GlobalId of the incoming request is not unique. Skip. "
+                 << "global_id=" << global_id.t;
+      reply->set_status(CtrlStatus::CTRL_GLOBAL_ID_CONFLICT);
+      return;
+    }
+    tasks_pending_fetch_image_[global_id] = std::move(task);
+  }
+
+  // Send FetchImage rpc
+  FetchImageRequest request;
+  *request.mutable_model_session_id() = task->query.model_session_id();
+  request.set_query_id(task->query.query_id());
+  request.set_global_id(global_id.t);
+  auto msg = std::make_shared<Message>(MessageType::kFetchImageRequest,
+                                       request.ByteSizeLong());
+  msg->EncodeBody(request);
+  frontend_conn->Write(std::move(msg));
 }
 
 ModelExecutorPtr BackendServer::GetModel(const std::string& model_session_id) {

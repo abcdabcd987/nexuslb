@@ -31,8 +31,14 @@ void Task::SetConnection(std::shared_ptr<Connection> conn) {
 }
 
 void Task::DecodeQuery(std::shared_ptr<Message> message) {
+  QueryProto decoded_query;
   msg_type = message->type();
-  message->DecodeBody(&query);
+  message->DecodeBody(&decoded_query);
+  SetQuery(std::move(decoded_query));
+}
+
+void Task::SetQuery(QueryProto decoded_query) {
+  query = std::move(decoded_query);
   ModelSession sess;
   ParseModelSession(query.model_session_id(), &sess);
   uint32_t budget = sess.latency_sla();

@@ -80,6 +80,8 @@ class BackendServer : public ServerBase, public MessageHandler {
 
   void LoadModelEnqueue(const BackendLoadModelCommand& req);
   void LoadModel(const BackendLoadModelCommand& req);
+  void HandleEnqueueQuery(const grpc::ServerContext&,
+                          const EnqueueQueryCommand& req, RpcReply* reply);
 
   /*!
    * \brief Gets the model instance given model session ID

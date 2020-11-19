@@ -25,6 +25,7 @@ service BackendCtrl {
   rpc CurrentUtilization(UtilizationRequest) returns (UtilizationReply) {}
 
   rpc LoadModel(BackendLoadModelCommand) returns (RpcReply) {}
+  rpc EnqueueQuery(EnqueueQueryCommand) returns (RpcReply) {}
 }
 
 service DispatcherCtrl {
@@ -65,6 +66,8 @@ enum CtrlStatus {
   CTRL_MODEL_NOT_SUPPORTED = 102;
   CTRL_ROUTE_TABLE_VERSION_MISMATCH = 103;
   CTRL_IMAGE_NOT_FOUND = 104;
+  CTRL_FRONTEND_CONNECTION_NOT_FOUND = 105;
+  CTRL_GLOBAL_ID_CONFLICT = 106;
 
   CTRL_BACKEND_NODE_ID_CONFLICT = 200;
 
@@ -230,4 +233,8 @@ message FetchImageReply {
   CtrlStatus status = 3;
   uint64 global_id = 1;
   ValueProto input = 2;
+}
+
+message EnqueueQueryCommand {
+  QueryProto query = 1;
 }

@@ -92,6 +92,7 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
    * \param message Message received from frontend
    */
   void DecodeQuery(std::shared_ptr<Message> message);
+  void SetQuery(QueryProto decoded_query);
   /*!
    * \brief Append preprocessed input array to task.
    * \param arr Input array

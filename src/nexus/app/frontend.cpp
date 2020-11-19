@@ -352,6 +352,24 @@ void Frontend::KeepAlive() {
     LOG(ERROR) << "KeepAlive error: " << CtrlStatus_Name(ret);
   }
 }
+void Frontend::UpdateBackendList(const BackendListUpdates& request,
+                                 RpcReply* reply) {
+  // TODO: remove this rpc when we remove TellNodeIdMessage.
+  for (auto backend_info : request.backends()) {
+    uint32_t backend_id = backend_info.node_id();
+    // Establish connection to the backend and send frontend_id.
+    auto conn =
+        std::make_shared<BackendSession>(backend_info, io_context_, this);
+    TellNodeIdMessage msg;
+    msg.set_node_id(node_id_);
+    auto message = std::make_shared<Message>(MessageType::kConnFrontBack,
+                                             msg.ByteSizeLong());
+    conn->Write(message);
+
+    // Add to backend pool
+    backend_pool_.AddBackend(conn);
+  }
+}
 
 bool Frontend::UpdateBackendPoolAndModelRoute(const ModelRouteProto& route) {
   auto& model_session_id = route.model_session_id();

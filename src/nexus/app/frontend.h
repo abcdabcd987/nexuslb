@@ -62,6 +62,8 @@ class Frontend : public ServerBase, public MessageHandler {
 
   void UpdateModelRoutes(const ModelRouteUpdates& request, RpcReply* reply);
 
+  void UpdateBackendList(const BackendListUpdates& request, RpcReply* reply);
+
   std::shared_ptr<UserSession> GetUserSession(uint32_t uid);
 
  protected:

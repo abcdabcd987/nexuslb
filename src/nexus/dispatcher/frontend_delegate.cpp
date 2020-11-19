@@ -50,5 +50,16 @@ bool FrontendDelegate::IsAlive() {
   return true;
 }
 
+void FrontendDelegate::UpdateBackendList(const BackendListUpdates& request) {
+  RpcReply reply;
+  grpc::ClientContext context;
+  grpc::Status status = stub_->UpdateBackendList(&context, request, &reply);
+  if (!status.ok()) {
+    LOG(ERROR) << status.error_code() << ": " << status.error_message();
+    return;
+  }
+  last_time_ = std::chrono::system_clock::now();
+}
+
 }  // namespace dispatcher
 }  // namespace nexus

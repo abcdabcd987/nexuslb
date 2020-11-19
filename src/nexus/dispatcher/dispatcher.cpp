@@ -377,6 +377,17 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
         }
         frontends_[frontend->node_id()] = frontend;
       }
+
+      // UpdateBackendList
+      BackendListUpdates update;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto iter : backends_) {
+          update.add_backends()->CopyFrom(iter.second->backend_info());
+        }
+      }
+      frontend->UpdateBackendList(update);
+
       reply->set_status(CtrlStatus::CTRL_OK);
       reply->set_beacon_interval_sec(BEACON_INTERVAL_SEC);
       break;
@@ -416,6 +427,18 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
 
         // LoadModel RPC
         backend->SendLoadModelCommand(model_session, inst->max_batch());
+      }
+
+      // UpdateBackendList
+      BackendListUpdates update;
+      update.add_backends()->CopyFrom(backend->backend_info());
+      std::unordered_map<uint32_t, std::shared_ptr<FrontendDelegate>> frontends;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        frontends = frontends_;
+      }
+      for (auto iter : frontends) {
+        iter.second->UpdateBackendList(update);
       }
 
       reply->set_status(CtrlStatus::CTRL_OK);

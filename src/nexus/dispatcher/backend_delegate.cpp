@@ -31,6 +31,11 @@ BackendDelegate::BackendDelegate(uint32_t node_id, const std::string& ip,
       grpc::CreateChannel(rpc_addr.str(), grpc::InsecureChannelCredentials());
   stub_ = BackendCtrl::NewStub(channel);
   last_time_ = std::chrono::system_clock::now();
+
+  backend_info_.set_node_id(node_id_);
+  *backend_info_.mutable_ip() = ip_;
+  *backend_info_.mutable_server_port() = server_port_;
+  *backend_info_.mutable_rpc_port() = rpc_port_;
 }
 
 void BackendDelegate::Tick() { last_time_ = std::chrono::system_clock::now(); }

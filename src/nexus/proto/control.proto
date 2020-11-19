@@ -17,6 +17,8 @@ service SchedulerCtrl {
 service FrontendCtrl {
   rpc UpdateModelRoutes(ModelRouteUpdates) returns (RpcReply) {}
   rpc CheckAlive(CheckAliveRequest) returns (RpcReply) {}
+
+  rpc UpdateBackendList(BackendListUpdates) returns (RpcReply) {}
 }
 
 service BackendCtrl {
@@ -124,6 +126,10 @@ message ModelRouteProto {
 
 message ModelRouteUpdates {
   repeated ModelRouteProto model_route = 1;
+}
+
+message BackendListUpdates {
+  repeated BackendInfo backends = 1;
 }
 
 message LoadModelRequest {

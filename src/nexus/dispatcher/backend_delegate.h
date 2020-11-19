@@ -26,6 +26,7 @@ class BackendDelegate {
   const std::string& gpu_device() const { return gpu_device_; }
   const std::string& gpu_uuid() const { return gpu_uuid_; }
   size_t gpu_available_memory() const { return gpu_available_memory_; }
+  const BackendInfo& backend_info() const { return backend_info_; }
 
   std::shared_ptr<InstanceInfo> GetInstanceInfo(
       const std::string& model_sess_id) const;
@@ -51,6 +52,7 @@ class BackendDelegate {
   std::unique_ptr<BackendCtrl::Stub> stub_;
   std::chrono::time_point<std::chrono::system_clock> last_time_;
   std::unordered_map<std::string, std::shared_ptr<InstanceInfo>> instances_;
+  BackendInfo backend_info_;
 };
 
 }  // namespace dispatcher

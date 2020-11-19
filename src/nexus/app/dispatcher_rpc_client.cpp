@@ -118,10 +118,12 @@ void DispatcherRpcClient::DoReceive() {
 
 void DispatcherRpcClient::AsyncQuery(ModelSession model_session,
                                      uint64_t query_id,
+                                     QueryProto query_without_input,
                                      ModelHandler* model_handler) {
   CHECK(model_handler != nullptr);
   DispatchRequest request;
   *request.mutable_model_session() = std::move(model_session);
+  *request.mutable_query_without_input() = std::move(query_without_input);
   request.set_udp_rpc_port(rx_port_);
 
   // Add to the pending list

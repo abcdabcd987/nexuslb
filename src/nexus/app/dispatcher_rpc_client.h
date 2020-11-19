@@ -26,7 +26,7 @@ class DispatcherRpcClient {
   void Start();
   void Stop();
   void AsyncQuery(ModelSession model_session, uint64_t query_id,
-                  ModelHandler* model_handler);
+                  QueryProto query_without_input, ModelHandler* model_handler);
 
  private:
   void DoReceive();

@@ -168,8 +168,9 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
   DispatchReply reply;
   *reply.mutable_model_session() = request.model_session();
   reply.set_query_id(request.query_id());
-  std::string model_sess_id = ModelSessionToString(request.model_session());
-  dispatcher_->GetBackend(model_sess_id, &reply);
+  QueryProto query;
+  query.Swap(request.mutable_query_without_input());
+  dispatcher_->GetBackend(std::move(query), &reply);
 
   // Send reply. I think using blocking APIs should be okay here?
   auto msg = reply.SerializeAsString();
@@ -245,15 +246,30 @@ void Dispatcher::Stop() {
   }
 }
 
-void Dispatcher::GetBackend(const std::string& model_sess_id,
+void Dispatcher::GetBackend(QueryProto query_without_input,
                             DispatchReply* reply) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto iter = models_.find(model_sess_id);
-  if (iter == models_.end()) {
-    reply->set_status(CtrlStatus::MODEL_NOT_FOUND);
-  } else {
-    *reply->mutable_backend() = iter->second.GetBackend();
-    reply->set_status(CtrlStatus::CTRL_OK);
+  std::shared_ptr<BackendDelegate> backend;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto iter = models_.find(query_without_input.model_session_id());
+    if (iter == models_.end()) {
+      reply->set_status(CtrlStatus::MODEL_NOT_FOUND);
+    } else {
+      *reply->mutable_backend() = iter->second.GetBackend();
+      reply->set_status(CtrlStatus::CTRL_OK);
+      auto backend_iter = backends_.find(reply->backend().node_id());
+      if (backend_iter != backends_.end()) {
+        backend = backend_iter->second;
+      } else {
+        LOG(ERROR) << "Cannot find BackendDelegate for Backend "
+                   << reply->backend().node_id();
+      }
+    }
+  }
+  if (backend) {
+    EnqueueQueryCommand cmd;
+    *cmd.mutable_query_without_input() = std::move(query_without_input);
+    backend->SendEnqueueQueryCommand(cmd);
   }
 }
 

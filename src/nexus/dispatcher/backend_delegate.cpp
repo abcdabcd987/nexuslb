@@ -73,6 +73,23 @@ void BackendDelegate::SendLoadModelCommand(const ModelSession& model_session,
   last_time_ = std::chrono::system_clock::now();
 }
 
+void BackendDelegate::SendEnqueueQueryCommand(const EnqueueQueryCommand& cmd) {
+  // TODO: replace this communication channel. It's on critical path.
+  grpc::ClientContext context;
+  RpcReply reply;
+  grpc::Status status = stub_->EnqueueQuery(&context, cmd, &reply);
+  if (!status.ok()) {
+    LOG(ERROR) << "SendLoadModelCommand error " << status.error_code() << ": "
+               << status.error_message();
+  }
+  if (reply.status() != CtrlStatus::CTRL_OK) {
+    LOG(ERROR) << "EnqueueQuery error at Backend " << node_id_ << " (" << ip_
+               << "), global_id=" << cmd.query_without_input().global_id()
+               << ", status=" << CtrlStatus_Name(reply.status());
+  }
+  last_time_ = std::chrono::system_clock::now();
+}
+
 std::shared_ptr<InstanceInfo> BackendDelegate::GetInstanceInfo(
     const std::string& model_sess_id) const {
   return instances_.at(model_sess_id);

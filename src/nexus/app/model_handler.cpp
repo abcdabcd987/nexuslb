@@ -112,10 +112,9 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   }
 
   // Build the query proto
-  QueryProto query;
+  QueryProto query, query_without_input;
   query.set_query_id(qid);
   query.set_model_session_id(model_session_id_);
-  query.mutable_input()->CopyFrom(input);
   for (auto field : output_fields) {
     query.add_output_field(field);
   }
@@ -128,6 +127,10 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   if (ctx->slack_ms() > 0) {
     query.set_slack_ms(int(floor(ctx->slack_ms())));
   }
+  if (lb_policy_ == LB_Dispatcher) {
+    query_without_input.CopyFrom(query);
+  }
+  query.mutable_input()->CopyFrom(input);
   ctx->SetBackendQueryProto(std::move(query));
 
   // Send query to backend if not using dispatcher.
@@ -136,7 +139,8 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
     auto backend = GetBackend();
     SendBackendQuery(ctx, qid, backend);
   } else {
-    dispatcher_rpc_client_->AsyncQuery(model_session_, qid, this);
+    dispatcher_rpc_client_->AsyncQuery(model_session_, qid,
+                                       std::move(query_without_input), this);
   }
 
   auto reply = std::make_shared<QueryResult>(qid);

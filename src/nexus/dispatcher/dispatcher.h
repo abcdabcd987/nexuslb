@@ -96,7 +96,7 @@ class Dispatcher {
 
   void UpdateModelRoutes(const ModelRouteUpdates& request, RpcReply* reply);
 
-  void GetBackend(const std::string& model_sess_id, DispatchReply* reply);
+  void GetBackend(QueryProto query_without_input, DispatchReply* reply);
 
   // gRPC handlers
 

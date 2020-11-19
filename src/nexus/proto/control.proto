@@ -204,6 +204,7 @@ message ComplexQueryAddEdgeRequest {
 message DispatchRequest {
   ModelSession model_session = 1;
   uint64 query_id = 2;
+  QueryProto query_without_input = 4;
   uint32 udp_rpc_port = 3;
 }
 
@@ -236,5 +237,5 @@ message FetchImageReply {
 }
 
 message EnqueueQueryCommand {
-  QueryProto query = 1;
+  QueryProto query_without_input = 1;
 }

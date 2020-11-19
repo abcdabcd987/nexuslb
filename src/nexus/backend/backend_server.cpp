@@ -261,7 +261,7 @@ void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
                                        const EnqueueQueryCommand& req,
                                        RpcReply* reply) {
   auto task = std::make_shared<Task>(nullptr);
-  task->SetQuery(req.query());
+  task->SetQuery(req.query_without_input());
   std::shared_ptr<Connection> frontend_conn;
   {
     auto frontend_id = NodeId(task->query.frontend_id());

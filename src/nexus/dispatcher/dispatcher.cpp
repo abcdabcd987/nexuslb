@@ -170,7 +170,7 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
   reply.set_query_id(request.query_id());
   QueryProto query;
   query.Swap(request.mutable_query_without_input());
-  dispatcher_->GetBackend(std::move(query), &reply);
+  dispatcher_->DispatchRequest(std::move(query), &reply);
 
   // Send reply. I think using blocking APIs should be okay here?
   auto msg = reply.SerializeAsString();
@@ -246,8 +246,8 @@ void Dispatcher::Stop() {
   }
 }
 
-void Dispatcher::GetBackend(QueryProto query_without_input,
-                            DispatchReply* reply) {
+void Dispatcher::DispatchRequest(QueryProto query_without_input,
+                                 DispatchReply* reply) {
   std::shared_ptr<BackendDelegate> backend;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -255,14 +255,14 @@ void Dispatcher::GetBackend(QueryProto query_without_input,
     if (iter == models_.end()) {
       reply->set_status(CtrlStatus::MODEL_NOT_FOUND);
     } else {
-      *reply->mutable_backend() = iter->second.GetBackend();
+      auto backend_info = iter->second.GetBackend();
       reply->set_status(CtrlStatus::CTRL_OK);
-      auto backend_iter = backends_.find(reply->backend().node_id());
+      auto backend_iter = backends_.find(backend_info.node_id());
       if (backend_iter != backends_.end()) {
         backend = backend_iter->second;
       } else {
         LOG(ERROR) << "Cannot find BackendDelegate for Backend "
-                   << reply->backend().node_id();
+                   << backend_info.node_id();
       }
     }
   }

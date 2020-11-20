@@ -136,8 +136,7 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   // Send query to backend if not using dispatcher.
   // Otherwise ask the dispatcher first.
   if (lb_policy_ != LB_Dispatcher) {
-    auto backend = GetBackend();
-    SendBackendQuery(ctx, qid, backend);
+    LOG(FATAL) << "TODO: remove lb_policy_";
   } else {
     dispatcher_rpc_client_->AsyncQuery(model_session_, qid,
                                        std::move(query_without_input), this);
@@ -145,23 +144,6 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
 
   auto reply = std::make_shared<QueryResult>(qid);
   return reply;
-}
-
-void ModelHandler::SendBackendQuery(std::shared_ptr<RequestContext> ctx,
-                                    uint64_t qid,
-                                    std::shared_ptr<BackendSession> backend) {
-  if (backend == nullptr) {
-    ctx->HandleError(SERVICE_UNAVAILABLE, "Service unavailable");
-    return;
-  }
-
-  ctx->RecordQuerySend(qid);
-  const auto& query = ctx->backend_query_proto();
-  auto msg = std::make_shared<Message>(kBackendRequest, query.ByteSizeLong());
-  msg->EncodeBody(query);
-
-  // Send to backend
-  backend->Write(std::move(msg));
 }
 
 void ModelHandler::HandleBackendReply(const QueryResultProto& result) {
@@ -199,32 +181,25 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
 
   std::shared_ptr<BackendSession> backend;
   if (reply.status() == CtrlStatus::CTRL_OK) {
-    auto backend_id = reply.backend().node_id();
-    backend = backend_pool_.GetBackend(backend_id);
-    if (!backend) {
-      LOG(WARNING) << "Cannot find the backend returned by the dispatcher."
-                   << " query_id: " << reply.query_id()
-                   << " backend: " << reply.backend().ShortDebugString()
-                   << " Fallback to deficit round robin.";
-    }
+    // Do nothing. Dispatcher will send the query to the backend.
   } else if (reply.status() == CtrlStatus::TIMEOUT) {
+    // Do nothing either?
     const int n = 1000;
-    LOG_EVERY_N(WARNING, n)
-        << "LOG_EVERY " << n
-        << "] Dispatcher timeout. query_id: " << reply.query_id()
-        << " Fallback to deficit round robin.";
+    LOG_EVERY_N(INFO, n) << "LOG_EVERY " << n
+                         << "] Dispatcher timeout. query_id: "
+                         << reply.query_id();
   } else {
+    // Mark the query failed.
     LOG(WARNING) << "Dispatcher returns failure: "
                  << CtrlStatus_Name(reply.status())
                  << " query_id: " << reply.query_id()
                  << " Fallback to deficit round robin.";
+    QueryResultProto result;
+    result.set_query_id(reply.query_id());
+    *result.mutable_model_session_id() = model_session_id_;
+    result.set_status(reply.status());
+    HandleBackendReply(result);
   }
-  if (!backend) {
-    std::lock_guard<std::mutex> lock(route_mu_);
-    backend = GetBackendDeficitRoundRobin();
-  }
-
-  SendBackendQuery(ctx, qid, backend);
 }
 
 bool ModelHandler::FetchImage(QueryId query_id, ValueProto* output) {

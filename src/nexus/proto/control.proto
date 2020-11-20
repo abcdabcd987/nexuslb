@@ -218,7 +218,6 @@ message DispatchReply {
   ModelSession model_session = 1;
   uint64 query_id = 2;
   CtrlStatus status = 3;
-  BackendInfo backend = 4;
 }
 
 message BackendLoadModelCommand {

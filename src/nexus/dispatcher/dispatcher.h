@@ -96,7 +96,7 @@ class Dispatcher {
 
   void UpdateModelRoutes(const ModelRouteUpdates& request, RpcReply* reply);
 
-  void GetBackend(QueryProto query_without_input, DispatchReply* reply);
+  void DispatchRequest(QueryProto query_without_input, DispatchReply* reply);
 
   // gRPC handlers
 

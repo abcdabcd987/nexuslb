@@ -248,6 +248,11 @@ void Dispatcher::Stop() {
 
 void Dispatcher::DispatchRequest(QueryProto query_without_input,
                                  DispatchReply* reply) {
+  // Assign GlobalId
+  auto global_id = next_global_id_.fetch_add(1);
+  query_without_input.set_global_id(global_id);
+
+  // Run round-robin
   std::shared_ptr<BackendDelegate> backend;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -266,6 +271,8 @@ void Dispatcher::DispatchRequest(QueryProto query_without_input,
       }
     }
   }
+
+  // Send the query to the backend.
   if (backend) {
     EnqueueQueryCommand cmd;
     *cmd.mutable_query_without_input() = std::move(query_without_input);

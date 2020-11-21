@@ -137,7 +137,7 @@ def run_profiler(gpu, prof_id, input_queue, output_queue):
             proc.wait()
             raise
         if proc.returncode != 0:
-            sys.stderr.write('Profiler exited with', proc.returncode)
+            sys.stderr.write('Profiler exited with ' + str(proc.returncode))
             sys.stderr.flush()
             return
 

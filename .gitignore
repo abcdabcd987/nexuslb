@@ -21,3 +21,5 @@ cmake-build*/
 .clangd/
 compile_commands.json
 .vscode/
+.cache/
+.mypy_cache/

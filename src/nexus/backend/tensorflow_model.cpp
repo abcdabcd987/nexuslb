@@ -29,6 +29,10 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
     LOG(INFO) << "model memory usage: " << memory_usage << " B";
     gpu_opt->set_per_process_gpu_memory_fraction(memory_usage /
                                                  gpu_device_->TotalMemory());
+  } else {
+    // Need to set allow_growth, otherwise TensorFlow can't initialize:
+    //   failed to create cublas handle: CUBLAS_STATUS_NOT_INITIALIZED
+    gpu_opt->set_allow_growth(true);
   }
   (*cpu_option_.config.mutable_device_count())["GPU"] = 0;
 
@@ -173,7 +177,7 @@ ArrayPtr TensorflowModel::CreateInputGpuArray() {
   } else {
     tensor = NewInputTensor();
   }
-  char* gpu_data = const_cast<char*>(tensor->tensor_data().data());
+  void* gpu_data = tensor->data();
   size_t nbytes = tensor->NumElements() * type_size(input_data_type_);
   auto buf = std::make_shared<Buffer>(gpu_data, nbytes, gpu_device_);
   auto arr =
@@ -262,7 +266,7 @@ void TensorflowModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   std::unordered_map<std::string, Slice> slices;
   for (uint i = 0; i < output_layers_.size(); ++i) {
     const auto& name = output_layers_[i];
-    const char* tensor_data = out_tensors[i].tensor_data().data();
+    const void* tensor_data = out_tensors[i].data();
     size_t nfloats = out_tensors[i].NumElements();
     auto out_arr = batch_task->GetOutputArray(name);
     float* out_data = out_arr->Data<float>();
@@ -387,8 +391,8 @@ void TensorflowModel::set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst,
                                        const std::vector<int32_t>& src) {
   CHECK_EQ(dst->dtype(), tf::DT_INT32);
   CHECK_EQ(dst->NumElements(), src.size());
-  Memcpy(const_cast<char*>(dst->tensor_data().data()), cpu_device_, src.data(),
-         cpu_device_, sizeof(int32_t) * src.size());
+  Memcpy(dst->data(), cpu_device_, src.data(), cpu_device_,
+         sizeof(int32_t) * src.size());
 }
 
 }  // namespace backend

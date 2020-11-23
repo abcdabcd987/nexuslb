@@ -60,7 +60,7 @@ class Frontend : public ServerBase, public MessageHandler {
   void HandleError(std::shared_ptr<Connection> conn,
                    boost::system::error_code ec) final;
 
-  void UpdateModelRoutes(const ModelRouteUpdates& request, RpcReply* reply);
+  void HandleConnected(std::shared_ptr<Connection> conn) override;
 
   void UpdateBackendList(const BackendListUpdates& request, RpcReply* reply);
 
@@ -83,8 +83,6 @@ class Frontend : public ServerBase, public MessageHandler {
 
   void KeepAlive();
 
-  bool UpdateBackendPoolAndModelRoute(const ModelRouteProto& route);
-
   void RegisterUser(std::shared_ptr<UserSession> user_sess,
                     const RequestProto& request, ReplyProto* reply);
 
@@ -104,7 +102,7 @@ class Frontend : public ServerBase, public MessageHandler {
   /*! \brief RPC service */
   RpcService rpc_service_;
   /*! \brief RPC client connected to scheduler */
-  std::unique_ptr<SchedulerCtrl::Stub> sch_stub_;
+  std::unique_ptr<DispatcherCtrl::Stub> sch_stub_;
   /*! \brief Backend pool */
   BackendPool backend_pool_;
   /*!

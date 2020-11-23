@@ -97,17 +97,17 @@ set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 
 ###### scheduler ######
-add_executable(scheduler
-        src/nexus/scheduler/backend_delegate.cpp
-        src/nexus/scheduler/complex_query.cpp
-        src/nexus/scheduler/frontend_delegate.cpp
-        src/nexus/scheduler/sch_info.cpp
-        src/nexus/scheduler/scheduler.cpp
-        src/nexus/scheduler/scheduler_main.cpp)
-target_include_directories(scheduler PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${GENERATED_SRC_DIR}/src)
-target_link_libraries(scheduler PRIVATE common)
+# add_executable(scheduler
+#         src/nexus/scheduler/backend_delegate.cpp
+#         src/nexus/scheduler/complex_query.cpp
+#         src/nexus/scheduler/frontend_delegate.cpp
+#         src/nexus/scheduler/sch_info.cpp
+#         src/nexus/scheduler/scheduler.cpp
+#         src/nexus/scheduler/scheduler_main.cpp)
+# target_include_directories(scheduler PRIVATE
+#         ${CMAKE_CURRENT_SOURCE_DIR}/src
+#         ${GENERATED_SRC_DIR}/src)
+# target_link_libraries(scheduler PRIVATE common)
 
 
 
@@ -269,11 +269,11 @@ endif()
 
 
 ###### tools/test_complex_query ######
-add_executable(test_complex_query
-        src/nexus/scheduler/complex_query.cpp
-        src/nexus/scheduler/sch_info.cpp
-        tools/test_complex_query.cpp)
-target_link_libraries(test_complex_query PRIVATE common)
+# add_executable(test_complex_query
+#         src/nexus/scheduler/complex_query.cpp
+#         src/nexus/scheduler/sch_info.cpp
+#         tools/test_complex_query.cpp)
+# target_link_libraries(test_complex_query PRIVATE common)
 
 
 

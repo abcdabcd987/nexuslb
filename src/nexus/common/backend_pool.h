@@ -1,6 +1,7 @@
 #ifndef NEXUS_COMMON_BACKEND_POOL_H_
 #define NEXUS_COMMON_BACKEND_POOL_H_
 
+#include <functional>
 #include <sstream>
 #include <unordered_map>
 

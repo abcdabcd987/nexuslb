@@ -129,17 +129,15 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
                      .count();
   query_latency->set_query_id(qid);
   query_latency->set_model_session_id(result.model_session_id());
-  query_latency->set_frontend_send_timestamp_us(query_send_.at(qid));
   query_latency->set_frontend_recv_timestamp_us(recv_ts);
   query_latency->set_backend_latency_us(result.latency_us());
   query_latency->set_backend_queuing_us(result.queuing_us());
   query_latency->set_use_backup(result.use_backup());
 
-  double latency = recv_ts - query_send_.at(qid);
+  double latency = recv_ts;
   ModelSession model_sess;
   ParseModelSession(result.model_session_id(), &model_sess);
   slack_ms_ += model_sess.latency_sla() - latency / 1e3;
-  query_send_.erase(qid);
 
   if (result.status() != CTRL_OK) {
     // LOG(INFO) << request_.user_id() << ":" << request_.req_id() << ":" <<
@@ -174,14 +172,6 @@ void RequestContext::HandleError(uint32_t status,
                                  const std::string& error_msg) {
   std::lock_guard<std::mutex> lock(mu_);
   HandleErrorLocked(status, error_msg);
-}
-
-void RequestContext::RecordQuerySend(uint64_t qid) {
-  std::lock_guard<std::mutex> lock(mu_);
-  uint64_t ts = std::chrono::duration_cast<std::chrono::microseconds>(
-                    Clock::now() - begin_)
-                    .count();
-  query_send_.emplace(qid, ts);
 }
 
 void RequestContext::SendReply() {

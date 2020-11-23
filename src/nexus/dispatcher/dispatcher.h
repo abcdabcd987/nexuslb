@@ -85,8 +85,8 @@ class UdpRpcServer {
 
 class Dispatcher {
  public:
-  Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
-             int num_udp_threads, std::vector<int> pin_cpus);
+  Dispatcher(std::string rpc_port, int udp_port, int num_udp_threads,
+             std::vector<int> pin_cpus);
 
   virtual ~Dispatcher();
 

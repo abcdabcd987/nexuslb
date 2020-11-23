@@ -7,7 +7,6 @@
 
 DEFINE_string(port, "7001", "Server port");
 DEFINE_string(rpc_port, "7002", "RPC port");
-DEFINE_string(sch_addr, "127.0.0.1", "Scheduler address");
 DEFINE_int32(udp_port, DISPATCHER_RPC_DEFAULT_PORT, "UDP RPC server port");
 DEFINE_int32(udp_threads, 1, "Number of threads for UDP RPC servers");
 DEFINE_string(udp_threads_pin_cpus, "",
@@ -42,8 +41,7 @@ int main(int argc, char** argv) {
   google::ParseCommandLineFlags(&argc, &argv, true);
   google::InstallFailureSignalHandler();
   auto cores = ParseCores(FLAGS_udp_threads_pin_cpus);
-  nexus::dispatcher::Dispatcher dispatcher(FLAGS_rpc_port, FLAGS_sch_addr,
-                                           FLAGS_udp_port, FLAGS_udp_threads,
-                                           std::move(cores));
+  nexus::dispatcher::Dispatcher dispatcher(FLAGS_rpc_port, FLAGS_udp_port,
+                                           FLAGS_udp_threads, std::move(cores));
   dispatcher.Run();
 }

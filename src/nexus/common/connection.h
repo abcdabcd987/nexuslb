@@ -28,6 +28,8 @@ class MessageHandler {
    */
   virtual void HandleError(std::shared_ptr<Connection> conn,
                            boost::system::error_code ec) = 0;
+
+  virtual void HandleConnected(std::shared_ptr<Connection> conn) = 0;
 };
 
 class Connection : public std::enable_shared_from_this<Connection> {

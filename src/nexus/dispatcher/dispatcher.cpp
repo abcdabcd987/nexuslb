@@ -186,8 +186,8 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
   }
 }
 
-Dispatcher::Dispatcher(std::string rpc_port, std::string sch_addr, int udp_port,
-                       int num_udp_threads, std::vector<int> pin_cpus)
+Dispatcher::Dispatcher(std::string rpc_port, int udp_port, int num_udp_threads,
+                       std::vector<int> pin_cpus)
     : udp_port_(udp_port),
       num_udp_threads_(num_udp_threads),
       pin_cpus_(std::move(pin_cpus)),
@@ -393,10 +393,14 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
           update.add_backends()->CopyFrom(iter.second->backend_info());
         }
       }
+      VLOG(1) << "Send UpdateBackendList: frontend_id=" << frontend->node_id();
       frontend->UpdateBackendList(update);
+      VLOG(1) << "Finish sending UpdateBackendList: frontend_id="
+              << frontend->node_id();
 
       reply->set_status(CtrlStatus::CTRL_OK);
       reply->set_beacon_interval_sec(BEACON_INTERVAL_SEC);
+      VLOG(1) << "Finish registering frontend_id=" << frontend->node_id();
       break;
     }
     case NodeType::BACKEND_NODE: {
@@ -433,7 +437,11 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
         iter.second->AddInstanceInfo(backend->node_id(), inst);
 
         // LoadModel RPC
+        VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
+                << ", model_session=" << model_sess_id;
         backend->SendLoadModelCommand(model_session, inst->max_batch());
+        VLOG(1) << "Finish SendLoadModelCommand: backend_id="
+                << backend->node_id() << ", model_session=" << model_sess_id;
       }
 
       // UpdateBackendList
@@ -445,11 +453,17 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
         frontends = frontends_;
       }
       for (auto iter : frontends) {
+        VLOG(1) << "UpdateBackendList (adding backend_id=" << backend->node_id()
+                << "): frontend_id=" << iter.second->node_id();
         iter.second->UpdateBackendList(update);
+        VLOG(1) << "Finish UpdateBackendList (adding backend_id="
+                << backend->node_id()
+                << "): frontend_id=" << iter.second->node_id();
       }
 
       reply->set_status(CtrlStatus::CTRL_OK);
       reply->set_beacon_interval_sec(BEACON_INTERVAL_SEC);
+      VLOG(1) << "Finish registering backend_id=" << backend->node_id();
       break;
     }
     default: {
@@ -474,12 +488,15 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
   auto model_info = ModelDatabase::Singleton().GetModelInfo(
       ModelSessionToModelID(request.model_session()));
   if (!model_info) {
+    LOG(ERROR) << "HandleLoadModel: model not found. model="
+               << ModelSessionToModelID(request.model_session());
     reply->set_status(CtrlStatus::MODEL_NOT_FOUND);
     return;
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
   auto model_sess_id = ModelSessionToString(request.model_session());
+  VLOG(1) << "HandleLoadModel: model_sess_id=" << model_sess_id;
   {
     auto it = sessions_.find(model_sess_id);
     if (it != sessions_.end()) {
@@ -489,6 +506,21 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
     }
   }
   reply->set_status(CtrlStatus::CTRL_OK);
+
+  // Update DRR
+  CHECK_EQ(models_.count(model_sess_id), 0);
+  models_[model_sess_id] = ModelRoute();
+  ModelRouteProto mr;
+  {
+    // Adaptor to the old API
+    *mr.mutable_model_session_id() = model_sess_id;
+    for (auto backend_iter : backends_) {
+      auto* rate = mr.add_backend_rate();
+      *rate->mutable_info() = backend_iter.second->backend_info();
+      rate->set_throughput(1);
+    }
+  }
+  models_[model_sess_id].Update(mr);
 
   // Add the model session
   auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
@@ -510,7 +542,11 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
     sctx->AddInstanceInfo(backend->node_id(), inst);
 
     // LoadModel RPC
+    VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
+            << ", model_session=" << model_sess_id;
     backend->SendLoadModelCommand(request.model_session(), inst->max_batch());
+    VLOG(1) << "Finish SendLoadModelCommand: backend_id=" << backend->node_id()
+            << ", model_session=" << model_sess_id;
   }
 }
 

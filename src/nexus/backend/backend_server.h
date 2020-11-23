@@ -78,6 +78,8 @@ class BackendServer : public ServerBase, public MessageHandler {
   void HandleError(std::shared_ptr<Connection> conn,
                    boost::system::error_code ec) final;
 
+  void HandleConnected(std::shared_ptr<Connection> conn) override;
+
   void LoadModelEnqueue(const BackendLoadModelCommand& req);
   void LoadModel(const BackendLoadModelCommand& req);
   void HandleEnqueueQuery(const grpc::ServerContext&,
@@ -135,7 +137,7 @@ class BackendServer : public ServerBase, public MessageHandler {
   /*! \brief Backend RPC service */
   BackendRpcService rpc_service_;
   /*! \brief RPC client for sending requests to scheduler */
-  std::unique_ptr<SchedulerCtrl::Stub> sch_stub_;
+  std::unique_ptr<DispatcherCtrl::Stub> sch_stub_;
   /*! \brief Daemon thread */
   std::thread daemon_thread_;
 

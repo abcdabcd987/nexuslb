@@ -55,6 +55,7 @@ void BackendSession::DoConnect() {
                                  running_ = true;
                                  LOG(INFO)
                                      << "Connected to backend " << node_id_;
+                                 handler_->HandleConnected(shared_from_this());
                                  DoReadHeader();
                                }
                              });

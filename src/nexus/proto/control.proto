@@ -142,7 +142,6 @@ message LoadModelRequest {
 
 message LoadModelReply {
   CtrlStatus status = 1;
-  ModelRouteProto model_route = 2;
 }
 
 message ModelInstanceConfig {

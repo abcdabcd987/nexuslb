@@ -127,8 +127,6 @@ class RequestContext : public DeadlineItem,
 
   void HandleError(uint32_t status, const std::string& error_msg);
 
-  void RecordQuerySend(uint64_t qid);
-
   void SendReply();
 
  private:
@@ -154,7 +152,6 @@ class RequestContext : public DeadlineItem,
   std::unordered_map<std::string, VariablePtr> waiting_vars_;
   std::unordered_map<uint64_t, std::string> qid_var_map_;
   std::unordered_map<uint64_t, QueryResultProto> dangling_results_;
-  std::unordered_map<uint64_t, uint64_t> query_send_;
   std::mutex mu_;
 };
 

@@ -3,6 +3,7 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 
+#include <iomanip>
 #include <sstream>
 
 #ifdef USE_GPU

@@ -26,12 +26,12 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
   LOG(INFO) << "model memory usage: " << config.memory_usage() << " B";
   if (config.memory_usage() > 0) {
     double memory_usage = config.memory_usage();
-    LOG(INFO) << "model memory usage: " << memory_usage << " B";
     gpu_opt->set_per_process_gpu_memory_fraction(memory_usage /
                                                  gpu_device_->TotalMemory());
   } else {
     // Need to set allow_growth, otherwise TensorFlow can't initialize:
     //   failed to create cublas handle: CUBLAS_STATUS_NOT_INITIALIZED
+    LOG(INFO) << "set_allow_growth(true)";
     gpu_opt->set_allow_growth(true);
   }
   (*cpu_option_.config.mutable_device_count())["GPU"] = 0;

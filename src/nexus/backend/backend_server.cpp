@@ -10,6 +10,7 @@
 #include "nexus/backend/tf_share_model.h"
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
+#include "nexus/common/model_def.h"
 
 DEFINE_bool(multi_batch, true, "Enable multi batching");
 DEFINE_int32(occupancy_valid, 10, "Backup backend occupancy valid time in ms");
@@ -34,7 +35,7 @@ BackendServer::BackendServer(std::string port, std::string rpc_port,
   }
   auto channel =
       grpc::CreateChannel(sch_addr, grpc::InsecureChannelCredentials());
-  sch_stub_ = SchedulerCtrl::NewStub(channel);
+  sch_stub_ = DispatcherCtrl::NewStub(channel);
 
 #ifdef USE_GPU
   // Init GPU executor
@@ -139,10 +140,15 @@ void BackendServer::Stop() {
 }
 
 void BackendServer::HandleAccept() {
+  VLOG(1) << "HandleAccept";
   std::lock_guard<std::mutex> lock(mu_connections_);
   auto conn = std::make_shared<Connection>(std::move(socket_), this);
   all_connections_.insert(conn);
   conn->Start();
+}
+
+void BackendServer::HandleConnected(std::shared_ptr<Connection> conn) {
+  // Do nothing.
 }
 
 void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
@@ -152,6 +158,7 @@ void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
       TellNodeIdMessage msg;
       message->DecodeBody(&msg);
       auto node_id = NodeId(msg.node_id());
+      VLOG(1) << "kConnFrontBack: frontend_id=" << node_id.t;
       node_connections_[node_id] = conn;
       map_connection_nodeid_[conn] = node_id;
       break;
@@ -164,6 +171,7 @@ void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
       FetchImageReply reply;
       message->DecodeBody(&reply);
       auto global_id = GlobalId(reply.global_id());
+      VLOG(1) << "kFetchImageReply: global_id=" << global_id.t;
       if (reply.status() != CtrlStatus::CTRL_OK) {
         LOG(ERROR) << "FetchImageReply not ok. status="
                    << CtrlStatus_Name(reply.status())
@@ -196,6 +204,7 @@ void BackendServer::HandleError(std::shared_ptr<Connection> conn,
                                 boost::system::error_code ec) {
   if (ec == boost::asio::error::eof ||
       ec == boost::asio::error::connection_reset) {
+    LOG(INFO) << "Frontend disconnected.";
     // frontend disconnects
   } else {
     LOG(ERROR) << "Connection error (" << ec << "): " << ec.message();
@@ -211,6 +220,8 @@ void BackendServer::HandleError(std::shared_ptr<Connection> conn,
 }
 
 void BackendServer::LoadModelEnqueue(const BackendLoadModelCommand& request) {
+  VLOG(1) << "LoadModelEnqueue: model_session="
+          << ModelSessionToString(request.model_session());
   auto req = std::make_shared<BackendLoadModelCommand>();
   req->CopyFrom(request);
   model_table_requests_.push(std::move(req));
@@ -221,6 +232,7 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   // Start to update model table
   std::lock_guard<std::mutex> lock(model_table_mu_);
   auto model_sess_id = ModelSessionToString(request.model_session());
+  VLOG(1) << "LoadModel: model_session=" << model_sess_id;
   auto model_iter = model_table_.find(model_sess_id);
   if (model_iter != model_table_.end()) {
     LOG(INFO) << "Skip loading model session " << model_sess_id
@@ -262,6 +274,10 @@ void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
                                        RpcReply* reply) {
   auto task = std::make_shared<Task>(nullptr);
   task->SetQuery(req.query_without_input());
+  VLOG(1) << "HandleEnqueueQuery: frontend_id=" << task->query.frontend_id()
+          << ", model_session=" << task->query.model_session_id()
+          << ", query_id=" << task->query.query_id()
+          << ", global_id=" << task->query.global_id();
   std::shared_ptr<Connection> frontend_conn;
   {
     auto frontend_id = NodeId(task->query.frontend_id());
@@ -269,7 +285,8 @@ void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
     if (iter == node_connections_.end()) {
       LOG(ERROR) << "Cannot find connection to Frontend " << frontend_id.t
                  << ". Ignore the incoming query. "
-                 << "query_id=" << task->query.query_id()
+                 << "model_session=" << task->query.model_session_id()
+                 << ", query_id=" << task->query.query_id()
                  << ", global_id=" << task->query.global_id();
       return;
     }
@@ -285,7 +302,7 @@ void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
       reply->set_status(CtrlStatus::CTRL_GLOBAL_ID_CONFLICT);
       return;
     }
-    tasks_pending_fetch_image_[global_id] = std::move(task);
+    tasks_pending_fetch_image_[global_id] = task;
   }
 
   // Send FetchImage rpc
@@ -293,6 +310,7 @@ void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
   *request.mutable_model_session_id() = task->query.model_session_id();
   request.set_query_id(task->query.query_id());
   request.set_global_id(global_id.t);
+  VLOG(1) << "Send FetchImageRequest: global_id=" << global_id.t;
   auto msg = std::make_shared<Message>(MessageType::kFetchImageRequest,
                                        request.ByteSizeLong());
   msg->EncodeBody(request);
@@ -388,6 +406,7 @@ void BackendServer::Register() {
     CtrlStatus ret = reply.status();
     if (ret == CTRL_OK) {
       beacon_interval_sec_ = reply.beacon_interval_sec();
+      VLOG(1) << "Register done.";
       return;
     }
     if (ret != CTRL_BACKEND_NODE_ID_CONFLICT) {

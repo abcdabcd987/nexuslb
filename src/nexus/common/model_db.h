@@ -12,6 +12,7 @@ struct ProfileEntry {
   // latency in us unit
   float latency_mean;
   float latency_std;
+  size_t static_memory;
   size_t memory_usage;
   int repeat;
 };

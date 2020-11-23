@@ -68,7 +68,8 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
   std::vector<std::string> tokens;
   std::getline(fin, gpu_uuid_);
   std::getline(fin, line);  // Forward latency
-  std::getline(fin, line);  // batch,latency(us),std(us),memory(B),repeat
+  // batch,latency(us),std(us),static memory(B),peak memory(B),repeat
+  std::getline(fin, line);
   while (true) {
     std::getline(fin, line);
     if (line.find("Preprocess latency (mean,std,repeat)") == 0) break;
@@ -77,8 +78,9 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
     uint32_t batch = stoi(tokens[0]);
     entry.latency_mean = stof(tokens[1]) * FLAGS_profile_multiplier;
     entry.latency_std = stof(tokens[2]) * FLAGS_profile_multiplier;
-    entry.memory_usage = stoll(tokens[3]);
-    entry.repeat = std::stoi(tokens[4]);
+    entry.static_memory = stoll(tokens[3]);
+    entry.memory_usage = stoll(tokens[4]);
+    entry.repeat = std::stoi(tokens[5]);
     forward_lats_.emplace(batch, entry);
   }
   std::getline(fin, line);
@@ -331,7 +333,7 @@ void ModelDatabase::LoadModelInfo(const std::string& db_file) {
   for (uint i = 0; i < shares.size(); ++i) {
     auto const& share = shares[i];
     int prefix_length = share["prefix_length"].as<int>();
-    VLOG(1) << "prefix length: " << prefix_length;
+    VLOG(2) << "prefix length: " << prefix_length;
     std::vector<std::string> share_models;
     for (uint j = 0; j < share["models"].size(); ++j) {
       auto const& model = share["models"][j];
@@ -342,7 +344,7 @@ void ModelDatabase::LoadModelInfo(const std::string& db_file) {
       if (share_prefix_models_.find(model_id) == share_prefix_models_.end()) {
         share_prefix_models_.emplace(model_id, PrefixMap());
       }
-      VLOG(1) << " - " << model_id;
+      VLOG(2) << " - " << model_id;
     }
     for (uint j = 0; j < share_models.size(); ++j) {
       for (uint k = j + 1; k < share_models.size(); ++k) {

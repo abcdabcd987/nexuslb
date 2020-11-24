@@ -6,13 +6,13 @@
 
 #include <unordered_set>
 
+#include "nexus/backend/gpu_executor.h"
 #include "nexus/backend/share_prefix_model.h"
 #include "nexus/backend/tf_share_model.h"
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 
-DEFINE_bool(multi_batch, true, "Enable multi batching");
 DEFINE_int32(occupancy_valid, 10, "Backup backend occupancy valid time in ms");
 
 namespace nexus {
@@ -39,13 +39,8 @@ BackendServer::BackendServer(std::string port, std::string rpc_port,
 
 #ifdef USE_GPU
   // Init GPU executor
-  if (FLAGS_multi_batch) {
-    LOG(INFO) << "Multi-batching is enabled";
-    gpu_executor_.reset(new GpuExecutorMultiBatching(gpu_id));
-  } else {
-    LOG(INFO) << "Multi-batching is disabled";
-    gpu_executor_.reset(new GpuExecutorNoMultiBatching(gpu_id));
-  }
+  LOG(INFO) << "Using PlanFollower as GpuExecutor";
+  gpu_executor_.reset(new GpuExecutorPlanFollower(gpu_id));
   if (cores.empty()) {
     gpu_executor_->Start();
   } else {
@@ -261,9 +256,9 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
             << ", max_batch: " << config.max_batch();
 
   // Update duty cycle (Deprecated)
-  auto duty_cycle = request.model_session().latency_sla() * 1e3 / 2;
-  gpu_executor_->SetDutyCycle(duty_cycle);
-  LOG(INFO) << "Duty cycle: " << duty_cycle << " us";
+  // auto duty_cycle = request.model_session().latency_sla() * 1e3 / 2;
+  // gpu_executor_->SetDutyCycle(duty_cycle);
+  // LOG(INFO) << "Duty cycle: " << duty_cycle << " us";
 #else
   LOG(FATAL) << "backend needs the USE_GPU flag set at compile-time.";
 #endif

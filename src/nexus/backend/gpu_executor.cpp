@@ -4,16 +4,27 @@
 #include <glog/logging.h>
 #include <pthread.h>
 
+#include <algorithm>
+#include <chrono>
+#include <memory>
 #include <thread>
 
 #include "nexus/backend/backend_server.h"
 #include "nexus/common/device.h"
+#include "nexus/common/typedef.h"
 
 #ifdef USE_CAFFE
 #include "nexus/backend/caffe_model.h"
 #endif
 
 DECLARE_int32(occupancy_valid);
+
+namespace {
+bool OrderBatchPlanProtoByExecTimeDesc(const nexus::BatchPlanProto& lhs,
+                                       const nexus::BatchPlanProto& rhs) {
+  return lhs.exec_time_ns() > rhs.exec_time_ns();
+}
+}  // namespace
 
 namespace nexus {
 namespace backend {
@@ -205,6 +216,124 @@ void GpuExecutorNoMultiBatching::RemoveModel(
 double GpuExecutorNoMultiBatching::CurrentUtilization() {
   // Doesn't support utilization
   return -1.;
+}
+
+GpuExecutorPlanFollower::GpuExecutorPlanFollower(int gpu_id)
+    : gpu_id_(gpu_id),
+      io_context_work_guard_(io_context_.get_executor()),
+      next_timer_(io_context_) {}
+
+GpuExecutorPlanFollower::~GpuExecutorPlanFollower() {
+  if (thread_.joinable()) {
+    LOG(FATAL) << "GpuExecutorPlanFollower is destructed before joined.";
+  }
+}
+
+void GpuExecutorPlanFollower::Start(int core) {
+  thread_ = std::thread(&GpuExecutorPlanFollower::Run, this);
+  if (core >= 0) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core, &cpuset);
+    int rc = pthread_setaffinity_np(thread_.native_handle(), sizeof(cpu_set_t),
+                                    &cpuset);
+    if (rc != 0) {
+      LOG(ERROR) << "Error calling pthread_setaffinity_np: " << rc << "\n";
+    }
+    LOG(INFO) << "GPU executor is pinned on CPU " << core;
+  }
+}
+
+void GpuExecutorPlanFollower::Run() {
+  io_context_.run();
+  LOG(INFO) << "GpuExecutorPlanFollower exited.";
+}
+
+void GpuExecutorPlanFollower::Stop() {
+  io_context_work_guard_.reset();
+  LOG(INFO) << "io_context_work_guard reset. Waiting worker thread to join.";
+  thread_.join();
+}
+
+void GpuExecutorPlanFollower::AddModel(std::shared_ptr<ModelExecutor> model) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto& model_session_id = model->model()->model_session_id();
+  CHECK_EQ(models_.count(model_session_id), 0);
+  models_[model_session_id] = model;
+}
+
+void GpuExecutorPlanFollower::RemoveModel(
+    std::shared_ptr<ModelExecutor> model) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto& model_session_id = model->model()->model_session_id();
+  auto n_erased = models_.erase(model_session_id);
+  CHECK_EQ(n_erased, 1);
+}
+
+void GpuExecutorPlanFollower::AddBatchPlan(const BatchPlanProto& plan) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  plans_.push_back(plan);
+  std::push_heap(plans_.begin(), plans_.end(),
+                 OrderBatchPlanProtoByExecTimeDesc);
+  UpdateTimer();
+}
+
+void GpuExecutorPlanFollower::UpdateTimer() {
+  if (plans_.empty()) {
+    return;
+  }
+  next_timer_.cancel();
+  const auto& plan = plans_[0];
+  TimePoint exec_time(std::chrono::nanoseconds(plan.exec_time_ns()));
+  next_timer_.async_wait(
+      [this](const boost::system::error_code& error) { OnTimer(error); });
+}
+
+void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
+  if (error) {
+    LOG(ERROR) << error.message();
+    return;
+  }
+  auto now = Clock::now();
+  BatchPlanProto plan;
+  std::shared_ptr<ModelExecutor> model;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (plans_.empty()) {
+      LOG(ERROR) << "Woke up without batch plan to run.";
+      return;
+    }
+    std::pop_heap(plans_.begin(), plans_.end(),
+                  OrderBatchPlanProtoByExecTimeDesc);
+    plan = std::move(plans_.back());
+    plans_.pop_back();
+
+    TimePoint exec_time(std::chrono::nanoseconds(plan.exec_time_ns()));
+    auto offset_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(now - exec_time)
+            .count();
+    if (std::abs(offset_us) > 10) {
+      LOG(ERROR) << "Huge time offset when start executing BatchPlan"
+                 << ". plan_id=" << plan.plan_id()
+                 << ", exec_time=" << (plan.exec_time_ns() / 1e9)
+                 << ", now=" << now.time_since_epoch().count()
+                 << ", offset=" << offset_us << "us";
+    }
+
+    auto iter = models_.find(plan.model_session_id());
+    if (iter == models_.end()) {
+      LOG(ERROR) << "Cannot find model_session " << plan.model_session_id();
+      UpdateTimer();
+      return;
+    }
+    model = iter->second;
+  }
+  VLOG(1) << "Executing BatchPlan: plan_id=" << plan.plan_id()
+          << ", model_session=" << plan.model_session_id()
+          << ", batch_size=" << plan.queries_without_input_size();
+
+  // TODO: model->Execute();
+  UpdateTimer();
 }
 
 }  // namespace backend

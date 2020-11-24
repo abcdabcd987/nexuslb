@@ -28,6 +28,7 @@ service BackendCtrl {
 
   rpc LoadModel(BackendLoadModelCommand) returns (RpcReply) {}
   rpc EnqueueQuery(EnqueueQueryCommand) returns (RpcReply) {}
+  rpc EnqueueBatchPlan(BatchPlanProto) returns (RpcReply) {}
 }
 
 service DispatcherCtrl {
@@ -242,4 +243,13 @@ message FetchImageReply {
 
 message EnqueueQueryCommand {
   QueryProto query_without_input = 1;
+}
+
+message BatchPlanProto {
+  uint64 plan_id = 1;
+  string model_session_id = 2;
+  repeated QueryProto queries_without_input = 3;
+  uint64 exec_time_ns = 4;
+  uint64 deadline_ns = 5;
+  uint64 expected_finish_time_ns = 6;
 }

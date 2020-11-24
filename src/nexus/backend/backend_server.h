@@ -103,13 +103,6 @@ class BackendServer : public ServerBase, public MessageHandler {
    */
   std::shared_ptr<BackupClient> GetBackupClient(uint32_t backend_id);
 
-#ifdef USE_GPU
-  /*! \brief Returns the current server utilization. */
-  inline double CurrentUtilization() const {
-    return gpu_executor_->CurrentUtilization();
-  }
-#endif
-
  private:
   /*! \brief Daemon thread that sends stats to scheduler periodically. */
   void Daemon();
@@ -155,7 +148,7 @@ class BackendServer : public ServerBase, public MessageHandler {
   std::vector<std::unique_ptr<Worker>> workers_;
 #ifdef USE_GPU
   /*! \brief GPU executor */
-  std::unique_ptr<GpuExecutor> gpu_executor_;
+  std::unique_ptr<GpuExecutorPlanFollower> gpu_executor_;
 #endif
   /*!
    * \brief Mapping from model session ID to model instance.

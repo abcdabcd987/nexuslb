@@ -28,4 +28,7 @@ NS_STRONG_TYPEDEF(nexus, uint64_t, QueryId)
 // GlobalId is assigned by Dispatcher.
 NS_STRONG_TYPEDEF(nexus, uint64_t, GlobalId)
 
+// PlanId is assigned by Dispatcher.
+NS_STRONG_TYPEDEF(nexus, uint64_t, PlanId)
+
 #endif

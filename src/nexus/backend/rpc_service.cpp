@@ -16,10 +16,6 @@ INSTANTIATE_RPC_CALL(AsyncService, LoadModel, BackendLoadModelCommand,
                      RpcReply);
 INSTANTIATE_RPC_CALL(AsyncService, EnqueueQuery, EnqueueQueryCommand, RpcReply);
 INSTANTIATE_RPC_CALL(AsyncService, CheckAlive, CheckAliveRequest, RpcReply);
-#ifdef USE_GPU
-INSTANTIATE_RPC_CALL(AsyncService, CurrentUtilization, UtilizationRequest,
-                     UtilizationReply);
-#endif
 
 BackendRpcService::BackendRpcService(BackendServer* backend, std::string port,
                                      size_t nthreads)
@@ -42,16 +38,6 @@ void BackendRpcService::HandleRpcs() {
   new CheckAlive_Call(&service_, cq_.get(),
                       [](const grpc::ServerContext&, const CheckAliveRequest&,
                          RpcReply* reply) { reply->set_status(CTRL_OK); });
-#ifdef USE_GPU
-  new CurrentUtilization_Call(
-      &service_, cq_.get(),
-      [this](const grpc::ServerContext&, const UtilizationRequest&,
-             UtilizationReply* reply) {
-        reply->set_node_id(backend_->node_id());
-        reply->set_utilization(backend_->CurrentUtilization());
-        reply->set_valid_ms(FLAGS_occupancy_valid);
-      });
-#endif
   void* tag;
   bool ok;
   while (running_) {

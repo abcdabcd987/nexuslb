@@ -11,6 +11,7 @@
 #include "nexus/common/block_queue.h"
 #include "nexus/common/connection.h"
 #include "nexus/common/data_type.h"
+#include "nexus/common/typedef.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -113,9 +114,11 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
   bool AddVirtualOutput(int index);
 
   void SetConnection(std::shared_ptr<Connection> conn);
+  void SetPlanId(PlanId plan_id);
 
   /*! \brief Task id */
   uint64_t task_id;
+  PlanId plan_id;
   /*! \brief Connection to frontend. */
   std::shared_ptr<Connection> connection;
   /*! \brief Message type */

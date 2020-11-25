@@ -15,6 +15,7 @@ namespace backend {
 INSTANTIATE_RPC_CALL(AsyncService, LoadModel, BackendLoadModelCommand,
                      RpcReply);
 INSTANTIATE_RPC_CALL(AsyncService, EnqueueQuery, EnqueueQueryCommand, RpcReply);
+INSTANTIATE_RPC_CALL(AsyncService, EnqueueBatchPlan, BatchPlanProto, RpcReply);
 INSTANTIATE_RPC_CALL(AsyncService, CheckAlive, CheckAliveRequest, RpcReply);
 
 BackendRpcService::BackendRpcService(BackendServer* backend, std::string port,
@@ -35,6 +36,11 @@ void BackendRpcService::HandleRpcs() {
              RpcReply* reply) {
         backend_->HandleEnqueueQuery(ctx, req, reply);
       });
+  new EnqueueBatchPlan_Call(&service_, cq_.get(),
+                            [this](const grpc::ServerContext& ctx,
+                                   const BatchPlanProto& req, RpcReply* reply) {
+                              backend_->HandleEnqueueBatchPlan(ctx, req, reply);
+                            });
   new CheckAlive_Call(&service_, cq_.get(),
                       [](const grpc::ServerContext&, const CheckAliveRequest&,
                          RpcReply* reply) { reply->set_status(CTRL_OK); });

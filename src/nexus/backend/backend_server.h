@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "nexus/backend/backup_client.h"
+#include "nexus/backend/batch_plan_context.h"
 #include "nexus/backend/model_exec.h"
 #include "nexus/backend/rpc_service.h"
 #include "nexus/backend/task.h"
@@ -23,7 +24,7 @@
 #include "nexus/common/server_base.h"
 #include "nexus/common/spinlock.h"
 #include "nexus/common/typedef.h"
-#include "nexus/proto/control.grpc.pb.h"
+#include "nexus/proto/control.pb.h"
 
 #ifdef USE_GPU
 #include "nexus/backend/gpu_executor.h"
@@ -84,6 +85,8 @@ class BackendServer : public ServerBase, public MessageHandler {
   void LoadModel(const BackendLoadModelCommand& req);
   void HandleEnqueueQuery(const grpc::ServerContext&,
                           const EnqueueQueryCommand& req, RpcReply* reply);
+  void HandleEnqueueBatchPlan(const grpc::ServerContext&,
+                              const BatchPlanProto& req, RpcReply* reply);
 
   /*!
    * \brief Gets the model instance given model session ID
@@ -117,6 +120,9 @@ class BackendServer : public ServerBase, public MessageHandler {
    * \param request Workload history protobuf.
    */
   void KeepAlive();
+
+  bool EnqueueQuery(std::shared_ptr<Task> task);
+  void HandleFetchImageReply(FetchImageReply reply);
 
  private:
   /*! \brief GPU device index */
@@ -167,6 +173,10 @@ class BackendServer : public ServerBase, public MessageHandler {
   std::mutex mu_tasks_pending_fetch_image_;
   std::unordered_map<GlobalId, std::shared_ptr<Task>>
       tasks_pending_fetch_image_;
+
+  // Batch plans waiting for image and not added to gpu_executor_ yet.
+  std::mutex mu_pending_plans_;
+  std::unordered_map<PlanId, std::shared_ptr<BatchPlanContext>> pending_plans_;
 };
 
 }  // namespace backend

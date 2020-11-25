@@ -20,9 +20,10 @@
 DECLARE_int32(occupancy_valid);
 
 namespace {
-bool OrderBatchPlanProtoByExecTimeDesc(const nexus::BatchPlanProto& lhs,
-                                       const nexus::BatchPlanProto& rhs) {
-  return lhs.exec_time_ns() > rhs.exec_time_ns();
+bool OrderBatchPlanProtoByExecTimeDesc(
+    const std::shared_ptr<nexus::backend::BatchPlanContext>& lhs,
+    const std::shared_ptr<nexus::backend::BatchPlanContext>& rhs) {
+  return lhs->proto().exec_time_ns() > rhs->proto().exec_time_ns();
 }
 }  // namespace
 
@@ -270,7 +271,8 @@ void GpuExecutorPlanFollower::RemoveModel(
   CHECK_EQ(n_erased, 1);
 }
 
-void GpuExecutorPlanFollower::AddBatchPlan(const BatchPlanProto& plan) {
+void GpuExecutorPlanFollower::AddBatchPlan(
+    std::shared_ptr<BatchPlanContext> plan) {
   std::lock_guard<std::mutex> lock(mutex_);
   plans_.push_back(plan);
   std::push_heap(plans_.begin(), plans_.end(),
@@ -284,7 +286,7 @@ void GpuExecutorPlanFollower::UpdateTimer() {
   }
   next_timer_.cancel();
   const auto& plan = plans_[0];
-  TimePoint exec_time(std::chrono::nanoseconds(plan.exec_time_ns()));
+  TimePoint exec_time(std::chrono::nanoseconds(plan->proto().exec_time_ns()));
   next_timer_.async_wait(
       [this](const boost::system::error_code& error) { OnTimer(error); });
 }
@@ -295,7 +297,7 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
     return;
   }
   auto now = Clock::now();
-  BatchPlanProto plan;
+  std::shared_ptr<BatchPlanContext> plan;
   std::shared_ptr<ModelExecutor> model;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -308,29 +310,30 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
     plan = std::move(plans_.back());
     plans_.pop_back();
 
-    TimePoint exec_time(std::chrono::nanoseconds(plan.exec_time_ns()));
+    TimePoint exec_time(std::chrono::nanoseconds(plan->proto().exec_time_ns()));
     auto offset_us =
         std::chrono::duration_cast<std::chrono::microseconds>(now - exec_time)
             .count();
     if (std::abs(offset_us) > 10) {
       LOG(ERROR) << "Huge time offset when start executing BatchPlan"
-                 << ". plan_id=" << plan.plan_id()
-                 << ", exec_time=" << (plan.exec_time_ns() / 1e9)
+                 << ". plan_id=" << plan->proto().plan_id()
+                 << ", exec_time=" << (plan->proto().exec_time_ns() / 1e9)
                  << ", now=" << now.time_since_epoch().count()
                  << ", offset=" << offset_us << "us";
     }
 
-    auto iter = models_.find(plan.model_session_id());
+    auto iter = models_.find(plan->proto().model_session_id());
     if (iter == models_.end()) {
-      LOG(ERROR) << "Cannot find model_session " << plan.model_session_id();
+      LOG(ERROR) << "Cannot find model_session "
+                 << plan->proto().model_session_id();
       UpdateTimer();
       return;
     }
     model = iter->second;
   }
-  VLOG(1) << "Executing BatchPlan: plan_id=" << plan.plan_id()
-          << ", model_session=" << plan.model_session_id()
-          << ", batch_size=" << plan.queries_without_input_size();
+  VLOG(1) << "Executing BatchPlan: plan_id=" << plan->proto().plan_id()
+          << ", model_session=" << plan->proto().model_session_id()
+          << ", batch_size=" << plan->proto().queries_without_input_size();
 
   // TODO: model->Execute();
   UpdateTimer();

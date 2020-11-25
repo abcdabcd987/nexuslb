@@ -30,6 +30,8 @@ void Task::SetConnection(std::shared_ptr<Connection> conn) {
   connection = std::move(conn);
 }
 
+void Task::SetPlanId(PlanId plan_id) { this->plan_id = plan_id; }
+
 void Task::DecodeQuery(std::shared_ptr<Message> message) {
   QueryProto decoded_query;
   msg_type = message->type();

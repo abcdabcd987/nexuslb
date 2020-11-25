@@ -147,6 +147,7 @@ target_link_libraries(nexus PUBLIC common)
 add_library(backend_obj
         src/nexus/backend/backend_server.cpp
         src/nexus/backend/backup_client.cpp
+        src/nexus/backend/batch_plan_context.cpp
         src/nexus/backend/batch_task.cpp
         src/nexus/backend/model_exec.cpp
         src/nexus/backend/model_ins.cpp

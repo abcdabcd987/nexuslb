@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "nexus/backend/batch_plan_context.h"
 #include "nexus/backend/model_exec.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
@@ -98,7 +99,7 @@ class GpuExecutorPlanFollower {
   void Stop();
   void AddModel(std::shared_ptr<ModelExecutor> model);
   void RemoveModel(std::shared_ptr<ModelExecutor> model);
-  void AddBatchPlan(const BatchPlanProto& plan);
+  void AddBatchPlan(std::shared_ptr<BatchPlanContext> plan);
 
  private:
   void Run();
@@ -113,7 +114,8 @@ class GpuExecutorPlanFollower {
       io_context_work_guard_;
 
   std::mutex mutex_;
-  std::vector<BatchPlanProto> plans_ /* GUARDED_BY(mutex_) */;
+  std::vector<std::shared_ptr<BatchPlanContext>>
+      plans_ /* GUARDED_BY(mutex_) */;
   std::unordered_map<std::string, std::shared_ptr<ModelExecutor>>
       models_ /* GUARDED_BY(mutex_) */;
   boost::asio::basic_waitable_timer<Clock> next_timer_ /* GUARDED_BY(mutex_) */;

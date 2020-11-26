@@ -135,6 +135,7 @@ class Dispatcher {
   // Maps model session ID to backend list of the model
   std::unordered_map<std::string, ModelRoute> models_;
   std::atomic<uint64_t> next_global_id_{1};
+  std::atomic<uint64_t> next_plan_id_{1};
 
   // UDP RPC Server
   std::vector<std::thread> workers_;

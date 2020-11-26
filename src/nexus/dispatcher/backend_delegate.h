@@ -37,7 +37,7 @@ class BackendDelegate {
   bool IsAlive();
   void SendLoadModelCommand(const ModelSession& model_session,
                             uint32_t max_batch);
-  void SendEnqueueQueryCommand(const EnqueueQueryCommand& cmd);
+  void EnqueueBatchPlan(const BatchPlanProto& req);
 
  private:
   uint32_t node_id_;

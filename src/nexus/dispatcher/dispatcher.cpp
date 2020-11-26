@@ -1,5 +1,8 @@
 #include "nexus/dispatcher/dispatcher.h"
 
+#include "nexus/common/time_util.h"
+#include "nexus/proto/control.pb.h"
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -273,11 +276,39 @@ void Dispatcher::DispatchRequest(QueryProto query_without_input,
   }
 
   // Send the query to the backend.
-  if (backend) {
-    EnqueueQueryCommand cmd;
-    *cmd.mutable_query_without_input() = std::move(query_without_input);
-    backend->SendEnqueueQueryCommand(cmd);
+  if (!backend) {
+    return;
   }
+  using namespace std::chrono;
+  auto inst_info =
+      backend->GetInstanceInfo(query_without_input.model_session_id());
+  const auto& profile = inst_info->profile();
+  auto plan_id = next_plan_id_.fetch_add(1);
+  TimePoint now = Clock::now();
+  constexpr auto kNetworkLatency = microseconds(5000);
+  ModelSession model_session;
+  ParseModelSession(query_without_input.model_session_id(), &model_session);
+
+  // Build a simple BatchPlan
+  BatchPlanProto request;
+  request.set_plan_id(plan_id);
+  request.set_model_session_id(query_without_input.model_session_id());
+  *request.add_queries_without_input() = std::move(query_without_input);
+  auto exec_time = now + kNetworkLatency;
+  auto exec_time_ns =
+      duration_cast<nanoseconds>(exec_time.time_since_epoch()).count();
+  request.set_exec_time_ns(exec_time_ns);
+  // TODO: deadline
+  auto deadline = now + microseconds(model_session.latency_sla());
+  auto deadline_ns =
+      duration_cast<nanoseconds>(deadline.time_since_epoch()).count();
+  request.set_deadline_ns(deadline_ns);
+  auto exec_elapse_ns = inst_info->profile().GetForwardLatency(1) * 1000;
+  auto finish_time_ns = exec_time_ns + exec_elapse_ns;
+  request.set_expected_finish_time_ns(finish_time_ns);
+
+  // Send the BatchPlan to the backend
+  backend->EnqueueBatchPlan(request);
 }
 
 void Dispatcher::UpdateModelRoutes(const ModelRouteUpdates& request,

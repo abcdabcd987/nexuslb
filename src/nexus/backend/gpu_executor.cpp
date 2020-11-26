@@ -292,11 +292,12 @@ void GpuExecutorPlanFollower::UpdateTimer() {
 }
 
 void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
+  using namespace std::chrono;
   if (error) {
     LOG(ERROR) << error.message();
     return;
   }
-  auto now = Clock::now();
+  auto start_time = Clock::now();
   std::shared_ptr<BatchPlanContext> plan;
   std::shared_ptr<ModelExecutor> model;
   {
@@ -310,16 +311,16 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
     plan = std::move(plans_.back());
     plans_.pop_back();
 
-    TimePoint exec_time(std::chrono::nanoseconds(plan->proto().exec_time_ns()));
+    TimePoint exec_time(nanoseconds(plan->proto().exec_time_ns()));
     auto offset_us =
-        std::chrono::duration_cast<std::chrono::microseconds>(now - exec_time)
-            .count();
+        duration_cast<microseconds>(start_time - exec_time).count();
     if (std::abs(offset_us) > 10) {
-      LOG(ERROR) << "Huge time offset when start executing BatchPlan"
-                 << ". plan_id=" << plan->proto().plan_id()
-                 << ", exec_time=" << (plan->proto().exec_time_ns() / 1e9)
-                 << ", now=" << now.time_since_epoch().count()
-                 << ", offset=" << offset_us << "us";
+      LOG(ERROR)
+          << "Huge time offset when start executing BatchPlan"
+          << ". plan_id=" << plan->proto().plan_id()
+          << ", exec_time=" << (plan->proto().exec_time_ns() / 1e9) << ", now="
+          << duration_cast<nanoseconds>(start_time.time_since_epoch()).count()
+          << ", offset=" << offset_us << "us";
     }
 
     auto iter = models_.find(plan->proto().model_session_id());
@@ -334,8 +335,12 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
   VLOG(1) << "Executing BatchPlan: plan_id=" << plan->proto().plan_id()
           << ", model_session=" << plan->proto().model_session_id()
           << ", batch_size=" << plan->proto().queries_without_input_size();
-
   model->ExecuteBatchPlan(plan);
+  auto finish_time = Clock::now();
+  auto elapse_us =
+      duration_cast<microseconds>(finish_time - start_time).count();
+  VLOG(1) << "BatchPlan finished. plan_id=" << plan->proto().plan_id()
+          << ", elapse=" << elapse_us << "us";
   UpdateTimer();
 }
 

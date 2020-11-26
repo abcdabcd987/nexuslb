@@ -425,6 +425,7 @@ void ModelExecutor::RemoveTask(std::shared_ptr<Task> task) {
 }
 
 void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
+  VLOG(1) << "ExecuteBatchPlan start. plan_id=" << plan->proto().plan_id();
   auto batch_task = GetBatchTaskByBatchPlan(plan);
   int dequeue_cnt = plan->proto().queries_without_input_size();
   drop_counter_->Increase(dequeue_cnt - batch_task->batch_size());
@@ -432,6 +433,8 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
     std::lock_guard<std::mutex> lock(time_mu_);
     DecreaseOpenRequests(dequeue_cnt);
     last_exec_finish_ = Clock::now();
+    VLOG(1) << "ExecuteBatchPlan return early. batch_size=0, plan_id="
+            << plan->proto().plan_id();
     return;
   }
 
@@ -460,6 +463,7 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
       task_queue_.push(task);
     }
   }
+  VLOG(1) << "ExecuteBatchPlan finish. plan_id=" << plan->proto().plan_id();
 }
 
 std::shared_ptr<BatchTask> ModelExecutor::GetBatchTaskByBatchPlan(

@@ -78,18 +78,18 @@ void BackendDelegate::SendLoadModelCommand(const ModelSession& model_session,
   last_time_ = std::chrono::system_clock::now();
 }
 
-void BackendDelegate::SendEnqueueQueryCommand(const EnqueueQueryCommand& cmd) {
+void BackendDelegate::EnqueueBatchPlan(const BatchPlanProto& req) {
   // TODO: replace this communication channel. It's on critical path.
   grpc::ClientContext context;
   RpcReply reply;
-  grpc::Status status = stub_->EnqueueQuery(&context, cmd, &reply);
+  grpc::Status status = stub_->EnqueueBatchPlan(&context, req, &reply);
   if (!status.ok()) {
-    LOG(ERROR) << "SendLoadModelCommand error " << status.error_code() << ": "
+    LOG(ERROR) << "EnqueueBatchPlan error " << status.error_code() << ": "
                << status.error_message();
   }
   if (reply.status() != CtrlStatus::CTRL_OK) {
-    LOG(ERROR) << "EnqueueQuery error at Backend " << node_id_ << " (" << ip_
-               << "), global_id=" << cmd.query_without_input().global_id()
+    LOG(ERROR) << "EnqueueBatchPlan error at Backend " << node_id_ << " ("
+               << ip_ << "), plan_id=" << req.plan_id()
                << ", status=" << CtrlStatus_Name(reply.status());
   }
   last_time_ = std::chrono::system_clock::now();

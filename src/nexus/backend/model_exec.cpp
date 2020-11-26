@@ -3,8 +3,10 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include <memory>
 #include <sstream>
 
+#include "nexus/backend/batch_plan_context.h"
 #include "nexus/backend/model_ins.h"
 #include "nexus/backend/share_prefix_model.h"
 #include "nexus/common/model_db.h"
@@ -115,10 +117,13 @@ bool ModelExecutor::Preprocess(std::shared_ptr<Task> task, bool force) {
   if (task->result.status() != CTRL_OK) {
     return false;
   }
-  std::lock_guard<std::mutex> lock(task_mu_);
-  processing_tasks_.emplace(task->task_id, task);
-  for (auto input : task->inputs) {
-    input_queue_.push(input);
+  // Add to input queue only if not in a BatchPlan.
+  if (!task->plan_id.has_value()) {
+    std::lock_guard<std::mutex> lock(task_mu_);
+    processing_tasks_.emplace(task->task_id, task);
+    for (auto input : task->inputs) {
+      input_queue_.push(input);
+    }
   }
   return true;
 }
@@ -417,6 +422,63 @@ void ModelExecutor::RemoveTask(std::shared_ptr<Task> task) {
   task->stage = kPostprocess;
   task_queue_.push(task);
   processing_tasks_.erase(task->task_id);
+}
+
+void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
+  auto batch_task = GetBatchTaskByBatchPlan(plan);
+  int dequeue_cnt = plan->proto().queries_without_input_size();
+  drop_counter_->Increase(dequeue_cnt - batch_task->batch_size());
+  if (batch_task->batch_size() == 0) {
+    std::lock_guard<std::mutex> lock(time_mu_);
+    DecreaseOpenRequests(dequeue_cnt);
+    last_exec_finish_ = Clock::now();
+    return;
+  }
+
+  // Each time recompute output sizes because it might change for prefix model
+  std::unordered_map<std::string, size_t> output_sizes;
+  for (auto iter : model_->OutputShapes()) {
+    output_sizes.emplace(iter.first, iter.second.NumElements(1));
+  }
+  batch_task->CreateOutputArrays(output_sizes,
+                                 DeviceManager::Singleton().GetCPUDevice());
+  model_->Forward(batch_task);
+  {
+    std::lock_guard<std::mutex> lock(time_mu_);
+    last_exec_finish_ = Clock::now();
+  }
+  DecreaseOpenRequests(dequeue_cnt);
+
+  auto outputs = batch_task->outputs();
+  auto tasks = batch_task->tasks();
+  // Add output to corresponding tasks, and remove tasks that get all outputs
+  for (int i = 0; i < outputs.size(); ++i) {
+    auto output = outputs[i];
+    auto task = tasks[i];
+    if (task->AddOutput(output)) {
+      task->stage = kPostprocess;
+      task_queue_.push(task);
+    }
+  }
+}
+
+std::shared_ptr<BatchTask> ModelExecutor::GetBatchTaskByBatchPlan(
+    std::shared_ptr<BatchPlanContext> plan) {
+  auto tasks = plan->PopPreprocessedTasks();
+  auto batch_task = std::make_shared<BatchTask>(tasks.size());
+  batch_task->SetInputArray(input_array_);
+  for (const auto& task : tasks) {
+    for (auto input : task->inputs) {
+      batch_task->AppendInput(input, task);
+    }
+  }
+  if (batch_task->batch_size() != plan->proto().queries_without_input_size()) {
+    LOG(WARNING) << "Actual batch size differs from BatchPlan. plan_id="
+                 << plan->proto().plan_id()
+                 << ", actual=" << batch_task->batch_size()
+                 << ", expected=" << plan->proto().queries_without_input_size();
+  }
+  return batch_task;
 }
 
 }  // namespace backend

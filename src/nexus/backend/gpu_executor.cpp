@@ -335,7 +335,7 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
           << ", model_session=" << plan->proto().model_session_id()
           << ", batch_size=" << plan->proto().queries_without_input_size();
 
-  // TODO: model->Execute();
+  model->ExecuteBatchPlan(plan);
   UpdateTimer();
 }
 

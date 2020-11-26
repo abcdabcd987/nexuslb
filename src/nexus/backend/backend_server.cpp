@@ -198,12 +198,6 @@ void BackendServer::HandleError(std::shared_ptr<Connection> conn,
 void BackendServer::HandleFetchImageReply(FetchImageReply reply) {
   auto global_id = GlobalId(reply.global_id());
   VLOG(1) << "HandleFetchImageReply: global_id=" << global_id.t;
-  if (reply.status() != CtrlStatus::CTRL_OK) {
-    LOG(ERROR) << "FetchImageReply not ok. status="
-               << CtrlStatus_Name(reply.status())
-               << ", global_id=" << global_id.t;
-    return;
-  }
   std::shared_ptr<Task> task;
   {
     std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
@@ -216,31 +210,17 @@ void BackendServer::HandleFetchImageReply(FetchImageReply reply) {
     task = iter->second;
     tasks_pending_fetch_image_.erase(iter);
   }
+  if (reply.status() != CtrlStatus::CTRL_OK) {
+    LOG(ERROR) << "FetchImageReply not ok. status="
+               << CtrlStatus_Name(reply.status())
+               << ", global_id=" << global_id.t;
+    task->result.set_status(reply.status());
+    // TODO: SendReply
+    return;
+  }
   task->query.mutable_input()->Swap(reply.mutable_input());
   task->stage = Stage::kPreprocess;
   task_queue_.push(std::move(task));
-
-  if (task->plan_id.t != 0) {
-    std::shared_ptr<BatchPlanContext> finished_plan;
-    {
-      std::lock_guard<std::mutex> lock(mu_pending_plans_);
-      auto iter = pending_plans_.find(task->plan_id);
-      if (iter == pending_plans_.end()) {
-        LOG(ERROR) << "Cannot find pending plan. plan_id=" << task->plan_id.t
-                   << ", global_id=" << global_id.t;
-        return;
-      }
-      auto plan = iter->second;
-      plan->MarkQueryGotImage(global_id);
-      if (plan->HaveAllGotImageYet()) {
-        finished_plan = plan;
-        pending_plans_.erase(iter);
-      }
-    }
-    if (finished_plan) {
-      gpu_executor_->AddBatchPlan(finished_plan);
-    }
-  }
 }
 
 void BackendServer::LoadModelEnqueue(const BackendLoadModelCommand& request) {
@@ -300,7 +280,7 @@ void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
   task->SetQuery(req.query_without_input());
   bool ok = EnqueueQuery(task);
   reply->set_status(ok ? CtrlStatus::CTRL_OK
-                       : CtrlStatus::CTRL_UNSPECIFIED_ERROR);
+                       : CtrlStatus(task->result.status()));
 }
 
 bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
@@ -318,6 +298,8 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
                  << "model_session=" << task->query.model_session_id()
                  << ", query_id=" << task->query.query_id()
                  << ", global_id=" << task->query.global_id();
+      task->result.set_status(CtrlStatus::CTRL_FRONTEND_CONNECTION_NOT_FOUND);
+      // TODO: SendReply
       return false;
     }
     frontend_conn = iter->second;
@@ -329,6 +311,8 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
     if (tasks_pending_fetch_image_.count(global_id)) {
       LOG(ERROR) << "GlobalId of the incoming request is not unique. Skip. "
                  << "global_id=" << global_id.t;
+      task->result.set_status(CtrlStatus::CTRL_GLOBAL_ID_CONFLICT);
+      // TODO: SendReply
       return false;
     }
     tasks_pending_fetch_image_[global_id] = task;
@@ -369,10 +353,37 @@ void BackendServer::HandleEnqueueBatchPlan(const grpc::ServerContext&,
     task->SetQuery(query);
     task->SetPlanId(plan->plan_id());
     bool ok = EnqueueQuery(task);
-    all_ok &= ok;
+    if (!ok) {
+      all_ok = false;
+      plan->MarkQueryDropped(GlobalId(query.global_id()));
+    }
   }
   reply->set_status(all_ok ? CtrlStatus::CTRL_OK
                            : CtrlStatus::CTRL_UNSPECIFIED_ERROR);
+}
+
+void BackendServer::MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task) {
+  CHECK(task->plan_id.has_value());
+  auto plan_id = task->plan_id.value();
+  std::shared_ptr<BatchPlanContext> ready_plan;
+  {
+    std::lock_guard<std::mutex> lock(mu_pending_plans_);
+    auto iter = pending_plans_.find(plan_id);
+    if (iter == pending_plans_.end()) {
+      LOG(ERROR) << "Cannot find pending plan. plan_id=" << plan_id.t
+                 << ", global_id=" << task->query.global_id();
+      return;
+    }
+    auto plan = iter->second;
+    plan->AddPreprocessedTask(task);
+    if (plan->IsReadyToRun()) {
+      ready_plan = plan;
+      pending_plans_.erase(iter);
+    }
+  }
+  if (ready_plan) {
+    gpu_executor_->AddBatchPlan(ready_plan);
+  }
 }
 
 ModelExecutorPtr BackendServer::GetModel(const std::string& model_session_id) {

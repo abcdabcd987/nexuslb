@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 
+#include "nexus/backend/batch_plan_context.h"
 #include "nexus/backend/model_ins.h"
 #include "nexus/common/block_queue.h"
 #include "nexus/common/metric.h"
@@ -50,6 +51,7 @@ class ModelExecutor {
   void Postprocess(std::shared_ptr<Task> task);
 
   uint64_t Execute(uint32_t batch = 0);
+  void ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan);
 
   TimePoint LastExecuteFinishTime();
 
@@ -64,6 +66,8 @@ class ModelExecutor {
       uint32_t batch_size);
   std::pair<std::shared_ptr<BatchTask>, int> GetBatchTaskEarliest(
       uint32_t batch_size);
+  std::shared_ptr<BatchTask> GetBatchTaskByBatchPlan(
+      std::shared_ptr<BatchPlanContext> plan);
 
   bool IncreaseOpenRequests(int cnt, bool limit_max_batch);
 

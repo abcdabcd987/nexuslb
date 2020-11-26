@@ -67,7 +67,11 @@ void Worker::Process(std::shared_ptr<Task> task) {
         break;
       }
       // Preprocess task
-      if (!task->model->Preprocess(task)) {
+      if (task->model->Preprocess(task)) {
+        if (task->plan_id.has_value()) {
+          server_->MarkBatchPlanQueryPreprocessed(task);
+        }
+      } else {
         if (task->result.status() != CTRL_OK) {
           SendReply(std::move(task));
         } else {

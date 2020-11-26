@@ -7,6 +7,7 @@
 #include <chrono>
 #include <memory>
 #include <opencv2/opencv.hpp>
+#include <optional>
 
 #include "nexus/common/block_queue.h"
 #include "nexus/common/connection.h"
@@ -118,7 +119,7 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
 
   /*! \brief Task id */
   uint64_t task_id;
-  PlanId plan_id;
+  std::optional<PlanId> plan_id;
   /*! \brief Connection to frontend. */
   std::shared_ptr<Connection> connection;
   /*! \brief Message type */

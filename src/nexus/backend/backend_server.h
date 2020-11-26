@@ -87,6 +87,7 @@ class BackendServer : public ServerBase, public MessageHandler {
                           const EnqueueQueryCommand& req, RpcReply* reply);
   void HandleEnqueueBatchPlan(const grpc::ServerContext&,
                               const BatchPlanProto& req, RpcReply* reply);
+  void MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task);
 
   /*!
    * \brief Gets the model instance given model session ID

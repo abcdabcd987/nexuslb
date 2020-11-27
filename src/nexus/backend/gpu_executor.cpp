@@ -310,19 +310,19 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
                   OrderBatchPlanProtoByExecTimeDesc);
     plan = std::move(plans_.back());
     plans_.pop_back();
-
-    TimePoint exec_time(nanoseconds(plan->proto().exec_time_ns()));
-    auto offset_us =
-        duration_cast<microseconds>(start_time - exec_time).count();
-    if (std::abs(offset_us) > 10) {
-      LOG(ERROR)
-          << "Huge time offset when start executing BatchPlan"
-          << ". plan_id=" << plan->proto().plan_id()
-          << ", exec_time=" << (plan->proto().exec_time_ns() / 1e9) << ", now="
-          << duration_cast<nanoseconds>(start_time.time_since_epoch()).count()
-          << ", offset=" << offset_us << "us";
-    }
-
+  }
+  TimePoint exec_time(nanoseconds(plan->proto().exec_time_ns()));
+  auto offset_us = duration_cast<microseconds>(start_time - exec_time).count();
+  if (offset_us > 10) {
+    LOG(ERROR)
+        << "Huge time offset when start executing BatchPlan"
+        << ". plan_id=" << plan->proto().plan_id()
+        << ", exec_time=" << plan->proto().exec_time_ns() << ", now="
+        << duration_cast<nanoseconds>(start_time.time_since_epoch()).count()
+        << ", offset=" << offset_us << "us";
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto iter = models_.find(plan->proto().model_session_id());
     if (iter == models_.end()) {
       LOG(ERROR) << "Cannot find model_session "
@@ -334,7 +334,8 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
   }
   VLOG(1) << "Executing BatchPlan: plan_id=" << plan->proto().plan_id()
           << ", model_session=" << plan->proto().model_session_id()
-          << ", batch_size=" << plan->proto().queries_without_input_size();
+          << ", batch_size=" << plan->proto().queries_without_input_size()
+          << ", exec_time_offset=" << offset_us << "us";
   model->ExecuteBatchPlan(plan);
   auto finish_time = Clock::now();
   auto elapse_us =

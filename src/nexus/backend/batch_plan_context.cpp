@@ -8,9 +8,9 @@ namespace nexus {
 namespace backend {
 
 BatchPlanContext::BatchPlanContext(BatchPlanProto proto)
-    : proto_(std::move(proto)), plan_id_(proto.plan_id()) {
+    : proto_(std::move(proto)), plan_id_(proto_.plan_id()) {
   for (const auto& query : proto_.queries_without_input()) {
-    auto global_id = GlobalId(query.query_id());
+    auto global_id = GlobalId(query.global_id());
     auto pair = global_ids_.insert(global_id);
     if (!pair.second) {
       LOG(ERROR) << "Duplicated query in BatchPlan. global_id=" << global_id.t
@@ -22,14 +22,16 @@ BatchPlanContext::BatchPlanContext(BatchPlanProto proto)
 
 bool BatchPlanContext::MarkQueryProcessed(GlobalId global_id) {
   if (!global_ids_.count(global_id)) {
-    LOG(ERROR) << "Query not belong to BatchPlan. global_id=" << global_id.t
-               << ", plan_id=" << plan_id_.t;
+    LOG(ERROR)
+        << "MarkQueryProcessed: Query not belong to BatchPlan. global_id="
+        << global_id.t << ", plan_id=" << plan_id_.t;
     return false;
   }
   auto iter = pending_queries_.find(global_id);
   if (iter == pending_queries_.end()) {
-    LOG(ERROR) << "Query is not in pending state. global_id=" << global_id.t
-               << ", plan_id=" << plan_id_.t;
+    LOG(ERROR)
+        << "MarkQueryProcessed: Query is not in pending state. global_id="
+        << global_id.t << ", plan_id=" << plan_id_.t;
     return false;
   }
   pending_queries_.erase(iter);

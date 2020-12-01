@@ -128,10 +128,6 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   if (ctx->slack_ms() > 0) {
     query.set_slack_ms(int(floor(ctx->slack_ms())));
   }
-  if (lb_policy_ == LB_Dispatcher) {
-    query_without_input.CopyFrom(query);
-  }
-  query.mutable_input()->CopyFrom(input);
 
   // Punch clock
   auto* clock = query.mutable_clock();
@@ -146,6 +142,10 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   clock->set_frontend_dispatch_ns(frontend_dispatch_ns);
 
   // Move `query`
+  if (lb_policy_ == LB_Dispatcher) {
+    query_without_input.CopyFrom(query);
+  }
+  query.mutable_input()->CopyFrom(input);
   ctx->SetBackendQueryProto(std::move(query));
 
   // Send query to backend if not using dispatcher.

@@ -140,6 +140,8 @@ message QueryProto {
   uint64 global_id = 4;
   // Frontend that holds the input.
   uint32 frontend_id = 5;
+  // Timestamps of important events.
+  QueryPunchClock clock = 6;
 }
 
 message QueryResultProto {
@@ -156,6 +158,8 @@ message QueryResultProto {
   // Latency
   uint64 latency_us = 20;
   uint64 queuing_us = 21;
+  // Timestamps of important events.
+  QueryPunchClock clock = 6;
 
   bool use_backup = 22;
 }
@@ -174,6 +178,23 @@ message QueryLatency {
   uint64 backend_latency_us = 5;
   // Backend queuing latency
   uint64 backend_queuing_us = 6;
+  // Timestamps of important events.
+  QueryPunchClock clock = 8;
 
   bool use_backup = 7;
+}
+
+message QueryPunchClock {
+  uint64 frontend_recv_ns = 1;
+  uint64 frontend_dispatch_ns = 2;
+  uint64 dispatcher_recv_ns = 3;
+  uint64 dispatcher_sched_ns = 4;
+  uint64 dispatcher_dispatch_ns = 5;
+  uint64 backend_recv_ns = 6;
+  uint64 backend_fetch_image_ns = 7;
+  uint64 backend_got_image_ns = 8;
+  uint64 backend_exec_ns = 9;
+  uint64 backend_finish_ns = 10;
+  uint64 backend_reply_ns = 11;
+  uint64 frontend_got_reply_ns = 12;
 }

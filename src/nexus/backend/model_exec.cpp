@@ -452,7 +452,7 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   DecreaseOpenRequests(dequeue_cnt);
 
   auto outputs = batch_task->outputs();
-  auto tasks = batch_task->tasks();
+  auto& tasks = batch_task->tasks();
   // Add output to corresponding tasks, and remove tasks that get all outputs
   for (int i = 0; i < outputs.size(); ++i) {
     auto output = outputs[i];
@@ -462,14 +462,25 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
       task_queue_.push(task);
     }
   }
+
+  auto backend_finish_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               Clock::now().time_since_epoch())
+                               .count();
+  for (auto& task : tasks) {
+    task->query.mutable_clock()->set_backend_finish_ns(backend_finish_ns);
+  }
 }
 
 std::shared_ptr<BatchTask> ModelExecutor::GetBatchTaskByBatchPlan(
     std::shared_ptr<BatchPlanContext> plan) {
+  auto backend_exec_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             Clock::now().time_since_epoch())
+                             .count();
   auto tasks = plan->PopPreprocessedTasks();
   auto batch_task = std::make_shared<BatchTask>(tasks.size());
   batch_task->SetInputArray(input_array_);
-  for (const auto& task : tasks) {
+  for (auto& task : tasks) {
+    task->query.mutable_clock()->set_backend_exec_ns(backend_exec_ns);
     for (auto input : task->inputs) {
       batch_task->AppendInput(input, task);
     }

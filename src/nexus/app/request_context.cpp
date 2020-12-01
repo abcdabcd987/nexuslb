@@ -16,6 +16,7 @@ RequestContext::RequestContext(std::shared_ptr<UserSession> user_sess,
       req_pool_(req_pool),
       state_(kUninitialized),
       slack_ms_(0.) {
+  frontend_recv_time_ = Clock::now();
   SetDeadline(std::chrono::milliseconds(50));
   // beg_ = Clock::now();
   msg->DecodeBody(&request_);
@@ -119,6 +120,10 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
   if (state_ == kError) {
     return;
   }
+  auto frontend_got_reply_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
   std::lock_guard<std::mutex> lock(mu_);
   // Add query latency info
   uint64_t qid = result.query_id();
@@ -133,6 +138,10 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
   query_latency->set_backend_latency_us(result.latency_us());
   query_latency->set_backend_queuing_us(result.queuing_us());
   query_latency->set_use_backup(result.use_backup());
+
+  query_latency->mutable_clock()->CopyFrom(result.clock());
+  query_latency->mutable_clock()->set_frontend_got_reply_ns(
+      frontend_got_reply_ns);
 
   double latency = recv_ts;
   ModelSession model_sess;

@@ -126,6 +126,13 @@ void Worker::SendReply(std::shared_ptr<Task> task) {
   } else {
     task->result.set_use_backup(false);
   }
+
+  auto backend_reply_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              Clock::now().time_since_epoch())
+                              .count();
+  task->query.mutable_clock()->set_backend_reply_ns(backend_reply_ns);
+  task->result.mutable_clock()->CopyFrom(task->query.clock());
+
   MessageType reply_type = kBackendReply;
   if (task->msg_type == kBackendRelay) {
     reply_type = kBackendRelayReply;

@@ -154,6 +154,10 @@ int ns(const std::chrono::time_point<std::chrono::high_resolution_clock>& x,
 }  // namespace
 
 void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
+  auto dispatcher_recv_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
   DispatchRequest request;
   // Validate request
   bool ok = request.ParseFromString(
@@ -173,6 +177,7 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
   reply.set_query_id(request.query_id());
   QueryProto query;
   query.Swap(request.mutable_query_without_input());
+  query.mutable_clock()->set_dispatcher_recv_ns(dispatcher_recv_ns);
   dispatcher_->DispatchRequest(std::move(query), &reply);
 
   // Send reply. I think using blocking APIs should be okay here?
@@ -251,6 +256,14 @@ void Dispatcher::Stop() {
 
 void Dispatcher::DispatchRequest(QueryProto query_without_input,
                                  DispatchReply* reply) {
+  // Update punch clock
+  auto dispatcher_sched_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
+  query_without_input.mutable_clock()->set_dispatcher_sched_ns(
+      dispatcher_sched_ns);
+
   // Assign GlobalId
   auto global_id = next_global_id_.fetch_add(1);
   query_without_input.set_global_id(global_id);
@@ -289,6 +302,14 @@ void Dispatcher::DispatchRequest(QueryProto query_without_input,
   ModelSession model_session;
   ParseModelSession(query_without_input.model_session_id(), &model_session);
 
+  // Define deadline
+  auto frontend_recv_time =
+      TimePoint(nanoseconds(query_without_input.clock().frontend_recv_ns()));
+  auto deadline =
+      frontend_recv_time + microseconds(model_session.latency_sla());
+  auto deadline_ns =
+      duration_cast<nanoseconds>(deadline.time_since_epoch()).count();
+
   // Build a simple BatchPlan
   BatchPlanProto request;
   request.set_plan_id(plan_id);
@@ -298,14 +319,19 @@ void Dispatcher::DispatchRequest(QueryProto query_without_input,
   auto exec_time_ns =
       duration_cast<nanoseconds>(exec_time.time_since_epoch()).count();
   request.set_exec_time_ns(exec_time_ns);
-  // TODO: deadline
-  auto deadline = now + microseconds(model_session.latency_sla());
-  auto deadline_ns =
-      duration_cast<nanoseconds>(deadline.time_since_epoch()).count();
   request.set_deadline_ns(deadline_ns);
   auto exec_elapse_ns = inst_info->profile().GetForwardLatency(1) * 1000;
   auto finish_time_ns = exec_time_ns + exec_elapse_ns;
   request.set_expected_finish_time_ns(finish_time_ns);
+
+  // Update punch clock
+  auto dispatcher_dispatch_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
+  for (auto& query : *request.mutable_queries_without_input()) {
+    query.mutable_clock()->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
+  }
 
   // Send the BatchPlan to the backend
   backend->EnqueueBatchPlan(request);

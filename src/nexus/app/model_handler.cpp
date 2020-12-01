@@ -4,6 +4,7 @@
 #include <glog/logging.h>
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <typeinfo>
 
@@ -131,6 +132,20 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
     query_without_input.CopyFrom(query);
   }
   query.mutable_input()->CopyFrom(input);
+
+  // Punch clock
+  auto* clock = query.mutable_clock();
+  auto frontend_recv_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              ctx->frontend_recv_time().time_since_epoch())
+                              .count();
+  clock->set_frontend_recv_ns(frontend_recv_ns);
+  auto frontend_dispatch_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
+  clock->set_frontend_dispatch_ns(frontend_dispatch_ns);
+
+  // Move `query`
   ctx->SetBackendQueryProto(std::move(query));
 
   // Send query to backend if not using dispatcher.

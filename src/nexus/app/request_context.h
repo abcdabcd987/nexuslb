@@ -9,6 +9,7 @@
 #include "nexus/app/model_handler.h"
 #include "nexus/app/user_session.h"
 #include "nexus/common/block_queue.h"
+#include "nexus/common/time_util.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -105,6 +106,8 @@ class RequestContext : public DeadlineItem,
 
   const QueryProto& backend_query_proto() const { return backend_query_proto_; }
 
+  const TimePoint& frontend_recv_time() const { return frontend_recv_time_; }
+
   void SetState(RequestState state);
 
   void SetExecBlocks(std::vector<ExecBlock*> blocks);
@@ -143,6 +146,7 @@ class RequestContext : public DeadlineItem,
   double slack_ms_;
   QueryProto backend_query_proto_;
   bool has_backend_query_sent_ = false;
+  TimePoint frontend_recv_time_;
 
   std::deque<ExecBlock*> ready_blocks_;
   std::unordered_map<int, ExecBlock*> pending_blocks_;

@@ -4,6 +4,7 @@
 #include <glog/logging.h>
 #include <pthread.h>
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <unordered_set>
@@ -196,6 +197,10 @@ void BackendServer::HandleError(std::shared_ptr<Connection> conn,
 }
 
 void BackendServer::HandleFetchImageReply(FetchImageReply reply) {
+  auto backend_got_image_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
   auto global_id = GlobalId(reply.global_id());
   VLOG(1) << "HandleFetchImageReply: global_id=" << global_id.t;
   std::shared_ptr<Task> task;
@@ -210,6 +215,7 @@ void BackendServer::HandleFetchImageReply(FetchImageReply reply) {
     task = iter->second;
     tasks_pending_fetch_image_.erase(iter);
   }
+  task->query.mutable_clock()->set_backend_got_image_ns(backend_got_image_ns);
   if (reply.status() != CtrlStatus::CTRL_OK) {
     LOG(ERROR) << "FetchImageReply not ok. status="
                << CtrlStatus_Name(reply.status())
@@ -319,6 +325,12 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
   }
 
   // Send FetchImage rpc
+  auto backend_fetch_image_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
+  task->query.mutable_clock()->set_backend_fetch_image_ns(
+      backend_fetch_image_ns);
   FetchImageRequest request;
   *request.mutable_model_session_id() = task->query.model_session_id();
   request.set_query_id(task->query.query_id());
@@ -334,6 +346,10 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
 void BackendServer::HandleEnqueueBatchPlan(const grpc::ServerContext&,
                                            const BatchPlanProto& req,
                                            RpcReply* reply) {
+  auto backend_recv_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             Clock::now().time_since_epoch())
+                             .count();
+
   // Add batchplan
   auto plan = std::make_shared<BatchPlanContext>(req);
   {
@@ -352,6 +368,7 @@ void BackendServer::HandleEnqueueBatchPlan(const grpc::ServerContext&,
     auto task = std::make_shared<Task>(nullptr);
     task->SetQuery(query);
     task->SetPlanId(plan->plan_id());
+    task->query.mutable_clock()->set_backend_recv_ns(backend_recv_ns);
     bool ok = EnqueueQuery(task);
     if (!ok) {
       all_ok = false;

@@ -8,6 +8,8 @@
 #include <memory>
 #include <mutex>
 
+#include "nexus/common/metric.h"
+#include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
@@ -17,6 +19,9 @@ namespace dispatcher {
 namespace delayed {
 
 namespace {
+
+constexpr uint32_t kCountIntervalSec = 1;
+constexpr uint32_t kAvgIntervalSec = 5;
 
 bool OrderQueryContextByDeadlineASC(const std::shared_ptr<QueryContext>& lhs,
                                     const std::shared_ptr<QueryContext>& rhs) {
@@ -40,16 +45,32 @@ InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
 }
 
 ModelSessionContext::ModelSessionContext(ModelSession model_session)
-    : model_session(std::move(model_session)) {
+    : model_session(std::move(model_session)),
+      req_rate(kCountIntervalSec, kAvgIntervalSec) {
   string_id = ModelSessionToString(this->model_session);
+  req_counter =
+      MetricRegistry::Singleton().CreateIntervalCounter(kCountIntervalSec);
 }
 
-BackendContext::BackendContext(NodeId backend_id)
+double ModelSessionContext::GetRequestRate() {
+  for (auto nreq : req_counter->GetHistory()) {
+    if (req_rate.rate() < 0 && nreq == 0) {
+      continue;
+    }
+    req_rate.AddSample(nreq);
+  }
+  return req_rate.rate();
+}
+
+BackendContext::BackendContext(NodeId backend_id,
+                               std::shared_ptr<BackendDelegate> delegate)
     : backend_id(backend_id),
+      delegate(std::move(delegate)),
       next_available_time(std::chrono::nanoseconds(0)) {}
 
-DelayedScheduler::DelayedScheduler()
-    : io_context_work_guard_(io_context_.get_executor()) {}
+DelayedScheduler::DelayedScheduler(DispatcherAccessor dispatcher)
+    : dispatcher_(std::move(dispatcher)),
+      io_context_work_guard_(io_context_.get_executor()) {}
 
 void DelayedScheduler::RunAsWorker() { io_context_.run(); }
 
@@ -57,6 +78,8 @@ void DelayedScheduler::Stop() { io_context_work_guard_.reset(); }
 
 void DelayedScheduler::AddModelSession(ModelSession model_session) {
   std::lock_guard<std::mutex> lock(mutex_);
+
+  // Add model session
   auto mctx = std::make_shared<ModelSessionContext>(std::move(model_session));
   if (models_.count(mctx->string_id)) {
     LOG(ERROR) << "Model session already exists. model_session="
@@ -64,16 +87,53 @@ void DelayedScheduler::AddModelSession(ModelSession model_session) {
     return;
   }
   models_[mctx->string_id] = std::move(mctx);
+
+  // Add instances
+  auto profile_id = ModelSessionToProfileID(mctx->model_session);
+  for (auto& pair : backends_) {
+    auto& bctx = pair.second;
+    const auto* profile = ModelDatabase::Singleton().GetModelProfile(
+        bctx->delegate->gpu_device(), bctx->delegate->gpu_uuid(), profile_id);
+    if (!profile) {
+      continue;
+    }
+    auto inst = std::make_shared<InstanceContext>(mctx->model_session,
+                                                  bctx->backend_id, *profile);
+    mctx->instances[bctx->backend_id] = inst;
+    bctx->instances[mctx->string_id] = inst;
+  }
 }
 
 void DelayedScheduler::AddBackend(NodeId backend_id) {
   std::lock_guard<std::mutex> lock(mutex_);
-  auto bctx = std::make_shared<BackendContext>(backend_id);
+
+  // Add backend
+  auto delegate = dispatcher_.GetBackend(backend_id);
+  if (!delegate) {
+    LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;
+    return;
+  }
+  auto bctx = std::make_shared<BackendContext>(backend_id, delegate);
   if (backends_.count(bctx->backend_id)) {
     LOG(ERROR) << "Backend already exists. backend_id=" << backend_id.t;
     return;
   }
   backends_[backend_id] = std::move(bctx);
+
+  // Add instances
+  for (auto& pair : models_) {
+    auto& mctx = pair.second;
+    auto profile_id = ModelSessionToProfileID(mctx->model_session);
+    const auto* profile = ModelDatabase::Singleton().GetModelProfile(
+        bctx->delegate->gpu_device(), bctx->delegate->gpu_uuid(), profile_id);
+    if (!profile) {
+      continue;
+    }
+    auto inst = std::make_shared<InstanceContext>(mctx->model_session,
+                                                  bctx->backend_id, *profile);
+    mctx->instances[bctx->backend_id] = inst;
+    bctx->instances[mctx->string_id] = inst;
+  }
 }
 
 void DelayedScheduler::EnqueueQuery(QueryProto query_without_input) {

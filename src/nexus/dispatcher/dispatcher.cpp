@@ -1,6 +1,7 @@
 #include "nexus/dispatcher/dispatcher.h"
 
 #include "nexus/common/time_util.h"
+#include "nexus/common/typedef.h"
 #include "nexus/proto/control.pb.h"
 
 #ifndef _GNU_SOURCE
@@ -18,6 +19,7 @@
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
+#include "nexus/dispatcher/accessor.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/frontend_delegate.h"
 #include "nexus/dispatcher/inst_info.h"
@@ -278,7 +280,7 @@ void Dispatcher::DispatchRequest(QueryProto query_without_input,
     } else {
       auto backend_info = iter->second.GetBackend();
       reply->set_status(CtrlStatus::CTRL_OK);
-      auto backend_iter = backends_.find(backend_info.node_id());
+      auto backend_iter = backends_.find(NodeId(backend_info.node_id()));
       if (backend_iter != backends_.end()) {
         backend = backend_iter->second;
       } else {
@@ -435,11 +437,12 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
           beacon_interval_sec_);
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (frontends_.find(frontend->node_id()) != frontends_.end()) {
+        auto frontend_id = NodeId(frontend->node_id());
+        if (frontends_.find(frontend_id) != frontends_.end()) {
           reply->set_status(CtrlStatus::CTRL_FRONTEND_NODE_ID_CONFLICT);
           return;
         }
-        frontends_[frontend->node_id()] = frontend;
+        frontends_[frontend_id] = frontend;
       }
 
       // UpdateBackendList
@@ -469,11 +472,12 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
           sessions;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (backends_.find(backend->node_id()) != backends_.end()) {
+        auto backend_id = NodeId(backend->node_id());
+        if (backends_.find(backend_id) != backends_.end()) {
           reply->set_status(CtrlStatus::CTRL_BACKEND_NODE_ID_CONFLICT);
           return;
         }
-        backends_[backend->node_id()] = backend;
+        backends_[backend_id] = backend;
         sessions = sessions_;
       }
 
@@ -504,7 +508,7 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
       // UpdateBackendList
       BackendListUpdates update;
       update.add_backends()->CopyFrom(backend->backend_info());
-      std::unordered_map<uint32_t, std::shared_ptr<FrontendDelegate>> frontends;
+      decltype(frontends_) frontends;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         frontends = frontends_;
@@ -611,9 +615,10 @@ void Dispatcher::HandleKeepAlive(const grpc::ServerContext& ctx,
                                  const KeepAliveRequest& request,
                                  RpcReply* reply) {
   std::lock_guard<std::mutex> lock(mutex_);
+  auto node_id = NodeId(request.node_id());
   switch (request.node_type()) {
     case NodeType::FRONTEND_NODE: {
-      auto it = frontends_.find(request.node_id());
+      auto it = frontends_.find(node_id);
       if (it == frontends_.end()) {
         reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
       } else {
@@ -623,7 +628,7 @@ void Dispatcher::HandleKeepAlive(const grpc::ServerContext& ctx,
       break;
     }
     case NodeType::BACKEND_NODE: {
-      auto it = backends_.find(request.node_id());
+      auto it = backends_.find(node_id);
       if (it == backends_.end()) {
         reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
       } else {

@@ -17,6 +17,7 @@
 
 #include "nexus/common/connection.h"
 #include "nexus/common/server_base.h"
+#include "nexus/common/typedef.h"
 #include "nexus/dispatcher/rpc_service.h"
 #include "nexus/proto/control.pb.h"
 
@@ -110,6 +111,7 @@ class Dispatcher {
                        const KeepAliveRequest& request, RpcReply* reply);
 
  private:
+  friend class DispatcherAccessor;
   const int udp_port_;
   const int num_udp_threads_;
   const std::vector<int> pin_cpus_;
@@ -119,13 +121,13 @@ class Dispatcher {
   /*! \brief Interval to update stats to scheduler in seconds */
   uint32_t beacon_interval_sec_;
   /*! \brief Frontend node ID */
-  uint32_t node_id_;
+  NodeId node_id_;
   /*! \brief RPC service */
   RpcService rpc_service_;
   /*! \brief Mapping from frontend node id to frontend client */
-  std::unordered_map<uint32_t, std::shared_ptr<FrontendDelegate>> frontends_;
+  std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
   /*! \brief Mapping from backend node id to backend client */
-  std::unordered_map<uint32_t, std::shared_ptr<BackendDelegate>> backends_;
+  std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
   /*! \brief Mapping from model session ID to session information */
   std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
       sessions_;

@@ -115,6 +115,7 @@ set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_executable(dispatcher
         src/nexus/dispatcher/accessor.cpp
         src/nexus/dispatcher/backend_delegate.cpp
+        src/nexus/dispatcher/batch_size_estimator.cpp
         src/nexus/dispatcher/delayed_scheduler.cpp
         src/nexus/dispatcher/dispatcher.cpp
         src/nexus/dispatcher/dispatcher_main.cpp

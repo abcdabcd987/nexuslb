@@ -7,6 +7,10 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <utility>
 
 #include "nexus/common/metric.h"
 #include "nexus/common/model_db.h"
@@ -22,11 +26,8 @@ namespace {
 
 constexpr uint32_t kCountIntervalSec = 1;
 constexpr uint32_t kAvgIntervalSec = 5;
-
-bool OrderQueryContextByDeadlineASC(const std::shared_ptr<QueryContext>& lhs,
-                                    const std::shared_ptr<QueryContext>& rhs) {
-  return lhs->deadline > rhs->deadline;
-}
+constexpr uint32_t kCtrlPlaneLatencyUs = 2000;
+constexpr uint32_t kDataPlaneLatencyUs = 5000;
 
 }  // namespace
 
@@ -52,7 +53,7 @@ ModelSessionContext::ModelSessionContext(ModelSession model_session)
       MetricRegistry::Singleton().CreateIntervalCounter(kCountIntervalSec);
 }
 
-double ModelSessionContext::GetRequestRate() {
+double ModelSessionContext::GetRequestRate() const {
   for (auto nreq : req_counter->GetHistory()) {
     if (req_rate.rate() < 0 && nreq == 0) {
       continue;
@@ -70,6 +71,7 @@ BackendContext::BackendContext(NodeId backend_id,
 
 DelayedScheduler::DelayedScheduler(DispatcherAccessor dispatcher)
     : dispatcher_(std::move(dispatcher)),
+      bse_(1.0, 0.0),
       io_context_work_guard_(io_context_.get_executor()) {}
 
 void DelayedScheduler::RunAsWorker() { io_context_.run(); }
@@ -154,16 +156,221 @@ void DelayedScheduler::EnqueueQuery(QueryProto query_without_input) {
     }
     queries_[qctx->global_id] = qctx;
     auto& mctx = models_.at(qctx->proto.model_session_id());
-    mctx->sorted_queries.push_back(qctx);
-    std::push_heap(mctx->sorted_queries.begin(), mctx->sorted_queries.end(),
-                   OrderQueryContextByDeadlineASC);
+    mctx->queries.insert(qctx);
   }
 
   // Trigger full schedule on the worker thread.
   boost::asio::post(io_context_, [this] { WorkFullSchedule(); });
 }
 
-void DelayedScheduler::WorkFullSchedule() {}
+PlanId DelayedScheduler::NextPlanId() { return PlanId(next_plan_id_.t++); }
+
+void DelayedScheduler::WorkFullSchedule() {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  DropTimeoutQueries();
+
+  // Copies all remaining queries
+  std::unordered_map<std::string, std::set<GlobalId>> remains;
+  for (auto& pair : models_) {
+    remains.try_emplace(pair.first);
+    auto& global_ids = remains[pair.first];
+    for (auto& qctx : pair.second->queries) {
+      global_ids.insert(qctx->global_id);
+    }
+  }
+
+  // Sort backends by next_available_time
+  std::vector<std::shared_ptr<BackendContext>> backends;
+  for (auto& pair : backends_) {
+    backends.push_back(pair.second);
+  }
+  std::sort(backends.begin(), backends.end(),
+            [](const auto& lhs, const auto& rhs) {
+              return lhs->next_available_time < rhs->next_available_time;
+            });
+
+  // Schedule each backend
+  for (auto& bctx : backends) {
+    // Try all model sessions to schedule on this backend
+    std::optional<BatchPlan> best_plan;
+    for (auto& pair : remains) {
+      auto& remain_queries = pair.second;
+      if (remain_queries.empty()) {
+        continue;
+      }
+      auto candidate = TryScheduleModelSessionOnBackend(
+          bctx, models_[pair.first], remain_queries);
+
+      // Update the best plan.
+      // Pick the one that has the earliest exec_time. The intuition is to give
+      // model sessions that have plenty of time left some time to accumulate
+      // more requests, thus avoiding running them with a small batch size.
+      if (!candidate) {
+        continue;
+      }
+      if (!best_plan || candidate->exec_time < best_plan->exec_time) {
+        best_plan = std::move(candidate);
+      }
+    }
+
+    // Use the best plan as the backend's next plan.
+    // TODO: setup timer
+    if (!best_plan) {
+      bctx->next_plan = std::nullopt;
+    } else {
+      // Remove scheduled queries so that the next backend won't see them.
+      auto& remain_queries = remains[best_plan->model_session_id];
+      for (auto global_id : best_plan->global_ids) {
+        remain_queries.erase(global_id);
+      }
+
+      best_plan->plan_id = NextPlanId();
+      bctx->next_plan = std::move(best_plan);
+    }
+  }
+}
+
+void DelayedScheduler::DropTimeoutQueries() {
+  auto now = Clock::now();
+  for (auto& pair : models_) {
+    auto& mctx = pair.second;
+    auto& queries = mctx->queries;
+    for (auto iter = queries.begin(); iter != queries.end();) {
+      auto qctx = *iter;
+      if (qctx->deadline < now) {
+        break;
+      }
+      LOG(WARNING) << "TODO: send dropped query back to frontend. global_id="
+                   << qctx->global_id.t;
+      queries_.erase(qctx->global_id);
+      iter = queries.erase(iter);
+    }
+  }
+}
+
+std::optional<BatchPlan> DelayedScheduler::TryScheduleModelSessionOnBackend(
+    std::shared_ptr<const BackendContext> bctx,
+    std::shared_ptr<const ModelSessionContext> mctx,
+    const std::set<GlobalId>& query_ids) {
+  using namespace std::chrono;
+  auto now = Clock::now();
+  double rps = mctx->GetRequestRate();
+  double time_budget = mctx->model_session.latency_sla() * 1e-3;
+  uint32_t reserved_batch_size =
+      bse_.Estimate(*mctx->profile, time_budget, rps, 0.0);
+  auto proc_elapse = nanoseconds(0);
+  // TODO: WithNStd
+  proc_elapse += nanoseconds(
+      static_cast<long>(mctx->profile->GetPreprocessLatency() * 1e3));
+  proc_elapse += nanoseconds(
+      static_cast<long>(mctx->profile->GetPostprocessLatency() * 1e3));
+  auto plan_recv_time = now + microseconds(kCtrlPlaneLatencyUs) +
+                        microseconds(kDataPlaneLatencyUs);
+  auto eexec_time = std::max(bctx->next_available_time, plan_recv_time);
+
+  // Sliding window policy
+  std::vector<std::shared_ptr<QueryContext>> inputs;
+  auto qiter = query_ids.begin();
+  size_t qremain = query_ids.size();
+  uint32_t bs = std::min(static_cast<uint32_t>(qremain), reserved_batch_size);
+  while (inputs.size() < bs && qiter != query_ids.end()) {
+    --qremain;
+    auto& qctx = queries_[*qiter];
+    auto deadline = inputs.empty() ? qctx->deadline : inputs[0]->deadline;
+    auto fwd_elapse = nanoseconds(
+        static_cast<long>(mctx->profile->GetForwardLatency(bs) * 1e3));
+    auto finish_time = eexec_time + fwd_elapse + proc_elapse;
+    if (deadline > finish_time) {
+      inputs.push_back(qctx);
+    } else {
+      // Not actually dropping the query. Skipping instead.
+      // Just in case another backend can pick it up.
+      bs = std::min(static_cast<uint32_t>(inputs.size() + qremain),
+                    reserved_batch_size);
+    }
+    ++qiter;
+  }
+
+  // See if there is any free lunch.
+  while (qiter != query_ids.end()) {
+    --qremain;
+    auto& qctx = queries_[*qiter];
+    auto deadline = inputs.empty() ? qctx->deadline : inputs[0]->deadline;
+    bs = inputs.size() + 1;
+    auto fwd_elapse = nanoseconds(
+        static_cast<long>(mctx->profile->GetForwardLatency(bs) * 1e3));
+    auto finish_time = eexec_time + fwd_elapse + proc_elapse;
+    if (deadline > finish_time) {
+      inputs.push_back(qctx);
+    } else {
+      break;
+    }
+    ++qiter;
+  }
+
+  // If there is no inputs for the new batch, consider other model sessions.
+  if (inputs.empty()) {
+    return std::nullopt;
+  }
+
+  // Build the new BatchPlan.
+  //
+  // Heuristic: Calculate exec_time using batch size + 1.
+  //
+  //                                                             deadline
+  //     ABCDEF      X   [exec_time = deadline - f(batch_size)   ]
+  //     ABCDEF   [exec_time = deadline - f(batch_size + 1)      ]
+  //
+  // Effectively, this heuristic makes the batch start earlier.
+  //
+  // Suppose there is no additional requests coming in between the gap. It won't
+  // hurt to move the batch earlier. In fact, it'll make the batch finish
+  // earlier.
+  //
+  // Suppose there is a request X in between. With the heuristic, X will be left
+  // for the future batch. Without the heuristic, notice that the batch won't
+  // fit X in unless it drops the head of queue. Hence, it won't gain anything
+  // for adding X. What's worse, dropping the head of queue prolongs the
+  // deadline, which might further prolong the exec_time and potentially
+  // dropping more heads of queue.
+  //
+  // Therefore, this heuristic is very safe and effective.
+  // The only caveat is that the analysis above assumes X won't move the batch's
+  // deadline ahead. Shall the X arrived at the dispatcher out of order and has
+  // a deadline earlier than A's, the analysis doesn't hold. However, it is
+  // worth pointing out that such long a delay is less common, almost unlikely.
+  auto fwd1_elapse = nanoseconds(static_cast<long>(
+      mctx->profile->GetForwardLatency(inputs.size() + 1) * 1e3));
+  auto exec1_elapse = fwd1_elapse + proc_elapse;
+  auto earliest_deadline = inputs[0]->deadline;
+  auto exec_time = std::max(eexec_time, earliest_deadline - exec1_elapse);
+  auto fwd_elapse = nanoseconds(
+      static_cast<long>(mctx->profile->GetForwardLatency(inputs.size()) * 1e3));
+  auto exec_elapse = fwd_elapse + proc_elapse;
+  auto finish_time = exec_time + fwd_elapse + proc_elapse;
+  auto send_time = exec_time - microseconds(kCtrlPlaneLatencyUs) -
+                   microseconds(kDataPlaneLatencyUs);
+  LOG_IF(ERROR, send_time < now)
+      << "send_time < now. send_time=" << send_time.time_since_epoch().count()
+      << ", now=" << now.time_since_epoch().count();
+
+  BatchPlan plan;
+  plan.plan_id.t = 0;
+  plan.backend_id = bctx->backend_id;
+  plan.model_session_id = mctx->string_id;
+  plan.send_time = send_time;
+  plan.exec_time = exec_time;
+  plan.finish_time = finish_time;
+  plan.earliest_deadline = earliest_deadline;
+  plan.actual_batch_size = inputs.size();
+  plan.reserved_batch_size = reserved_batch_size;
+  plan.exec_elapse = exec_elapse;
+  for (const auto& qctx : inputs) {
+    plan.global_ids.push_back(qctx->global_id);
+  }
+  return plan;
+}
 
 }  // namespace delayed
 }  // namespace dispatcher

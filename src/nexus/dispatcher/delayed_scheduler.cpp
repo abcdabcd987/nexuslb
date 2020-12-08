@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <boost/asio/post.hpp>
+#include <boost/system/error_code.hpp>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -215,18 +216,32 @@ void DelayedScheduler::WorkFullSchedule() {
     }
 
     // Use the best plan as the backend's next plan.
-    // TODO: setup timer
     if (!best_plan) {
+      // Deprecate previously scheduled plan.
+      // The timer will be cancelled by the destructor.
       bctx->next_plan = std::nullopt;
     } else {
+      bctx->next_plan = std::move(best_plan);
+      auto& plan = *bctx->next_plan;
+      plan.plan_id = NextPlanId();
+
       // Remove scheduled queries so that the next backend won't see them.
-      auto& remain_queries = remains[best_plan->model_session_id];
-      for (auto global_id : best_plan->global_ids) {
+      auto& remain_queries = remains[plan.model_session_id];
+      for (auto global_id : plan.global_ids) {
         remain_queries.erase(global_id);
       }
 
-      best_plan->plan_id = NextPlanId();
-      bctx->next_plan = std::move(best_plan);
+      // Setup timer to finalize and send out batch plans.
+      plan.send_timer =
+          std::make_unique<boost::asio::basic_waitable_timer<Clock>>(
+              io_context_, plan.send_time);
+      auto backend_id = plan.backend_id;
+      auto plan_id = plan.plan_id;
+      plan.send_timer->async_wait(
+          [backend_id, plan_id, this](const boost::system::error_code& ec) {
+            if (ec) return;
+            WorkFinalizePlan(backend_id, plan_id);
+          });
     }
   }
 }
@@ -276,7 +291,7 @@ std::optional<BatchPlan> DelayedScheduler::TryScheduleModelSessionOnBackend(
   uint32_t bs = std::min(static_cast<uint32_t>(qremain), reserved_batch_size);
   while (inputs.size() < bs && qiter != query_ids.end()) {
     --qremain;
-    auto& qctx = queries_[*qiter];
+    auto& qctx = queries_.at(*qiter);
     auto deadline = inputs.empty() ? qctx->deadline : inputs[0]->deadline;
     auto fwd_elapse = nanoseconds(
         static_cast<long>(mctx->profile->GetForwardLatency(bs) * 1e3));
@@ -295,7 +310,7 @@ std::optional<BatchPlan> DelayedScheduler::TryScheduleModelSessionOnBackend(
   // See if there is any free lunch.
   while (qiter != query_ids.end()) {
     --qremain;
-    auto& qctx = queries_[*qiter];
+    auto& qctx = queries_.at(*qiter);
     auto deadline = inputs.empty() ? qctx->deadline : inputs[0]->deadline;
     bs = inputs.size() + 1;
     auto fwd_elapse = nanoseconds(
@@ -370,6 +385,50 @@ std::optional<BatchPlan> DelayedScheduler::TryScheduleModelSessionOnBackend(
     plan.global_ids.push_back(qctx->global_id);
   }
   return plan;
+}
+
+void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
+  using namespace std::chrono;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!backends_.count(backend_id)) {
+    LOG(ERROR) << "WorkFinalizePlan: Cannot find backend. plan_id=" << plan_id.t
+               << ", backend_id=" << backend_id.t;
+    return;
+  }
+  auto& bctx = backends_.at(backend_id);
+  if (!bctx->next_plan || bctx->next_plan->plan_id != plan_id) {
+    // Skip if this is a deprecated plan.
+    return;
+  }
+  auto plan = std::move(*bctx->next_plan);
+  if (!models_.count(plan.model_session_id)) {
+    LOG(ERROR) << "WorkFinalizePlan: Cannot find model session. plan_id="
+               << plan_id.t << ", backend_id=" << backend_id.t
+               << ", model_session_id=" << plan.model_session_id;
+    return;
+  }
+  auto& mctx = models_.at(plan.model_session_id);
+  auto now = Clock::now();
+  if (duration_cast<microseconds>(now - plan.send_time) > microseconds(100)) {
+    LOG(WARNING) << "WorkFinalizePlan: Huge timer offset. plan.send_time="
+                 << plan.send_time.time_since_epoch().count()
+                 << ", now=" << now.time_since_epoch().count();
+  }
+
+  // Update backend context
+  CHECK(bctx->next_available_time <= plan.exec_time);
+  bctx->next_available_time = plan.finish_time;
+  bctx->next_plan.reset();
+
+  // TODO: send to backend.
+
+  // Remove pending queries.
+  for (auto global_id : plan.global_ids) {
+    auto iter = queries_.find(global_id);
+    CHECK(iter != queries_.end());
+    mctx->queries.erase(iter->second);
+    queries_.erase(iter);
+  }
 }
 
 }  // namespace delayed

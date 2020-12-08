@@ -64,6 +64,8 @@ struct BatchPlan {
   // len(queries) == actual_batch_size.
   // earliest_deadline == pending_queries[query_ids[0]].deadline
   std::vector<GlobalId> global_ids;
+
+  std::unique_ptr<boost::asio::basic_waitable_timer<Clock>> send_timer;
 };
 
 struct InstanceContext {
@@ -119,7 +121,9 @@ class DelayedScheduler {
   std::optional<BatchPlan> TryScheduleModelSessionOnBackend(
       std::shared_ptr<const BackendContext> bctx,
       std::shared_ptr<const ModelSessionContext> mctx,
-      const std::set<GlobalId>& query_ids);
+      const std::set<GlobalId>& query_ids) /* REQUIRES(mutex_) */;
+  void WorkFinalizePlan(NodeId backend_id,
+                        PlanId plan_id) /* EXCLUDES(mutex_) */;
 
   DispatcherAccessor dispatcher_;
   BatchSizeEstimator bse_;

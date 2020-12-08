@@ -18,6 +18,7 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
+#include "nexus/proto/control.pb.h"
 
 namespace nexus {
 namespace dispatcher {
@@ -389,7 +390,7 @@ std::optional<BatchPlan> DelayedScheduler::TryScheduleModelSessionOnBackend(
 
 void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
   using namespace std::chrono;
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
   if (!backends_.count(backend_id)) {
     LOG(ERROR) << "WorkFinalizePlan: Cannot find backend. plan_id=" << plan_id.t
                << ", backend_id=" << backend_id.t;
@@ -420,15 +421,47 @@ void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
   bctx->next_available_time = plan.finish_time;
   bctx->next_plan.reset();
 
-  // TODO: send to backend.
-
   // Remove pending queries.
+  std::vector<std::shared_ptr<QueryContext>> queries;
+  queries.reserve(plan.global_ids.size());
   for (auto global_id : plan.global_ids) {
     auto iter = queries_.find(global_id);
     CHECK(iter != queries_.end());
+    queries.push_back(iter->second);
     mctx->queries.erase(iter->second);
     queries_.erase(iter);
   }
+
+  // Prepare to send to backend.
+  auto delegate = dispatcher_.GetBackend(backend_id);
+  lock.unlock();
+  if (!delegate) {
+    LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;
+    return;
+  }
+  BatchPlanProto proto;
+  proto.set_plan_id(plan.plan_id.t);
+  proto.set_model_session_id(plan.model_session_id);
+  proto.set_exec_time_ns(
+      duration_cast<nanoseconds>(plan.exec_time.time_since_epoch()).count());
+  proto.set_deadline_ns(
+      duration_cast<nanoseconds>(plan.earliest_deadline.time_since_epoch())
+          .count());
+  proto.set_expected_finish_time_ns(
+      duration_cast<nanoseconds>(plan.finish_time.time_since_epoch()).count());
+  for (auto& qctx : queries) {
+    *proto.add_queries_without_input() = std::move(qctx->proto);
+  }
+  // Update punch clock
+  auto dispatcher_dispatch_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
+  for (auto& query : *proto.mutable_queries_without_input()) {
+    query.mutable_clock()->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
+  }
+  // Send to backend
+  delegate->EnqueueBatchPlan(proto);
 }
 
 }  // namespace delayed

@@ -114,10 +114,6 @@ class RequestContext : public DeadlineItem,
 
   void SetBackendQueryProto(QueryProto query_proto);
 
-  // Return true if the sent flag is not set yet and set it, atomically.
-  // Otherwise return false.
-  bool MarkBackendQuerySent();
-
   ExecBlock* NextReadyBlock();
 
   VariablePtr GetVariable(const std::string& var_name);

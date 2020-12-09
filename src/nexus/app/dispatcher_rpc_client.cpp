@@ -71,7 +71,6 @@ void DispatcherRpcClient::Start() {
   // Set up async tasks
   running_ = true;
   DoReceive();
-  SetTimeoutTimer();
 }
 
 void DispatcherRpcClient::Stop() { running_ = false; }

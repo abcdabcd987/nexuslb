@@ -13,8 +13,6 @@
 namespace nexus {
 namespace dispatcher {
 
-class InstanceInfo;
-
 class BackendDelegate {
  public:
   BackendDelegate(uint32_t node_id, const std::string& ip,
@@ -27,11 +25,6 @@ class BackendDelegate {
   const std::string& gpu_uuid() const { return gpu_uuid_; }
   size_t gpu_available_memory() const { return gpu_available_memory_; }
   const BackendInfo& backend_info() const { return backend_info_; }
-
-  std::shared_ptr<InstanceInfo> GetInstanceInfo(
-      const std::string& model_sess_id) const;
-  void AddInstanceInfo(const std::string& model_sess_id,
-                       std::shared_ptr<InstanceInfo> inst);
 
   void Tick();
   bool IsAlive();
@@ -51,7 +44,6 @@ class BackendDelegate {
   long timeout_ms_;
   std::unique_ptr<BackendCtrl::Stub> stub_;
   std::chrono::time_point<std::chrono::system_clock> last_time_;
-  std::unordered_map<std::string, std::shared_ptr<InstanceInfo>> instances_;
   BackendInfo backend_info_;
 };
 

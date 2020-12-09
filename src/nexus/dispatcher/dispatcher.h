@@ -11,6 +11,7 @@
 #include <mutex>
 #include <random>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -18,6 +19,7 @@
 #include "nexus/common/connection.h"
 #include "nexus/common/server_base.h"
 #include "nexus/common/typedef.h"
+#include "nexus/dispatcher/delayed_scheduler.h"
 #include "nexus/dispatcher/rpc_service.h"
 #include "nexus/proto/control.pb.h"
 
@@ -28,23 +30,6 @@ class Dispatcher;
 class FrontendDelegate;
 class BackendDelegate;
 class ModelSessionContext;
-
-class ModelRoute {
- public:
-  void Update(const ModelRouteProto& route);
-  BackendInfo GetBackend();
-
- private:
-  // Basic infomation from the proto
-  std::string model_session_id_;
-  std::vector<ModelRouteProto::BackendRate> backends_;
-  double total_throughput_ = 0;
-
-  // Members for deficit round robin
-  std::unordered_map<uint32_t, double> backend_quanta_;
-  double min_rate_ = 0;
-  size_t current_drr_index_ = 0;
-};
 
 struct RequestContext {
   std::array<uint8_t, 1400> buf;
@@ -59,6 +44,8 @@ class UdpRpcServer {
   ~UdpRpcServer();
   void Run();
   void Stop();
+  void SendDispatchReply(boost::asio::ip::udp::endpoint endpoint,
+                         const DispatchReply& reply);
 
  private:
   void AsyncReceive();
@@ -95,9 +82,8 @@ class Dispatcher {
 
   void Stop();
 
-  void UpdateModelRoutes(const ModelRouteUpdates& request, RpcReply* reply);
-
-  void DispatchRequest(QueryProto query_without_input, DispatchReply* reply);
+  CtrlStatus DispatchRequest(QueryProto query_without_input,
+                             boost::asio::ip::udp::endpoint frontend_endpoint);
 
   // gRPC handlers
 
@@ -125,19 +111,22 @@ class Dispatcher {
   /*! \brief RPC service */
   RpcService rpc_service_;
   /*! \brief Mapping from frontend node id to frontend client */
-  std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
+  std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>>
+      frontends_ /* GUARDED_BY(mutex_) */;
   /*! \brief Mapping from backend node id to backend client */
-  std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
+  std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>>
+      backends_ /* GUARDED_BY(mutex_) */;
   /*! \brief Mapping from model session ID to session information */
   std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
-      sessions_;
+      sessions_ /* GUARDED_BY(mutex_) */;
 
-  // Big lock for the model routes
+  // Big lock
   std::mutex mutex_;
   // Maps model session ID to backend list of the model
-  std::unordered_map<std::string, ModelRoute> models_;
   std::atomic<uint64_t> next_global_id_{1};
-  std::atomic<uint64_t> next_plan_id_{1};
+
+  delayed::DelayedScheduler scheduler_;
+  std::vector<std::thread> scheduler_threads_;
 
   // UDP RPC Server
   std::vector<std::thread> workers_;

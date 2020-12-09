@@ -1,12 +1,9 @@
-#include "nexus/dispatcher/dispatcher.h"
-
-#include "nexus/common/time_util.h"
-#include "nexus/common/typedef.h"
-#include "nexus/proto/control.pb.h"
-
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+
+#include "nexus/dispatcher/dispatcher.h"
+
 #include <glog/logging.h>
 #include <pthread.h>
 #include <sys/socket.h>
@@ -19,11 +16,14 @@
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
+#include "nexus/common/time_util.h"
+#include "nexus/common/typedef.h"
 #include "nexus/dispatcher/accessor.h"
 #include "nexus/dispatcher/backend_delegate.h"
+#include "nexus/dispatcher/delayed_scheduler.h"
 #include "nexus/dispatcher/frontend_delegate.h"
-#include "nexus/dispatcher/inst_info.h"
 #include "nexus/dispatcher/session_context.h"
+#include "nexus/proto/control.pb.h"
 
 using boost::asio::ip::udp;
 
@@ -180,8 +180,15 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
   QueryProto query;
   query.Swap(request.mutable_query_without_input());
   query.mutable_clock()->set_dispatcher_recv_ns(dispatcher_recv_ns);
-  dispatcher_->DispatchRequest(std::move(query), &reply);
+  auto status = dispatcher_->DispatchRequest(std::move(query), client_endpoint);
 
+  // Reply to the frontend.
+  reply.set_status(status);
+  SendDispatchReply(client_endpoint, reply);
+}
+
+void UdpRpcServer::SendDispatchReply(boost::asio::ip::udp::endpoint endpoint,
+                                     const DispatchReply& reply) {
   // Send reply. I think using blocking APIs should be okay here?
   auto msg = reply.SerializeAsString();
   if (msg.empty()) {
@@ -189,7 +196,7 @@ void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
     return;
   }
 
-  auto len = tx_socket_.send_to(boost::asio::buffer(msg), client_endpoint);
+  auto len = tx_socket_.send_to(boost::asio::buffer(msg), endpoint);
   if (len != msg.size()) {
     LOG(WARNING) << "UDP RPC server reply sent " << len << " bytes, expecting "
                  << msg.size() << " bytes";
@@ -201,7 +208,8 @@ Dispatcher::Dispatcher(std::string rpc_port, int udp_port, int num_udp_threads,
     : udp_port_(udp_port),
       num_udp_threads_(num_udp_threads),
       pin_cpus_(std::move(pin_cpus)),
-      rpc_service_(this, rpc_port, 1) {
+      rpc_service_(this, rpc_port, 1),
+      scheduler_(DispatcherAccessor(*this)) {
 #ifndef SO_REUSEPORT
   CHECK_EQ(num_udp_threads, 1) << "SO_REUSEPORT is not supported. UDP RPC "
                                   "server must be run in single threaded mode.";
@@ -234,6 +242,9 @@ void Dispatcher::Run() {
     workers_.emplace_back(&UdpRpcServer::Run, udp_rpc_servers_.back().get());
   }
 
+  // Start a single threaded scheduler.
+  scheduler_threads_.emplace_back([this] { scheduler_.RunAsWorker(); });
+
   // Nothing to do here
   for (;;) {
     std::this_thread::sleep_for(std::chrono::hours(24));
@@ -251,13 +262,22 @@ void Dispatcher::Stop() {
   for (auto& server : udp_rpc_servers_) {
     server->Stop();
   }
+
+  // Stop scheduler.
+  scheduler_.Stop();
+
+  // Join all threads.
   for (auto& thread : workers_) {
+    thread.join();
+  }
+  for (auto& thread : scheduler_threads_) {
     thread.join();
   }
 }
 
-void Dispatcher::DispatchRequest(QueryProto query_without_input,
-                                 DispatchReply* reply) {
+CtrlStatus Dispatcher::DispatchRequest(
+    QueryProto query_without_input,
+    boost::asio::ip::udp::endpoint frontend_endpoint) {
   // Update punch clock
   auto dispatcher_sched_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -270,157 +290,10 @@ void Dispatcher::DispatchRequest(QueryProto query_without_input,
   auto global_id = next_global_id_.fetch_add(1);
   query_without_input.set_global_id(global_id);
 
-  // Run round-robin
-  std::shared_ptr<BackendDelegate> backend;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto iter = models_.find(query_without_input.model_session_id());
-    if (iter == models_.end()) {
-      reply->set_status(CtrlStatus::MODEL_NOT_FOUND);
-    } else {
-      auto backend_info = iter->second.GetBackend();
-      reply->set_status(CtrlStatus::CTRL_OK);
-      auto backend_iter = backends_.find(NodeId(backend_info.node_id()));
-      if (backend_iter != backends_.end()) {
-        backend = backend_iter->second;
-      } else {
-        LOG(ERROR) << "Cannot find BackendDelegate for Backend "
-                   << backend_info.node_id();
-      }
-    }
-  }
-
-  // Send the query to the backend.
-  if (!backend) {
-    return;
-  }
-  using namespace std::chrono;
-  auto inst_info =
-      backend->GetInstanceInfo(query_without_input.model_session_id());
-  const auto& profile = inst_info->profile();
-  auto plan_id = next_plan_id_.fetch_add(1);
-  TimePoint now = Clock::now();
-  constexpr auto kNetworkLatency = microseconds(5000);
-  ModelSession model_session;
-  ParseModelSession(query_without_input.model_session_id(), &model_session);
-
-  // Define deadline
-  auto frontend_recv_time =
-      TimePoint(nanoseconds(query_without_input.clock().frontend_recv_ns()));
-  auto deadline =
-      frontend_recv_time + microseconds(model_session.latency_sla());
-  auto deadline_ns =
-      duration_cast<nanoseconds>(deadline.time_since_epoch()).count();
-
-  // Build a simple BatchPlan
-  BatchPlanProto request;
-  request.set_plan_id(plan_id);
-  request.set_model_session_id(query_without_input.model_session_id());
-  *request.add_queries_without_input() = std::move(query_without_input);
-  auto exec_time = now + kNetworkLatency;
-  auto exec_time_ns =
-      duration_cast<nanoseconds>(exec_time.time_since_epoch()).count();
-  request.set_exec_time_ns(exec_time_ns);
-  request.set_deadline_ns(deadline_ns);
-  auto exec_elapse_ns = inst_info->profile().GetForwardLatency(1) * 1000;
-  auto finish_time_ns = exec_time_ns + exec_elapse_ns;
-  request.set_expected_finish_time_ns(finish_time_ns);
-
-  // Update punch clock
-  auto dispatcher_dispatch_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          Clock::now().time_since_epoch())
-          .count();
-  for (auto& query : *request.mutable_queries_without_input()) {
-    query.mutable_clock()->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
-  }
-
-  // Send the BatchPlan to the backend
-  backend->EnqueueBatchPlan(request);
-}
-
-void Dispatcher::UpdateModelRoutes(const ModelRouteUpdates& request,
-                                   RpcReply* reply) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  for (const auto& model_route : request.model_route()) {
-    auto iter = models_.find(model_route.model_session_id());
-    if (iter == models_.end()) {
-      auto res = models_.emplace(model_route.model_session_id(), ModelRoute());
-      iter = res.first;
-    }
-    iter->second.Update(model_route);
-  }
-  reply->set_status(CTRL_OK);
-}
-
-void ModelRoute::Update(const ModelRouteProto& route) {
-  LOG(INFO) << "Update model route for " << route.model_session_id();
-
-  // Save the current DRR backend
-  const auto current_drr_backend_id =
-      backends_.empty() ? 0 : backends_[current_drr_index_].info().node_id();
-
-  // Update from the proto
-  model_session_id_.assign(route.model_session_id());
-  backends_.assign(route.backend_rate().begin(), route.backend_rate().end());
-  total_throughput_ = 0.;
-
-  // Calculate quantum:rate ratio
-  min_rate_ = std::numeric_limits<double>::max();
-  for (const auto& backend : backends_) {
-    min_rate_ = std::min(min_rate_, backend.throughput());
-  }
-
-  // Give quantum to new backends
-  std::unordered_map<uint32_t, size_t> backend_idx;
-  for (size_t i = 0; i < backends_.size(); ++i) {
-    const auto& backend = backends_[i];
-    const auto backend_id = backend.info().node_id();
-    const auto rate = backend.throughput();
-    total_throughput_ += rate;
-    LOG(INFO) << "  backend " << backend_id << ": " << rate << " rps";
-    backend_quanta_.emplace(backend_id, rate);
-    backend_idx.emplace(backend_id, i);
-  }
-  LOG(INFO) << "  total throughput: " << total_throughput_ << " rps";
-
-  // Remove quantum of old backends
-  for (auto iter = backend_quanta_.begin(); iter != backend_quanta_.end();) {
-    if (backend_idx.count(iter->first) == 0) {
-      iter = backend_quanta_.erase(iter);
-    } else {
-      ++iter;
-    }
-  }
-
-  // Recover the current DRR backend
-  auto backend_idx_iter = backend_idx.find(current_drr_backend_id);
-  if (backend_idx_iter != backend_idx.end()) {
-    current_drr_index_ = backend_idx_iter->second;
-  } else {
-    if (backends_.empty()) {
-      current_drr_index_ = 0;
-    } else {
-      current_drr_index_ %= backends_.size();
-    }
-  }
-}
-
-BackendInfo ModelRoute::GetBackend() {
-  for (size_t i = 0;; ++i) {
-    const auto& backend = backends_[current_drr_index_];
-    const uint32_t backend_id = backend.info().node_id();
-    if (backend_quanta_.at(backend_id) >= min_rate_) {
-      backend_quanta_[backend_id] -= min_rate_;
-      return backend.info();
-    } else {
-      const auto rate = backend.throughput();
-      backend_quanta_[backend_id] += rate;
-      current_drr_index_ = (current_drr_index_ + 1) % backends_.size();
-    }
-
-    CHECK_LE(i, backends_.size()) << "DRR could not decide.";
-  }
+  // Enqueue query
+  auto status = scheduler_.EnqueueQuery(std::move(query_without_input),
+                                        frontend_endpoint);
+  return status;
 }
 
 void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
@@ -479,6 +352,9 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
         }
         backends_[backend_id] = backend;
         sessions = sessions_;
+
+        // Add backend for the scheduler.
+        scheduler_.AddBackend(backend_id);
       }
 
       // Load Models
@@ -491,18 +367,16 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
           reply->set_status(CtrlStatus::CTRL_INVALID_LOAD_MODEL_REQUEST);
           continue;
         }
-        auto inst = std::make_shared<InstanceInfo>(
-            model_session, backend->node_id(), *profile);
-        auto model_sess_id = ModelSessionToString(model_session);
-        backend->AddInstanceInfo(model_sess_id, inst);
-        iter.second->AddInstanceInfo(backend->node_id(), inst);
+
+        uint32_t max_batch =
+            profile->GetMaxBatchWithFullBudget(model_session.latency_sla());
 
         // LoadModel RPC
         VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
-                << ", model_session=" << model_sess_id;
-        backend->SendLoadModelCommand(model_session, inst->max_batch());
+                << ", model_session=" << iter.first;
+        backend->SendLoadModelCommand(model_session, max_batch);
         VLOG(1) << "Finish SendLoadModelCommand: backend_id="
-                << backend->node_id() << ", model_session=" << model_sess_id;
+                << backend->node_id() << ", model_session=" << iter.first;
       }
 
       // UpdateBackendList
@@ -568,24 +442,12 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
   }
   reply->set_status(CtrlStatus::CTRL_OK);
 
-  // Update DRR
-  CHECK_EQ(models_.count(model_sess_id), 0);
-  models_[model_sess_id] = ModelRoute();
-  ModelRouteProto mr;
-  {
-    // Adaptor to the old API
-    *mr.mutable_model_session_id() = model_sess_id;
-    for (auto backend_iter : backends_) {
-      auto* rate = mr.add_backend_rate();
-      *rate->mutable_info() = backend_iter.second->backend_info();
-      rate->set_throughput(1);
-    }
-  }
-  models_[model_sess_id].Update(mr);
-
   // Add the model session
   auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
   sessions_[model_sess_id] = sctx;
+
+  // Add model session for the scheduler
+  scheduler_.AddModelSession(request.model_session());
 
   // Ask backends to load the model
   auto profile_id = ModelSessionToProfileID(request.model_session());
@@ -597,15 +459,13 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
       reply->set_status(CtrlStatus::CTRL_INVALID_LOAD_MODEL_REQUEST);
       continue;
     }
-    auto inst = std::make_shared<InstanceInfo>(request.model_session(),
-                                               backend->node_id(), *profile);
-    backend->AddInstanceInfo(model_sess_id, inst);
-    sctx->AddInstanceInfo(backend->node_id(), inst);
+    uint32_t max_batch = profile->GetMaxBatchWithFullBudget(
+        request.model_session().latency_sla());
 
     // LoadModel RPC
     VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
             << ", model_session=" << model_sess_id;
-    backend->SendLoadModelCommand(request.model_session(), inst->max_batch());
+    backend->SendLoadModelCommand(request.model_session(), max_batch);
     VLOG(1) << "Finish SendLoadModelCommand: backend_id=" << backend->node_id()
             << ", model_session=" << model_sess_id;
   }

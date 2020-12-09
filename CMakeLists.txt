@@ -120,7 +120,6 @@ add_executable(dispatcher
         src/nexus/dispatcher/dispatcher.cpp
         src/nexus/dispatcher/dispatcher_main.cpp
         src/nexus/dispatcher/frontend_delegate.cpp
-        src/nexus/dispatcher/inst_info.cpp
         src/nexus/dispatcher/rpc_service.cpp
         src/nexus/dispatcher/session_context.cpp)
 target_include_directories(dispatcher PRIVATE

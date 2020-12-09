@@ -189,20 +189,11 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
     ctx = iter->second;
   }
 
-  if (!ctx->MarkBackendQuerySent()) {
-    // Avoid send to backend twice.
-    return;
-  }
-
-  std::shared_ptr<BackendSession> backend;
   if (reply.status() == CtrlStatus::CTRL_OK) {
     // Do nothing. Dispatcher will send the query to the backend.
   } else if (reply.status() == CtrlStatus::TIMEOUT) {
-    // Do nothing either?
-    const int n = 1000;
-    LOG_EVERY_N(INFO, n) << "LOG_EVERY " << n
-                         << "] Dispatcher timeout. query_id: "
-                         << reply.query_id();
+    // Do nothing either.
+    LOG(ERROR) << "Dispatcher timeout. query_id: " << reply.query_id();
   } else {
     // Mark the query failed.
     LOG(WARNING) << "Dispatcher returns failure: "

@@ -21,5 +21,9 @@ std::shared_ptr<BackendDelegate> DispatcherAccessor::GetBackend(
   }
 }
 
+UdpRpcServer* DispatcherAccessor::GetUdpRpcServer() {
+  return dispatcher_.udp_rpc_servers_.front().get();
+}
+
 }  // namespace dispatcher
 }  // namespace nexus

@@ -5,8 +5,6 @@
 
 #include <sstream>
 
-#include "nexus/dispatcher/inst_info.h"
-
 namespace nexus {
 namespace dispatcher {
 
@@ -93,16 +91,6 @@ void BackendDelegate::EnqueueBatchPlan(const BatchPlanProto& req) {
                << ", status=" << CtrlStatus_Name(reply.status());
   }
   last_time_ = std::chrono::system_clock::now();
-}
-
-std::shared_ptr<InstanceInfo> BackendDelegate::GetInstanceInfo(
-    const std::string& model_sess_id) const {
-  return instances_.at(model_sess_id);
-}
-
-void BackendDelegate::AddInstanceInfo(const std::string& model_sess_id,
-                                      std::shared_ptr<InstanceInfo> inst) {
-  instances_[model_sess_id] = inst;
 }
 
 }  // namespace dispatcher

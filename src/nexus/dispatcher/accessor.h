@@ -10,10 +10,12 @@ namespace nexus {
 namespace dispatcher {
 
 class Dispatcher;
+class UdpRpcServer;
 
 class DispatcherAccessor {
  public:
   std::shared_ptr<BackendDelegate> GetBackend(NodeId backend_id);
+  UdpRpcServer* GetUdpRpcServer();
 
  private:
   friend class Dispatcher;

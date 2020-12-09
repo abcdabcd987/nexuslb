@@ -18,6 +18,7 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
+#include "nexus/dispatcher/dispatcher.h"
 #include "nexus/proto/control.pb.h"
 
 namespace nexus {
@@ -33,10 +34,12 @@ constexpr uint32_t kDataPlaneLatencyUs = 5000;
 
 }  // namespace
 
-QueryContext::QueryContext(QueryProto query_without_input, TimePoint deadline)
+QueryContext::QueryContext(QueryProto query_without_input, TimePoint deadline,
+                           boost::asio::ip::udp::endpoint frontend_endpoint)
     : proto(std::move(query_without_input)),
       global_id(proto.global_id()),
-      deadline(deadline) {}
+      deadline(deadline),
+      frontend_endpoint(frontend_endpoint) {}
 
 InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
                                  const ModelProfile& profile)
@@ -140,37 +143,52 @@ void DelayedScheduler::AddBackend(NodeId backend_id) {
   }
 }
 
-void DelayedScheduler::EnqueueQuery(QueryProto query_without_input) {
+CtrlStatus DelayedScheduler::EnqueueQuery(
+    QueryProto query_without_input,
+    boost::asio::ip::udp::endpoint frontend_endpoint) {
   ModelSession model_session;
   ParseModelSession(query_without_input.model_session_id(), &model_session);
   auto deadline = TimePoint(
       std::chrono::nanoseconds(query_without_input.clock().frontend_recv_ns()) +
       std::chrono::microseconds(model_session.latency_sla()));
-  auto qctx =
-      std::make_shared<QueryContext>(std::move(query_without_input), deadline);
+  auto qctx = std::make_shared<QueryContext>(std::move(query_without_input),
+                                             deadline, frontend_endpoint);
 
   // Add to pending queries
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (queries_.count(qctx->global_id)) {
       LOG(ERROR) << "Query already exists. global_id=" << qctx->global_id.t;
-      return;
+      return CtrlStatus::CTRL_GLOBAL_ID_CONFLICT;
+    }
+    auto miter = models_.find(qctx->proto.model_session_id());
+    if (miter == models_.end()) {
+      LOG(ERROR) << "Cannot find model session. global_id=" << qctx->global_id.t
+                 << ", model_session=" << qctx->proto.model_session_id();
+      return CtrlStatus::MODEL_SESSION_NOT_LOADED;
     }
     queries_[qctx->global_id] = qctx;
-    auto& mctx = models_.at(qctx->proto.model_session_id());
+    auto& mctx = miter->second;
     mctx->queries.insert(qctx);
   }
 
   // Trigger full schedule on the worker thread.
   boost::asio::post(io_context_, [this] { WorkFullSchedule(); });
+  VLOG(1) << "EnqueueQuery success. global_id=" << qctx->global_id.t;
+  return CtrlStatus::CTRL_OK;
 }
 
 PlanId DelayedScheduler::NextPlanId() { return PlanId(next_plan_id_.t++); }
 
 void DelayedScheduler::WorkFullSchedule() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
+  VLOG(1) << "WorkFullSchedule: start";
 
-  DropTimeoutQueries();
+  // Drop timeout queries. Replies will be sent later.
+  auto dropped = DropTimeoutQueries();
+  if (!dropped.empty()) {
+    VLOG(1) << "WorkFullSchedule: will drop " << dropped.size() << " queries.";
+  }
 
   // Copies all remaining queries
   std::unordered_map<std::string, std::set<GlobalId>> remains;
@@ -221,10 +239,20 @@ void DelayedScheduler::WorkFullSchedule() {
       // Deprecate previously scheduled plan.
       // The timer will be cancelled by the destructor.
       bctx->next_plan = std::nullopt;
+      VLOG(1) << "WorkFullSchedule: Backend " << bctx->backend_id.t
+              << " assigned no BatchPlan.";
     } else {
       bctx->next_plan = std::move(best_plan);
       auto& plan = *bctx->next_plan;
       plan.plan_id = NextPlanId();
+      VLOG(1) << "WorkFullSchedule: Backend " << bctx->backend_id.t
+              << " assigned a BatchPlan. plan_id=" << plan.plan_id
+              << ", model_session=" << plan.model_session_id
+              << ", batch_size=" << plan.actual_batch_size
+              << ", send_time=" << plan.send_time.time_since_epoch().count()
+              << ", exec_time=" << plan.exec_time.time_since_epoch().count()
+              << ", finish_time="
+              << plan.finish_time.time_since_epoch().count();
 
       // Remove scheduled queries so that the next backend won't see them.
       auto& remain_queries = remains[plan.model_session_id];
@@ -245,24 +273,40 @@ void DelayedScheduler::WorkFullSchedule() {
           });
     }
   }
+
+  // Send replies about dropped queries
+  lock.unlock();
+  auto* udp_rpc_server = dispatcher_.GetUdpRpcServer();
+  DispatchReply dispatch_reply;
+  for (auto& qctx : dropped) {
+    dispatch_reply.Clear();
+    ParseModelSession(qctx->proto.model_session_id(),
+                      dispatch_reply.mutable_model_session());
+    dispatch_reply.set_query_id(qctx->proto.query_id());
+    dispatch_reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
+    udp_rpc_server->SendDispatchReply(qctx->frontend_endpoint, dispatch_reply);
+  }
+  VLOG(1) << "WorkFullSchedule: done";
 }
 
-void DelayedScheduler::DropTimeoutQueries() {
+std::vector<std::shared_ptr<QueryContext>>
+DelayedScheduler::DropTimeoutQueries() {
   auto now = Clock::now();
+  std::vector<std::shared_ptr<QueryContext>> dropped;
   for (auto& pair : models_) {
     auto& mctx = pair.second;
     auto& queries = mctx->queries;
     for (auto iter = queries.begin(); iter != queries.end();) {
-      auto qctx = *iter;
+      auto& qctx = *iter;
       if (qctx->deadline < now) {
         break;
       }
-      LOG(WARNING) << "TODO: send dropped query back to frontend. global_id="
-                   << qctx->global_id.t;
+      dropped.push_back(qctx);
       queries_.erase(qctx->global_id);
       iter = queries.erase(iter);
     }
   }
+  return dropped;
 }
 
 std::optional<BatchPlan> DelayedScheduler::TryScheduleModelSessionOnBackend(
@@ -390,6 +434,8 @@ std::optional<BatchPlan> DelayedScheduler::TryScheduleModelSessionOnBackend(
 
 void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
   using namespace std::chrono;
+  VLOG(1) << "WorkFinalizePlan: start. backend_id=" << backend_id.t
+          << ", plan_id=" << plan_id.t;
   std::unique_lock<std::mutex> lock(mutex_);
   if (!backends_.count(backend_id)) {
     LOG(ERROR) << "WorkFinalizePlan: Cannot find backend. plan_id=" << plan_id.t
@@ -461,7 +507,9 @@ void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
     query.mutable_clock()->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
   }
   // Send to backend
+  VLOG(1) << "WorkFinalizePlan: send to backend.";
   delegate->EnqueueBatchPlan(proto);
+  VLOG(1) << "WorkFinalizePlan: done.";
 }
 
 }  // namespace delayed

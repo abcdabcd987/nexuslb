@@ -17,6 +17,7 @@
 #include "nexus/dispatcher/accessor.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/batch_size_estimator.h"
+#include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
@@ -27,11 +28,13 @@ class DispatcherAccessor;
 namespace delayed {
 
 struct QueryContext {
-  QueryContext(QueryProto query_without_input, TimePoint deadline);
+  QueryContext(QueryProto query_without_input, TimePoint deadline,
+               boost::asio::ip::udp::endpoint frontend_endpoint);
 
   QueryProto proto;
   GlobalId global_id;
   TimePoint deadline;
+  boost::asio::ip::udp::endpoint frontend_endpoint;
 };
 
 struct OrderQueryContextByDeadlineASC {
@@ -112,12 +115,15 @@ class DelayedScheduler {
   void Stop();
   void AddModelSession(ModelSession model_session) /* EXCLUDES(mutex_) */;
   void AddBackend(NodeId backend_id) /* EXCLUDES(mutex_) */;
-  void EnqueueQuery(QueryProto query_without_input) /* EXCLUDES(mutex_) */;
+  CtrlStatus EnqueueQuery(
+      QueryProto query_without_input,
+      boost::asio::ip::udp::endpoint frontend_endpoint) /* EXCLUDES(mutex_) */;
 
  private:
   PlanId NextPlanId() /* REQUIRES(mutex_) */;
   void WorkFullSchedule() /* EXCLUDES(mutex_) */;
-  void DropTimeoutQueries() /* REQUIRES(mutex_) */;
+  std::vector<std::shared_ptr<QueryContext>>
+  DropTimeoutQueries() /* REQUIRES(mutex_) */;
   std::optional<BatchPlan> TryScheduleModelSessionOnBackend(
       std::shared_ptr<const BackendContext> bctx,
       std::shared_ptr<const ModelSessionContext> mctx,

@@ -363,7 +363,7 @@ void BackendServer::HandleEnqueueBatchPlan(const grpc::ServerContext&,
   }
 
   // Enqueue queries
-  bool all_ok = true;
+  reply->set_status(CtrlStatus::CTRL_OK);
   for (const auto& query : plan->proto().queries_without_input()) {
     auto task = std::make_shared<Task>(nullptr);
     task->SetQuery(query);
@@ -371,12 +371,10 @@ void BackendServer::HandleEnqueueBatchPlan(const grpc::ServerContext&,
     task->query.mutable_clock()->set_backend_recv_ns(backend_recv_ns);
     bool ok = EnqueueQuery(task);
     if (!ok) {
-      all_ok = false;
       plan->MarkQueryDropped(GlobalId(query.global_id()));
+      reply->set_status(CtrlStatus(task->result.status()));
     }
   }
-  reply->set_status(all_ok ? CtrlStatus::CTRL_OK
-                           : CtrlStatus::CTRL_UNSPECIFIED_ERROR);
 }
 
 void BackendServer::MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task) {

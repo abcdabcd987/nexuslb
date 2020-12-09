@@ -10,6 +10,7 @@
 
 #include "nexus/app/request_context.h"
 #include "nexus/common/model_def.h"
+#include "nexus/proto/control.pb.h"
 
 DEFINE_int32(count_interval, 1, "Interval to count number of requests in sec");
 DEFINE_int32(load_balance, 4,
@@ -80,8 +81,10 @@ std::atomic<uint64_t> ModelHandler::global_query_id_(0);
 
 ModelHandler::ModelHandler(const std::string& model_session_id,
                            BackendPool& pool, LoadBalancePolicy lb_policy,
-                           DispatcherRpcClient* dispatcher_rpc_client)
-    : model_session_id_(model_session_id),
+                           DispatcherRpcClient* dispatcher_rpc_client,
+                           NodeId frontend_id)
+    : frontend_id_(frontend_id),
+      model_session_id_(model_session_id),
       backend_pool_(pool),
       lb_policy_(lb_policy),
       total_throughput_(0.),
@@ -116,6 +119,7 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   QueryProto query, query_without_input;
   query.set_query_id(qid);
   query.set_model_session_id(model_session_id_);
+  query.set_frontend_id(frontend_id_.t);
   for (auto field : output_fields) {
     query.add_output_field(field);
   }
@@ -178,12 +182,17 @@ void ModelHandler::HandleBackendReply(const QueryResultProto& result) {
 
 void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
   auto qid = QueryId(reply.query_id());
+  VLOG(1) << "HandleDispatcherReply. model_session=" << model_session_id_
+          << ", query_id=" << reply.query_id()
+          << ", reply.status()=" << CtrlStatus_Name(reply.status());
   std::shared_ptr<RequestContext> ctx;
   {
     std::lock_guard<std::mutex> lock(query_ctx_mu_);
     auto iter = query_ctx_.find(qid);
     if (iter == query_ctx_.end()) {
       // Ignore dispatcher RPC replies that take too long time to return.
+      VLOG(1) << "HandleDispatcherReply cannot find query. model_session="
+              << model_session_id_ << ", query_id=" << reply.query_id();
       return;
     }
     ctx = iter->second;

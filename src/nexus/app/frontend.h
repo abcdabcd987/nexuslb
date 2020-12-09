@@ -36,13 +36,13 @@ class Frontend : public ServerBase, public MessageHandler {
 
   // virtual void Process(const RequestProto& request, ReplyProto* reply) = 0;
 
-  uint32_t node_id() const { return node_id_; }
+  NodeId node_id() const { return node_id_; }
 
   std::string rpc_port() const { return rpc_service_.port(); }
 
   void Run(QueryProcessor* qp, size_t nthreads);
 
-  void Stop();
+  void Stop() override;
   /*! \brief Accepts new user connection */
   void HandleAccept() final;
   /*!
@@ -63,6 +63,8 @@ class Frontend : public ServerBase, public MessageHandler {
   void HandleConnected(std::shared_ptr<Connection> conn) override;
 
   void UpdateBackendList(const BackendListUpdates& request, RpcReply* reply);
+  void MarkQueryDroppedByDispatcher(const DispatchReply& request,
+                                    RpcReply* reply);
 
   std::shared_ptr<UserSession> GetUserSession(uint32_t uid);
 
@@ -98,7 +100,7 @@ class Frontend : public ServerBase, public MessageHandler {
   /*! \brief Interval to update stats to scheduler in seconds */
   uint32_t beacon_interval_sec_;
   /*! \brief Frontend node ID */
-  uint32_t node_id_;
+  NodeId node_id_;
   /*! \brief RPC service */
   RpcService rpc_service_;
   /*! \brief RPC client connected to scheduler */

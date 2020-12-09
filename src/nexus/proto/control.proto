@@ -19,6 +19,7 @@ service FrontendCtrl {
   rpc CheckAlive(CheckAliveRequest) returns (RpcReply) {}
 
   rpc UpdateBackendList(BackendListUpdates) returns (RpcReply) {}
+  rpc MarkQueryDroppedByDispatcher(DispatchReply) returns (RpcReply) {}
 }
 
 service BackendCtrl {

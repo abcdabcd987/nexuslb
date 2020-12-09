@@ -61,5 +61,18 @@ void FrontendDelegate::UpdateBackendList(const BackendListUpdates& request) {
   last_time_ = std::chrono::system_clock::now();
 }
 
+void FrontendDelegate::MarkQueryDroppedByDispatcher(
+    const DispatchReply& request) {
+  RpcReply reply;
+  grpc::ClientContext context;
+  grpc::Status status =
+      stub_->MarkQueryDroppedByDispatcher(&context, request, &reply);
+  if (!status.ok()) {
+    LOG(ERROR) << status.error_code() << ": " << status.error_message();
+    return;
+  }
+  last_time_ = std::chrono::system_clock::now();
+}
+
 }  // namespace dispatcher
 }  // namespace nexus

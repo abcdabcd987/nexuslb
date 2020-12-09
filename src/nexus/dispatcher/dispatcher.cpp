@@ -243,7 +243,8 @@ void Dispatcher::Run() {
   }
 
   // Start a single threaded scheduler.
-  scheduler_threads_.emplace_back([this] { scheduler_.RunAsWorker(); });
+  scheduler_threads_.emplace_back(&decltype(scheduler_)::RunAsWorker,
+                                  &scheduler_);
 
   // Nothing to do here
   for (;;) {
@@ -291,8 +292,7 @@ CtrlStatus Dispatcher::DispatchRequest(
   query_without_input.set_global_id(global_id);
 
   // Enqueue query
-  auto status = scheduler_.EnqueueQuery(std::move(query_without_input),
-                                        frontend_endpoint);
+  auto status = scheduler_.EnqueueQuery(std::move(query_without_input));
   return status;
 }
 
@@ -341,21 +341,21 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
           request.node_id(), ip, request.server_port(), request.rpc_port(),
           request.gpu_device_name(), request.gpu_uuid(),
           request.gpu_available_memory(), beacon_interval_sec_);
+      auto backend_id = NodeId(backend->node_id());
       std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
           sessions;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto backend_id = NodeId(backend->node_id());
         if (backends_.find(backend_id) != backends_.end()) {
           reply->set_status(CtrlStatus::CTRL_BACKEND_NODE_ID_CONFLICT);
           return;
         }
         backends_[backend_id] = backend;
         sessions = sessions_;
-
-        // Add backend for the scheduler.
-        scheduler_.AddBackend(backend_id);
       }
+
+      // Add backend for the scheduler.
+      scheduler_.AddBackend(backend_id);
 
       // Load Models
       for (auto iter : sessions) {
@@ -429,22 +429,24 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
     return;
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
   auto model_sess_id = ModelSessionToString(request.model_session());
   VLOG(1) << "HandleLoadModel: model_sess_id=" << model_sess_id;
   {
-    auto it = sessions_.find(model_sess_id);
-    if (it != sessions_.end()) {
-      // Model already loaded. Just skip.
-      reply->set_status(CtrlStatus::CTRL_OK);
-      return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    {
+      auto it = sessions_.find(model_sess_id);
+      if (it != sessions_.end()) {
+        // Model already loaded. Just skip.
+        reply->set_status(CtrlStatus::CTRL_OK);
+        return;
+      }
     }
-  }
-  reply->set_status(CtrlStatus::CTRL_OK);
+    reply->set_status(CtrlStatus::CTRL_OK);
 
-  // Add the model session
-  auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
-  sessions_[model_sess_id] = sctx;
+    // Add the model session
+    auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
+    sessions_[model_sess_id] = sctx;
+  }
 
   // Add model session for the scheduler
   scheduler_.AddModelSession(request.model_session());

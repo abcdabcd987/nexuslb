@@ -53,7 +53,10 @@ void Message::set_type(MessageType type) {
 }
 
 void Message::DecodeBody(google::protobuf::Message* message) const {
-  message->ParseFromArray(body(), body_length_);
+  bool ok = message->ParseFromArray(body(), body_length_);
+  if (!ok) {
+    LOG(ERROR) << "Message::DecodeBody: ParseFromArray failed.";
+  }
 }
 
 void Message::EncodeBody(const google::protobuf::Message& message) {

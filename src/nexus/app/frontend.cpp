@@ -7,6 +7,7 @@
 
 #include "nexus/common/config.h"
 #include "nexus/common/model_def.h"
+#include "nexus/proto/control.pb.h"
 
 DECLARE_int32(load_balance);
 
@@ -102,6 +103,7 @@ void Frontend::HandleConnected(std::shared_ptr<Connection> conn) {
     msg.set_node_id(node_id_);
     auto message = std::make_shared<Message>(MessageType::kConnFrontBack,
                                              msg.ByteSizeLong());
+    message->EncodeBody(msg);
     conn->Write(message);
     VLOG(1) << "Finished HandleConnected: TellNodeIdMessage to backend_id="
             << backend_conn->node_id();
@@ -241,8 +243,9 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(const LoadModelRequest& req,
     return nullptr;
   }
   auto model_session_id = ModelSessionToString(req.model_session());
-  auto model_handler = std::make_shared<ModelHandler>(
-      model_session_id, backend_pool_, lb_policy, &dispatcher_rpc_client_);
+  auto model_handler =
+      std::make_shared<ModelHandler>(model_session_id, backend_pool_, lb_policy,
+                                     &dispatcher_rpc_client_, node_id_);
   // Only happens at Setup stage, so no concurrent modification to model_pool_
   model_pool_.emplace(model_handler->model_session_id(), model_handler);
   // UpdateBackendPoolAndModelRoute(reply.model_route());
@@ -346,6 +349,19 @@ void Frontend::UpdateBackendList(const BackendListUpdates& request,
   }
   reply->set_status(CtrlStatus::CTRL_OK);
   VLOG(1) << "UpdateBackendList: done";
+}
+
+void Frontend::MarkQueryDroppedByDispatcher(const DispatchReply& request,
+                                            RpcReply* reply) {
+  auto model_session_id = ModelSessionToString(request.model_session());
+  auto iter = model_pool_.find(model_session_id);
+  if (iter == model_pool_.end()) {
+    LOG(ERROR) << "MarkQueryDroppedByDispatcher cannot find ModelSession: "
+               << model_session_id;
+    return;
+  }
+  iter->second->HandleDispatcherReply(request);
+  reply->set_status(CtrlStatus::CTRL_OK);
 }
 
 void Frontend::RegisterUser(std::shared_ptr<UserSession> user_sess,

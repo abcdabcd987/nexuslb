@@ -28,13 +28,11 @@ class DispatcherAccessor;
 namespace delayed {
 
 struct QueryContext {
-  QueryContext(QueryProto query_without_input, TimePoint deadline,
-               boost::asio::ip::udp::endpoint frontend_endpoint);
+  QueryContext(QueryProto query_without_input, TimePoint deadline);
 
   QueryProto proto;
   GlobalId global_id;
   TimePoint deadline;
-  boost::asio::ip::udp::endpoint frontend_endpoint;
 };
 
 struct OrderQueryContextByDeadlineASC {
@@ -116,8 +114,7 @@ class DelayedScheduler {
   void AddModelSession(ModelSession model_session) /* EXCLUDES(mutex_) */;
   void AddBackend(NodeId backend_id) /* EXCLUDES(mutex_) */;
   CtrlStatus EnqueueQuery(
-      QueryProto query_without_input,
-      boost::asio::ip::udp::endpoint frontend_endpoint) /* EXCLUDES(mutex_) */;
+      QueryProto query_without_input) /* EXCLUDES(mutex_) */;
 
  private:
   PlanId NextPlanId() /* REQUIRES(mutex_) */;

@@ -21,6 +21,7 @@ class FrontendDelegate {
   void Tick();
   bool IsAlive();
   void UpdateBackendList(const BackendListUpdates& request);
+  void MarkQueryDroppedByDispatcher(const DispatchReply& request);
 
  private:
   uint32_t node_id_;

@@ -84,7 +84,7 @@ class ModelHandler {
  public:
   ModelHandler(const std::string& model_session_id, BackendPool& pool,
                LoadBalancePolicy lb_policy,
-               DispatcherRpcClient* dispatcher_rpc_client);
+               DispatcherRpcClient* dispatcher_rpc_client, NodeId frontend_id);
 
   ~ModelHandler();
 
@@ -119,6 +119,7 @@ class ModelHandler {
 
   std::shared_ptr<BackendSession> GetBackendDeficitRoundRobin();
 
+  NodeId frontend_id_;
   ModelSession model_session_;
   std::string model_session_id_;
   BackendPool& backend_pool_;

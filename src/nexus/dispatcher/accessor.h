@@ -5,6 +5,7 @@
 
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/backend_delegate.h"
+#include "nexus/dispatcher/frontend_delegate.h"
 
 namespace nexus {
 namespace dispatcher {
@@ -15,7 +16,7 @@ class UdpRpcServer;
 class DispatcherAccessor {
  public:
   std::shared_ptr<BackendDelegate> GetBackend(NodeId backend_id);
-  UdpRpcServer* GetUdpRpcServer();
+  std::shared_ptr<FrontendDelegate> GetFrontend(NodeId frontend_id);
 
  private:
   friend class Dispatcher;

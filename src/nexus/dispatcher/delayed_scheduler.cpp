@@ -34,12 +34,10 @@ constexpr uint32_t kDataPlaneLatencyUs = 5000;
 
 }  // namespace
 
-QueryContext::QueryContext(QueryProto query_without_input, TimePoint deadline,
-                           boost::asio::ip::udp::endpoint frontend_endpoint)
+QueryContext::QueryContext(QueryProto query_without_input, TimePoint deadline)
     : proto(std::move(query_without_input)),
       global_id(proto.global_id()),
-      deadline(deadline),
-      frontend_endpoint(frontend_endpoint) {}
+      deadline(deadline) {}
 
 InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
                                  const ModelProfile& profile)
@@ -93,7 +91,7 @@ void DelayedScheduler::AddModelSession(ModelSession model_session) {
                << mctx->string_id;
     return;
   }
-  models_[mctx->string_id] = std::move(mctx);
+  models_[mctx->string_id] = mctx;
 
   // Add instances
   auto profile_id = ModelSessionToProfileID(mctx->model_session);
@@ -108,6 +106,12 @@ void DelayedScheduler::AddModelSession(ModelSession model_session) {
                                                   bctx->backend_id, *profile);
     mctx->instances[bctx->backend_id] = inst;
     bctx->instances[mctx->string_id] = inst;
+
+    // Workaround: use the first backend's profile as model session profile.
+    // TODO: GPU performance heterogeneity.
+    if (!mctx->profile) {
+      mctx->profile = profile;
+    }
   }
 }
 
@@ -140,19 +144,23 @@ void DelayedScheduler::AddBackend(NodeId backend_id) {
                                                   bctx->backend_id, *profile);
     mctx->instances[bctx->backend_id] = inst;
     bctx->instances[mctx->string_id] = inst;
+
+    // Workaround: use the first backend's profile as model session profile.
+    // TODO: GPU performance heterogeneity.
+    if (!mctx->profile) {
+      mctx->profile = profile;
+    }
   }
 }
 
-CtrlStatus DelayedScheduler::EnqueueQuery(
-    QueryProto query_without_input,
-    boost::asio::ip::udp::endpoint frontend_endpoint) {
+CtrlStatus DelayedScheduler::EnqueueQuery(QueryProto query_without_input) {
   ModelSession model_session;
   ParseModelSession(query_without_input.model_session_id(), &model_session);
   auto deadline = TimePoint(
       std::chrono::nanoseconds(query_without_input.clock().frontend_recv_ns()) +
-      std::chrono::microseconds(model_session.latency_sla()));
-  auto qctx = std::make_shared<QueryContext>(std::move(query_without_input),
-                                             deadline, frontend_endpoint);
+      std::chrono::milliseconds(model_session.latency_sla()));
+  auto qctx =
+      std::make_shared<QueryContext>(std::move(query_without_input), deadline);
 
   // Add to pending queries
   {
@@ -276,15 +284,22 @@ void DelayedScheduler::WorkFullSchedule() {
 
   // Send replies about dropped queries
   lock.unlock();
-  auto* udp_rpc_server = dispatcher_.GetUdpRpcServer();
   DispatchReply dispatch_reply;
   for (auto& qctx : dropped) {
+    auto frontend_id = NodeId(qctx->proto.frontend_id());
+    auto frontend = dispatcher_.GetFrontend(frontend_id);
+    if (!frontend) {
+      LOG(ERROR) << "Cannot find frontend. frontend_id=" << frontend_id.t
+                 << ", global_id=" << qctx->global_id.t
+                 << ", model_session=" << qctx->proto.model_session_id();
+      continue;
+    }
     dispatch_reply.Clear();
     ParseModelSession(qctx->proto.model_session_id(),
                       dispatch_reply.mutable_model_session());
     dispatch_reply.set_query_id(qctx->proto.query_id());
     dispatch_reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
-    udp_rpc_server->SendDispatchReply(qctx->frontend_endpoint, dispatch_reply);
+    frontend->MarkQueryDroppedByDispatcher(dispatch_reply);
   }
   VLOG(1) << "WorkFullSchedule: done";
 }
@@ -298,7 +313,7 @@ DelayedScheduler::DropTimeoutQueries() {
     auto& queries = mctx->queries;
     for (auto iter = queries.begin(); iter != queries.end();) {
       auto& qctx = *iter;
-      if (qctx->deadline < now) {
+      if (qctx->deadline > now) {
         break;
       }
       dropped.push_back(qctx);
@@ -317,6 +332,11 @@ std::optional<BatchPlan> DelayedScheduler::TryScheduleModelSessionOnBackend(
   auto now = Clock::now();
   double rps = mctx->GetRequestRate();
   double time_budget = mctx->model_session.latency_sla() * 1e-3;
+  if (!mctx->profile) {
+    LOG(ERROR) << "ModelSession doesn't have a profile. model_session="
+               << mctx->string_id;
+    return std::nullopt;
+  }
   uint32_t reserved_batch_size =
       bse_.Estimate(*mctx->profile, time_budget, rps, 0.0);
   auto proc_elapse = nanoseconds(0);

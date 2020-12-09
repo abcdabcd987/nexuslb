@@ -21,8 +21,15 @@ std::shared_ptr<BackendDelegate> DispatcherAccessor::GetBackend(
   }
 }
 
-UdpRpcServer* DispatcherAccessor::GetUdpRpcServer() {
-  return dispatcher_.udp_rpc_servers_.front().get();
+std::shared_ptr<FrontendDelegate> DispatcherAccessor::GetFrontend(
+    NodeId frontend_id) {
+  std::lock_guard<std::mutex> lock(dispatcher_.mutex_);
+  auto iter = dispatcher_.frontends_.find(frontend_id);
+  if (iter != dispatcher_.frontends_.end()) {
+    return iter->second;
+  } else {
+    return nullptr;
+  }
 }
 
 }  // namespace dispatcher

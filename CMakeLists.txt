@@ -36,6 +36,8 @@ find_package(OpenCV REQUIRED)
 include(ProcessorCount)
 ProcessorCount(NPROC)
 
+find_package(Threads REQUIRED)
+
 
 ###### protobuf & gRPC ######
 set(GENERATED_SRC_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
@@ -93,6 +95,22 @@ target_link_libraries(common PUBLIC
         yaml-cpp gflags glog::glog gRPC::grpc++ GTest::GTest protobuf::libprotobuf
         ${OpenCV_LIBS} Boost::filesystem Boost::system)
 set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+
+
+###### ario ######
+add_library(ario
+        src/ario/epoll.cpp
+        src/ario/memory.cpp
+        src/ario/rdma.cpp
+        src/ario/tcp.cpp
+        src/ario/utils.cpp)
+target_include_directories(ario PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(ario PUBLIC cxx_std_17)
+target_link_libraries(ario PRIVATE Threads::Threads)
+target_link_libraries(ario PRIVATE ibverbs)
+set_target_properties(ario PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 
 
@@ -305,6 +323,13 @@ endif()
 #         tests/cpp/scheduler/scheduler_test.cpp
 #         tests/cpp/test_main.cpp)
 # target_link_libraries(runtest PRIVATE common backend_obj)
+
+
+
+###### tests/ario ######
+add_executable(ario_test
+        tests/ario.cpp)
+target_link_libraries(ario_test PRIVATE ario)
 
 
 

@@ -7,17 +7,15 @@ namespace nexus {
 
 class Spinlock {
  public:
-  Spinlock() : flag_(ATOMIC_FLAG_INIT) {}
-
-  inline void Acquire() {
+  void Acquire() {
     while (flag_.test_and_set(std::memory_order_acquire))
       ;  // spin
   }
 
-  inline void Release() { flag_.clear(std::memory_order_release); }
+  void Release() { flag_.clear(std::memory_order_release); }
 
  private:
-  std::atomic_flag flag_;
+  std::atomic_flag flag_ = ATOMIC_FLAG_INIT;
 };
 
 class SpinlockGuard {

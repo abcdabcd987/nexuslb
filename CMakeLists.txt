@@ -281,7 +281,7 @@ endif()
 
 
 ###### tools/bench_tfshare ######
-if(USE_TENSORFLOW)
+if(USE_GPU AND USE_TENSORFLOW)
     add_executable(bench_tfshare tools/bench_tfshare.cpp)
     target_link_libraries(bench_tfshare PRIVATE common backend_obj)
 endif()
@@ -289,11 +289,13 @@ endif()
 
 
 ###### tools/bench_dispatcher ######
-add_executable(bench_dispatcher
-        tools/bench_dispatcher.cpp)
-target_include_directories(bench_dispatcher PRIVATE
-        ${GENERATED_SRC_DIR}/src)
-target_link_libraries(bench_dispatcher PRIVATE common)
+if(USE_GPU)
+    add_executable(bench_dispatcher
+            tools/bench_dispatcher.cpp)
+    target_include_directories(bench_dispatcher PRIVATE
+            ${GENERATED_SRC_DIR}/src)
+    target_link_libraries(bench_dispatcher PRIVATE common)
+endif()
 
 
 

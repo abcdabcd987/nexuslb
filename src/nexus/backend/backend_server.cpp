@@ -397,7 +397,11 @@ void BackendServer::MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task) {
     }
   }
   if (ready_plan) {
+#ifdef USE_GPU
     gpu_executor_->AddBatchPlan(ready_plan);
+#else
+    LOG(FATAL) << "Please compile with USE_GPU";
+#endif
   }
 }
 

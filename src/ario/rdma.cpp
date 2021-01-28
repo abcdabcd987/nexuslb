@@ -11,14 +11,32 @@ RdmaConnector::RdmaConnector(std::string dev_name,
                              std::shared_ptr<EventHandler> handler)
     : dev_name_(std::move(dev_name)),
       handler_(std::move(handler)),
+      local_buf_(kRdmaBufferPoolBits, kRdmaBufferBlockBits),
+      poller_type_(PollerType::kBlocking),
       tcp_acceptor_(executor_) {
   // TODO: RAII
   int ret;
   CreateContext();
+  BuildProtectionDomain();
+  BuildCompletionQueue();
+  RegisterMemory();
+  StartPoller();
+}
+
+void RdmaConnector::StartPoller() {
+  if (poller_type_ == PollerType::kBlocking) {
+    cq_poller_thread_ =
+        std::thread(&RdmaConnector::PollCompletionQueueBlocking, this);
+  } else {
+    cq_poller_thread_ =
+        std::thread(&RdmaConnector::PollCompletionQueueSpinning, this);
+  }
 }
 
 RdmaConnector::~RdmaConnector() {
+  poller_stop_ = true;
   connections_.clear();
+  cq_poller_thread_.join();
   if (ctx_) ibv_close_device(ctx_);
 }
 
@@ -66,7 +84,7 @@ void RdmaConnector::CreateContext() {
 
 void RdmaConnector::ListenTcp(uint16_t port,
                               std::vector<uint8_t> &memory_region) {
-  memory_region_ = &memory_region;
+  ExposeMemory(memory_region.data(), memory_region.size());
   tcp_acceptor_.BindAndListen(port);
   fprintf(stderr, "TCP server listening on port %d\n", port);
   TcpAccept();
@@ -101,48 +119,32 @@ Connection *RdmaConnector::GetConnection() {
 }
 
 void RdmaConnector::AddConnection(TcpSocket tcp) {
-  auto conn = new Connection(dev_name_, dev_port_, std::move(tcp), ctx_,
-                             memory_region_, handler_);
+  auto conn = new Connection(RdmaManagerAccessor(*this), std::move(tcp));
   connections_.emplace_back(conn);
 }
 
-Connection::Connection(std::string dev_name, int dev_port, TcpSocket tcp,
-                       ibv_context *ctx, std::vector<uint8_t> *memory_region,
-                       std::shared_ptr<EventHandler> handler)
-    : dev_name_(std::move(dev_name)),
-      dev_port_(dev_port),
-      handler_(std::move(handler)),
-      memory_region_(memory_region),
-      local_buf_(kRdmaBufferPoolBits, kRdmaBufferBlockBits),
-      tcp_(std::move(tcp)),
-      ctx_(ctx) {
+Connection::Connection(RdmaManagerAccessor manager, TcpSocket tcp)
+    : manager_(manager), tcp_(std::move(tcp)) {
   int ret;
-  // poller_type_ = PollerType::kSpinning;
-  poller_type_ = PollerType::kBlocking;
   is_connected_ = false;
 
-  BuildProtectionDomain();
-  BuildCompletionQueue();
   BuildQueuePair();
   TransitQueuePairToInit();
-  RegisterMemory();
   SendConnInfo();
   RecvConnInfo();
 }
 
 Connection::~Connection() {
-  poller_stop_ = true;
-  cq_poller_thread_.join();
+  if (qp_) ibv_destroy_qp(qp_);
 }
 
-void Connection::BuildProtectionDomain() {
+void RdmaConnector::BuildProtectionDomain() {
   pd_ = ibv_alloc_pd(ctx_);
   if (!pd_) die_perror("ibv_alloc_pd");
 }
 
-void Connection::BuildCompletionQueue() {
+void RdmaConnector::BuildCompletionQueue() {
   constexpr int kNumCompletionQueueEntries = 100;
-  int ret;
 
   if (poller_type_ == PollerType::kBlocking) {
     comp_channel_ = ibv_create_comp_channel(ctx_);
@@ -158,6 +160,11 @@ void Connection::BuildCompletionQueue() {
   cq_ = ibv_create_cq(ctx_, kNumCompletionQueueEntries, nullptr, comp_channel_,
                       0);
   if (!cq_) die_perror("ibv_create_cq");
+
+  if (poller_type_ == PollerType::kBlocking) {
+    int ret = ibv_req_notify_cq(cq_, 0);
+    if (ret) die("ibv_req_notify_cq");
+  }
 }
 
 void Connection::BuildQueuePair() {
@@ -168,27 +175,27 @@ void Connection::BuildQueuePair() {
 
   ibv_qp_init_attr attr;
   memset(&attr, 0, sizeof(attr));
-  attr.send_cq = cq_;
-  attr.recv_cq = cq_;
+  attr.send_cq = manager_.cq();
+  attr.recv_cq = manager_.cq();
   attr.qp_type = IBV_QPT_RC;
   attr.cap.max_send_wr = kMaxSendQueueSize;
   attr.cap.max_recv_wr = kMaxRecvQueueSize;
   attr.cap.max_send_sge = kMaxSendScatterGatherElements;
   attr.cap.max_recv_sge = kMaxRecvScatterGatherElements;
 
-  qp_ = ibv_create_qp(pd_, &attr);
+  qp_ = ibv_create_qp(manager_.pd(), &attr);
   if (!qp_) die_perror("ibv_create_qp");
 }
 
 void Connection::SendConnInfo() {
   ibv_port_attr attr;
-  int ret = ibv_query_port(ctx_, dev_port_, &attr);
+  int ret = ibv_query_port(manager_.ctx(), manager_.dev_port(), &attr);
   if (ret) die_perror("SendConnInfo: ibv_query_port");
   ibv_gid gid;
   memset(&gid, 0, sizeof(gid));
   if (!attr.lid) {
     // Only InfiniBand has Local ID. RoCE needs Global ID.
-    ibv_query_gid(ctx_, dev_port_, 0, &gid);
+    ibv_query_gid(manager_.ctx(), manager_.dev_port(), 0, &gid);
     if (ret) die_perror("SendConnInfo: ibv_query_gid");
   }
 
@@ -230,14 +237,11 @@ void Connection::RecvConnInfo() {
 
     TransitQueuePairToRTR(msg->payload.conn);
     TransitQueuePairToRTS();
-    if (memory_region_) {
-      // Server
-      MarkConnected();
-      handler_->OnConnected(this);
+    MarkConnected();
+    manager_.handler()->OnConnected(this);
+    RecvMemoryRegion();
+    if (manager_.explosed_mr()) {
       SendMemoryRegion();
-    } else {
-      // Client
-      RecvMemoryRegion();
     }
   });
 }
@@ -246,9 +250,10 @@ void Connection::SendMemoryRegion() {
   fprintf(stderr, "Sending MemoryRegion\n");
   auto msg = std::make_shared<RdmaConnectorMessage>();
   msg->type = RdmaConnectorMessage::Type::kMemoryRegion;
-  msg->payload.mr.addr = reinterpret_cast<uint64_t>(rdma_remote_mr_->addr);
-  msg->payload.mr.size = rdma_remote_mr_->length;
-  msg->payload.mr.rkey = rdma_remote_mr_->rkey;
+  msg->payload.mr.addr =
+      reinterpret_cast<uint64_t>(manager_.explosed_mr()->addr);
+  msg->payload.mr.size = manager_.explosed_mr()->length;
+  msg->payload.mr.rkey = manager_.explosed_mr()->rkey;
 
   ConstBuffer buf(msg.get(), sizeof(*msg));
   tcp_.AsyncWrite(buf, [msg = std::move(msg)](int err, size_t) {
@@ -266,7 +271,10 @@ void Connection::RecvMemoryRegion() {
   MutableBuffer buf(msg.get(), sizeof(*msg));
   tcp_.AsyncRead(buf, [msg = std::move(msg), this](int err, size_t) {
     if (err) {
-      fprintf(stderr, "RecvMemoryRegion: AsyncRead err = %d\n", err);
+      fprintf(stderr,
+              "RecvMemoryRegion: AsyncRead err = %d. "
+              "TODO: handler client disconnect.\n",
+              err);
       return;
     }
     if (msg->type != RdmaConnectorMessage::Type::kMemoryRegion) {
@@ -276,10 +284,8 @@ void Connection::RecvMemoryRegion() {
     }
 
     remote_mr_ = msg->payload.mr;
-    fprintf(stderr, "got memory region: addr=0x%016lx, size=%lu, lkey=0x%08x\n",
-            remote_mr_.addr, remote_mr_.size, remote_mr_.rkey);
-    MarkConnected();
-    handler_->OnConnected(this);
+    manager_.handler()->OnRemoteMemoryRegionReceived(this, remote_mr_.addr,
+                                                     remote_mr_.size);
   });
 }
 
@@ -288,7 +294,7 @@ void Connection::TransitQueuePairToInit() {
   memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_INIT;
   attr.pkey_index = 0;
-  attr.port_num = dev_port_;
+  attr.port_num = manager_.dev_port();
   attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
                          IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
 
@@ -306,7 +312,7 @@ void Connection::TransitQueuePairToRTR(
   ibv_qp_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_RTR;
-  attr.ah_attr.port_num = dev_port_;
+  attr.ah_attr.port_num = manager_.dev_port();
   attr.ah_attr.dlid = msg.lid;
   attr.path_mtu = IBV_MTU_1024;
   attr.dest_qp_num = msg.qp_num;
@@ -350,21 +356,23 @@ void Connection::TransitQueuePairToRTS() {
   if (ret) die_perror("TransitQueuePairToRTS");
 }
 
-void Connection::RegisterMemory() {
+void RdmaConnector::RegisterMemory() {
   local_mr_ = ibv_reg_mr(pd_, local_buf_.data(), local_buf_.pool_size(),
                          IBV_ACCESS_LOCAL_WRITE);
-
-  // Memory region exposed to remote machines
-  if (memory_region_) {
-    rdma_remote_mr_ =
-        ibv_reg_mr(pd_, memory_region_->data(), memory_region_->size(),
-                   IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                       IBV_ACCESS_REMOTE_READ);
-    if (!rdma_remote_mr_) die("ibv_reg_mr: rdma_remote_mr");
-  }
 }
 
-void Connection::PostReceive() {
+void RdmaConnector::ExposeMemory(void *addr, size_t size) {
+  if (exposed_mr_)
+    die("Currently only one exposed memory region is supported.");
+  exposed_mr_ = ibv_reg_mr(pd_, addr, size,
+                           IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+                               IBV_ACCESS_REMOTE_READ);
+  if (!exposed_mr_) die("ibv_reg_mr: rdma_remote_mr");
+}
+
+void Connection::PostReceive() { manager_.PostReceive(*this); }
+
+void RdmaConnector::PostReceive(Connection &conn) {
   ibv_recv_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
@@ -378,19 +386,23 @@ void Connection::PostReceive() {
   sge.length = buf.size();
   sge.lkey = local_mr_->lkey;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    wr_ctx_.emplace(std::piecewise_construct, std::forward_as_tuple(wr.wr_id),
-                    std::forward_as_tuple(std::move(buf)));
+    std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
+    wr_ctx_[wr.wr_id] =
+        std::make_unique<WorkRequestContext>(conn, std::move(buf));
   }
 
   fprintf(stderr, "POST --> (RECV WR #%lu) [addr %lx, len %u, qp_num %u]\n",
-          wr.wr_id, sge.addr, sge.length, qp_->qp_num);
-  int ret = ibv_post_recv(qp_, &wr, &bad_wr);
+          wr.wr_id, sge.addr, sge.length, conn.qp_->qp_num);
+  int ret = ibv_post_recv(conn.qp_, &wr, &bad_wr);
   if (ret) die("ibv_post_recv");
 }
 
 void Connection::AsyncSend(OwnedMemoryBlock buf) {
   if (!is_connected_) die("Send: not connected.");
+  manager_.AsyncSend(*this, std::move(buf));
+}
+
+void RdmaConnector::AsyncSend(Connection &conn, OwnedMemoryBlock buf) {
   ibv_send_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
@@ -407,19 +419,25 @@ void Connection::AsyncSend(OwnedMemoryBlock buf) {
   sge.lkey = local_mr_->lkey;
 
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    wr_ctx_.emplace(std::piecewise_construct, std::forward_as_tuple(wr.wr_id),
-                    std::forward_as_tuple(std::move(buf)));
+    std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
+    wr_ctx_[wr.wr_id] =
+        std::make_unique<WorkRequestContext>(conn, std::move(buf));
   }
 
-  int ret = ibv_post_send(qp_, &wr, &bad_wr);
+  int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die("Connection::Send: ibv_post_send");
   fprintf(stderr, "POST --> (SEND WR #%lu) [addr %lx, len %u, qp_num %u]\n",
-          wr.wr_id, sge.addr, sge.length, qp_->qp_num);
+          wr.wr_id, sge.addr, sge.length, conn.qp_->qp_num);
 }
 
 void Connection::AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset,
                            size_t length) {
+  manager_.AsyncRead(*this, offset, length);
+}
+
+void RdmaConnector::AsyncRead(Connection &conn,
+                              /* OwnedMemoryBlock buf, */ size_t offset,
+                              size_t length) {
   ibv_send_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
@@ -429,8 +447,8 @@ void Connection::AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset,
   wr.sg_list = &sge;
   wr.num_sge = 1;
   wr.send_flags = IBV_SEND_SIGNALED;
-  wr.wr.rdma.remote_addr = remote_mr_.addr + offset;
-  wr.wr.rdma.rkey = remote_mr_.rkey;
+  wr.wr.rdma.remote_addr = conn.remote_mr_.addr + offset;
+  wr.wr.rdma.rkey = conn.remote_mr_.rkey;
 
   auto buf = local_buf_.Allocate();
   auto msg = buf.AsMessageView();
@@ -440,18 +458,18 @@ void Connection::AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset,
   msg.bytes_length() = length;
 
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    wr_ctx_.emplace(std::piecewise_construct, std::forward_as_tuple(wr.wr_id),
-                    std::forward_as_tuple(std::move(buf)));
+    std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
+    wr_ctx_[wr.wr_id] =
+        std::make_unique<WorkRequestContext>(conn, std::move(buf));
   }
 
-  int ret = ibv_post_send(qp_, &wr, &bad_wr);
+  int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die("Connection::PostRead: ibv_post_send");
   fprintf(stderr, "POST --> (READ WR #%lu) [offset %lx, len %lu, qp_num %u]\n",
-          wr.wr_id, offset, length, qp_->qp_num);
+          wr.wr_id, offset, length, conn.qp_->qp_num);
 }
 
-void Connection::PollCompletionQueueBlocking() {
+void RdmaConnector::PollCompletionQueueBlocking() {
   constexpr int kPollTimeoutMills = 1;
   struct ibv_cq *cq;
   struct ibv_wc wc;
@@ -487,7 +505,7 @@ void Connection::PollCompletionQueueBlocking() {
   }
 }
 
-void Connection::PollCompletionQueueSpinning() {
+void RdmaConnector::PollCompletionQueueSpinning() {
   struct ibv_wc wc;
   while (!poller_stop_) {
     while (!poller_stop_ && ibv_poll_cq(cq_, 1, &wc)) {
@@ -497,16 +515,16 @@ void Connection::PollCompletionQueueSpinning() {
   }
 }
 
-void Connection::HandleWorkCompletion(struct ibv_wc *wc) {
+void RdmaConnector::HandleWorkCompletion(ibv_wc *wc) {
   if (wc->status != IBV_WC_SUCCESS) {
     fprintf(stderr, "COMPLETION FAILURE (%s WR #%lu) status[%d] = %s\n",
             (wc->opcode & IBV_WC_RECV) ? "RECV" : "SEND", wc->wr_id, wc->status,
             ibv_wc_status_str(wc->status));
     die("wc->status != IBV_WC_SUCCESS");
   }
-  WorkRequestContext wr_ctx;
+  std::unique_ptr<WorkRequestContext> wr_ctx;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
     auto iter = wr_ctx_.find(wc->wr_id);
     if (iter == wr_ctx_.end()) {
       fprintf(stderr, "Cannot find context for wr_id #%lu\n", wc->wr_id);
@@ -515,17 +533,17 @@ void Connection::HandleWorkCompletion(struct ibv_wc *wc) {
     wr_ctx = std::move(iter->second);
   }
   if (wc->opcode & IBV_WC_RECV) {
-    PostReceive();
-    handler_->OnRecv(std::move(wr_ctx.buf));
+    PostReceive(wr_ctx->conn);
+    handler_->OnRecv(std::move(wr_ctx->buf));
     return;
   }
   switch (wc->opcode) {
     case IBV_WC_SEND: {
-      handler_->OnSent(std::move(wr_ctx.buf));
+      handler_->OnSent(std::move(wr_ctx->buf));
       return;
     }
     case IBV_WC_RDMA_READ: {
-      handler_->OnRdmaReadComplete(std::move(wr_ctx.buf));
+      handler_->OnRdmaReadComplete(std::move(wr_ctx->buf));
       return;
     }
     // TODO: handle all opcode
@@ -537,56 +555,7 @@ void Connection::HandleWorkCompletion(struct ibv_wc *wc) {
 }
 
 void Connection::MarkConnected() {
-  do {
-    struct ibv_qp_attr attr;
-    struct ibv_qp_init_attr init_attr;
-    if (ibv_query_qp(qp_, &attr, IBV_QP_STATE, &init_attr)) {
-      die("ibv_query_qp\n");
-    }
-    fprintf(stderr,
-            "qp_state: %ld\n, cur_qp_state: %ld\n, path_mtu: %ld\n, "
-            "path_mig_state: %ld\n, qkey: %ld\n, rq_psn: %ld\n, sq_psn: "
-            "%ld\n, "
-            "dest_qp_num: %ld\n, qp_access_flags: %ld\n, pkey_index: %ld\n, "
-            "alt_pkey_index: %ld\n, en_sqd_async_notify: %ld\n, sq_draining: "
-            "%ld\n, max_rd_atomic: %ld\n, max_dest_rd_atomic: %ld\n, "
-            "min_rnr_timer: %ld\n, port_num: %ld\n, timeout: %ld\n, "
-            "retry_cnt: "
-            "%ld\n, rnr_retry: %ld\n, alt_port_num: %ld\n, alt_timeout: "
-            "%ld\n",
-            static_cast<int64_t>(attr.qp_state),
-            static_cast<int64_t>(attr.cur_qp_state),
-            static_cast<int64_t>(attr.path_mtu),
-            static_cast<int64_t>(attr.path_mig_state),
-            static_cast<int64_t>(attr.qkey), static_cast<int64_t>(attr.rq_psn),
-            static_cast<int64_t>(attr.sq_psn),
-            static_cast<int64_t>(attr.dest_qp_num),
-            static_cast<int64_t>(attr.qp_access_flags),
-            static_cast<int64_t>(attr.pkey_index),
-            static_cast<int64_t>(attr.alt_pkey_index),
-            static_cast<int64_t>(attr.en_sqd_async_notify),
-            static_cast<int64_t>(attr.sq_draining),
-            static_cast<int64_t>(attr.max_rd_atomic),
-            static_cast<int64_t>(attr.max_dest_rd_atomic),
-            static_cast<int64_t>(attr.min_rnr_timer),
-            static_cast<int64_t>(attr.port_num),
-            static_cast<int64_t>(attr.timeout),
-            static_cast<int64_t>(attr.retry_cnt),
-            static_cast<int64_t>(attr.rnr_retry),
-            static_cast<int64_t>(attr.alt_port_num),
-            static_cast<int64_t>(attr.alt_timeout));
-    if (attr.qp_state != IBV_QPS_RTS) die("attr.qp_state != IBV_QPS_RTS");
-  } while (false);
-
-  if (poller_type_ == PollerType::kBlocking) {
-    int ret = ibv_req_notify_cq(cq_, 0);
-    if (ret) die("ibv_req_notify_cq");
-    cq_poller_thread_ =
-        std::thread(&Connection::PollCompletionQueueBlocking, this);
-  } else {
-    cq_poller_thread_ =
-        std::thread(&Connection::PollCompletionQueueSpinning, this);
-  }
+  static constexpr size_t kRecvBacklog = 20;
   for (size_t i = 0; i < kRecvBacklog; ++i) {
     PostReceive();
   }

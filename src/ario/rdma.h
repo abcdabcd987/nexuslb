@@ -1,4 +1,5 @@
 #pragma once
+#include <bits/stdint-uintn.h>
 #include <infiniband/verbs.h>
 #include <poll.h>
 
@@ -51,6 +52,8 @@ class Connection;
 class EventHandler {
  public:
   virtual void OnConnected(Connection *conn) = 0;
+  virtual void OnRemoteMemoryRegionReceived(Connection *conn, uint64_t addr,
+                                            size_t size) = 0;
   virtual void OnRdmaReadComplete(OwnedMemoryBlock buf) = 0;
   virtual void OnRecv(OwnedMemoryBlock buf) = 0;
   virtual void OnSent(OwnedMemoryBlock buf) = 0;
@@ -62,76 +65,11 @@ enum class PollerType {
 };
 
 struct WorkRequestContext {
+  Connection &conn;
   OwnedMemoryBlock buf;
 
-  WorkRequestContext() : buf() {}
-  explicit WorkRequestContext(OwnedMemoryBlock buf) : buf(std::move(buf)) {}
-};
-
-class Connection {
- public:
-  ~Connection();
-  void AsyncSend(OwnedMemoryBlock buf);
-  void AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset, size_t length);
-  MemoryBlockAllocator &allocator() { return local_buf_; }
-
- private:
-  friend class RdmaConnector;
-  static constexpr size_t kRecvBacklog = 20;
-
-  Connection(std::string dev_name, int dev_port, TcpSocket tcp,
-             ibv_context *ctx, std::vector<uint8_t> *memory_region,
-             std::shared_ptr<EventHandler> handler);
-  void MarkConnected();
-  void SendMemoryRegions();
-  void BuildProtectionDomain();
-  void BuildCompletionQueue();
-  void BuildQueuePair();
-  void SendConnInfo();
-  void RecvConnInfo();
-  void SendMemoryRegion();
-  void RecvMemoryRegion();
-  void TransitQueuePairToInit();
-  void TransitQueuePairToRTR(const RdmaConnectorMessage::ConnInfo &msg);
-  void TransitQueuePairToRTS();
-  void RegisterMemory();
-
-  void PostRead();
-  void PostReceive();
-  void PollCompletionQueueBlocking();
-  void PollCompletionQueueSpinning();
-  void HandleWorkCompletion(ibv_wc *wc);
-
-  std::string dev_name_;
-  int dev_port_;
-  PollerType poller_type_;
-  std::shared_ptr<EventHandler> handler_;
-
-  MemoryBlockAllocator local_buf_;
-  ibv_mr *local_mr_ = nullptr;
-
-  std::mutex mutex_;
-  std::unordered_map<uint64_t, WorkRequestContext>
-      wr_ctx_ /* GUARDED_BY(mutex_) */;
-
-  ibv_mr *rdma_remote_mr_ = nullptr;
-  RemoteMemoryRegion remote_mr_{};
-  std::vector<uint8_t> *memory_region_;
-
-  bool is_connected_ = false;
-
-  std::atomic<uint64_t> next_wr_id_{1};
-
-  TcpSocket tcp_;
-  ibv_context *ctx_ = nullptr;
-  ibv_qp *qp_ = nullptr;
-  ibv_pd *pd_ = nullptr;
-  ibv_cq *cq_ = nullptr;
-  ibv_comp_channel *comp_channel_ = nullptr;
-  pollfd comp_channel_pollfd_;
-
-  std::atomic<bool> poller_stop_{false};
-  std::thread cq_poller_thread_;
+  WorkRequestContext(Connection &conn, OwnedMemoryBlock buf)
+      : conn(conn), buf(std::move(buf)) {}
 };
 
 class RdmaConnector {
@@ -144,22 +82,120 @@ class RdmaConnector {
   void RunEventLoop();
   void StopEventLoop();
   Connection *GetConnection();
+  MemoryBlockAllocator &allocator() { return local_buf_; }
 
  private:
+  friend class RdmaManagerAccessor;
   void CreateContext();
+  void BuildProtectionDomain();
+  void BuildCompletionQueue();
+  void RegisterMemory();
+  void ExposeMemory(void *addr, size_t size);
+  void StartPoller();
+  void PollCompletionQueueBlocking();
+  void PollCompletionQueueSpinning();
+  void HandleWorkCompletion(ibv_wc *wc);
+
   void AddConnection(TcpSocket tcp);
   void TcpAccept();
+
+  void AsyncSend(Connection &conn, OwnedMemoryBlock buf);
+  void AsyncRead(Connection &conn, /* OwnedMemoryBlock buf, */ size_t offset,
+                 size_t length);
+  void PostReceive(Connection &conn);
 
   std::string dev_name_;
   int dev_port_ = 0;
   std::shared_ptr<EventHandler> handler_;
-  std::vector<uint8_t> *memory_region_ = nullptr;
+
+  MemoryBlockAllocator local_buf_;
+
   ibv_context *ctx_ = nullptr;
+  ibv_pd *pd_ = nullptr;
+  ibv_cq *cq_ = nullptr;
+  ibv_comp_channel *comp_channel_ = nullptr;
+  pollfd comp_channel_pollfd_;
+  ibv_mr *local_mr_ = nullptr;
+  ibv_mr *exposed_mr_ = nullptr;
+
+  PollerType poller_type_;
+  std::atomic<bool> poller_stop_{false};
+  std::thread cq_poller_thread_;
+
+  std::atomic<uint64_t> next_wr_id_{1};
+  std::mutex wr_ctx_mutex_;
+  std::unordered_map<uint64_t, std::unique_ptr<WorkRequestContext>>
+      wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;
+
   std::vector<std::unique_ptr<Connection>> connections_;
 
   EpollExecutor executor_;
   TcpAcceptor tcp_acceptor_;
   TcpSocket tcp_socket_;
+};
+
+class RdmaManagerAccessor {
+ public:
+  RdmaManagerAccessor() : m_(nullptr) {}
+
+  const std::string &dev_name() const { return m_->dev_name_; }
+  int dev_port() const { return m_->dev_port_; }
+  ibv_context *ctx() const { return m_->ctx_; }
+  ibv_pd *pd() const { return m_->pd_; }
+  ibv_cq *cq() const { return m_->cq_; }
+  ibv_mr *local_mr() const { return m_->local_mr_; }
+  ibv_mr *explosed_mr() const { return m_->exposed_mr_; }
+  MemoryBlockAllocator &local_buf() const { return m_->local_buf_; }
+  EventHandler *handler() const { return m_->handler_.get(); }
+
+  void AsyncSend(Connection &conn, OwnedMemoryBlock buf) {
+    m_->AsyncSend(conn, std::move(buf));
+  }
+
+  void AsyncRead(Connection &conn, /* OwnedMemoryBlock buf, */ size_t offset,
+                 size_t length) {
+    m_->AsyncRead(conn, offset, length);
+  }
+
+  void PostReceive(Connection &conn) { m_->PostReceive(conn); }
+
+ private:
+  friend class RdmaConnector;
+  explicit RdmaManagerAccessor(RdmaConnector &manager) : m_(&manager) {}
+  RdmaConnector *m_;
+};
+
+class Connection {
+ public:
+  ~Connection();
+  void AsyncSend(OwnedMemoryBlock buf);
+  void AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset, size_t length);
+
+ private:
+  friend class RdmaConnector;
+
+  Connection(RdmaManagerAccessor manager, TcpSocket tcp);
+  void MarkConnected();
+  void SendMemoryRegions();
+  void BuildQueuePair();
+  void SendConnInfo();
+  void RecvConnInfo();
+  void SendMemoryRegion();
+  void RecvMemoryRegion();
+  void TransitQueuePairToInit();
+  void TransitQueuePairToRTR(const RdmaConnectorMessage::ConnInfo &msg);
+  void TransitQueuePairToRTS();
+
+  void PostReceive();
+
+  RdmaManagerAccessor manager_;
+  TcpSocket tcp_;
+  bool is_connected_ = false;
+
+  // Owned by this RdmaQueuePair
+  ibv_qp *qp_ = nullptr;
+
+  RemoteMemoryRegion remote_mr_{};
 };
 
 }  // namespace ario

@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <random>
 
+#include "ario/memory.h"
 #include "ario/utils.h"
 
 using namespace ario;
@@ -15,6 +16,11 @@ struct RpcRequest {
 
 class TestHandler : public EventHandler {
  public:
+  void OnRemoteMemoryRegionReceived(Connection *conn, uint64_t addr,
+                                    size_t size) override {
+    fprintf(stderr, "got memory region: addr=0x%016lx, size=%lu\n", addr, size);
+  }
+
   void OnRecv(OwnedMemoryBlock buf) override {
     auto view = buf.AsMessageView();
     auto *req = reinterpret_cast<RpcRequest *>(view.bytes());
@@ -42,6 +48,14 @@ class TestClientHandler : public TestHandler {
     cv_.notify_all();
   }
 
+  void OnRemoteMemoryRegionReceived(Connection *conn, uint64_t addr,
+                                    size_t size) override {
+    TestHandler::OnRemoteMemoryRegionReceived(conn, addr, size);
+    if (got_memory_region_) die("Already got memory region");
+    got_memory_region_ = true;
+    cv_.notify_all();
+  }
+
   void OnRdmaReadComplete(OwnedMemoryBlock buf) override {
     if (data_.has_value())
       die("TestHandler::OnRdmaReadComplete: data_.has_value()");
@@ -56,6 +70,12 @@ class TestClientHandler : public TestHandler {
     return conn_;
   }
 
+  void WaitMemoryRegion() {
+    if (got_memory_region_) return;
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [this] { return got_memory_region_; });
+  }
+
   OwnedMemoryBlock WaitRead() {
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait(lock, [this] { return data_.has_value(); });
@@ -68,6 +88,7 @@ class TestClientHandler : public TestHandler {
   std::mutex mutex_;
   std::condition_variable cv_;
   std::optional<OwnedMemoryBlock> data_;
+  bool got_memory_region_ = false;
   Connection *conn_ = nullptr;
 };
 
@@ -250,6 +271,7 @@ void ClientMain(int argc, char **argv) {
 
   auto *conn = test->WaitConnection();
   fprintf(stderr, "ClientMain: connected.\n");
+  test->WaitMemoryRegion();
 
   conn->AsyncRead(0, 1024);
   auto read_data = test->WaitRead();
@@ -274,7 +296,7 @@ void ClientMain(int argc, char **argv) {
   fprintf(stderr, "ClientMain: mem[%lu:%lu].sum()=%lu\n", offset,
           offset + rand_len, sum);
 
-  auto send_buf = conn->allocator().Allocate();
+  auto send_buf = connector.allocator().Allocate();
   auto send_view = send_buf.AsMessageView();
   auto *req = reinterpret_cast<RpcRequest *>(send_view.bytes());
   strcpy(req->msg, "THIS IS A MESSAGE FROM THE CLIENT.");
@@ -290,6 +312,10 @@ void ClientMain(int argc, char **argv) {
 
 class BenchSendHandler : public TestClientHandler {
  public:
+  void SetAllocator(MemoryBlockAllocator &allocator) {
+    allocator_ = &allocator;
+  }
+
   void OnSent(OwnedMemoryBlock buf) override {
     --cnt_flying_;
     ++cnt_sent_;
@@ -320,7 +346,7 @@ class BenchSendHandler : public TestClientHandler {
 
     auto last_send = cnt_send_;
     while (cnt_flying_ < kMaxFlying && cnt_send_ < num_packets_) {
-      auto send_buf = conn_->allocator().Allocate();
+      auto send_buf = allocator_->Allocate();
       auto send_view = send_buf.AsMessageView();
       auto *req = reinterpret_cast<RpcRequest *>(send_view.bytes());
       snprintf(req->msg, sizeof(req->msg), "THIS IS PACKET #%08lu", cnt_send_);
@@ -356,6 +382,7 @@ class BenchSendHandler : public TestClientHandler {
     last_report_time_ = now;
   }
 
+  MemoryBlockAllocator *allocator_;
   std::mutex mutex_;
   std::condition_variable cv_;
   Connection *conn_ = nullptr;
@@ -376,6 +403,7 @@ void BenchSendMain(int argc, char **argv) {
 
   auto handler = std::make_shared<BenchSendHandler>();
   RdmaConnector connector(dev_name, handler);
+  handler->SetAllocator(connector.allocator());
   connector.ConnectTcp(server_host, server_port);
   std::thread event_loop_thread(&RdmaConnector::RunEventLoop, &connector);
 

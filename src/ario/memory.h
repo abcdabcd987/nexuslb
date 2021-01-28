@@ -1,6 +1,6 @@
 #pragma once
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -117,4 +117,4 @@ class OwnedMemoryBlock {
   size_t size_;
 };
 
-}
+}  // namespace ario

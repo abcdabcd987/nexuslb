@@ -16,7 +16,7 @@ struct RpcRequest {
 
 class TestHandler : public EventHandler {
  public:
-  void OnRemoteMemoryRegionReceived(Connection *conn, uint64_t addr,
+  void OnRemoteMemoryRegionReceived(RdmaQueuePair *conn, uint64_t addr,
                                     size_t size) override {
     fprintf(stderr, "got memory region: addr=0x%016lx, size=%lu\n", addr, size);
   }
@@ -33,7 +33,7 @@ class TestHandler : public EventHandler {
 
 class TestServerHandler : public TestHandler {
  public:
-  void OnConnected(Connection *conn) override {
+  void OnConnected(RdmaQueuePair *conn) override {
     fprintf(stderr, "New RDMA connection.\n");
   }
 
@@ -42,13 +42,13 @@ class TestServerHandler : public TestHandler {
 
 class TestClientHandler : public TestHandler {
  public:
-  void OnConnected(Connection *conn) override {
+  void OnConnected(RdmaQueuePair *conn) override {
     if (conn_ != nullptr) die("TestHandler::OnConnected: conn_ != nullptr");
     conn_ = conn;
     cv_.notify_all();
   }
 
-  void OnRemoteMemoryRegionReceived(Connection *conn, uint64_t addr,
+  void OnRemoteMemoryRegionReceived(RdmaQueuePair *conn, uint64_t addr,
                                     size_t size) override {
     TestHandler::OnRemoteMemoryRegionReceived(conn, addr, size);
     if (got_memory_region_) die("Already got memory region");
@@ -63,7 +63,7 @@ class TestClientHandler : public TestHandler {
     cv_.notify_all();
   }
 
-  Connection *WaitConnection() {
+  RdmaQueuePair *WaitConnection() {
     if (conn_) return conn_;
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait(lock, [this] { return conn_ != nullptr; });
@@ -89,7 +89,7 @@ class TestClientHandler : public TestHandler {
   std::condition_variable cv_;
   std::optional<OwnedMemoryBlock> data_;
   bool got_memory_region_ = false;
-  Connection *conn_ = nullptr;
+  RdmaQueuePair *conn_ = nullptr;
 };
 
 void DieUsage(const char *program) {
@@ -250,11 +250,11 @@ void ServerMain(int argc, char **argv) {
   FillMemoryPool(memory_pool);
 
   auto test = std::make_shared<TestServerHandler>();
-  RdmaConnector connector(dev_name, test);
-  connector.ListenTcp(listen_port, memory_pool);
-  // std::thread event_loop_thread(&RdmaConnector::RunEventLoop, &connector);
-  connector.RunEventLoop();
-  connector.StopEventLoop();
+  RdmaManager manager(dev_name, test);
+  manager.ListenTcp(listen_port, memory_pool);
+  // std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
+  manager.RunEventLoop();
+  manager.StopEventLoop();
   // event_loop_thread.join();
 }
 
@@ -265,9 +265,9 @@ void ClientMain(int argc, char **argv) {
   uint16_t server_port = std::stoi(argv[4]);
 
   auto test = std::make_shared<TestClientHandler>();
-  RdmaConnector connector(dev_name, test);
-  connector.ConnectTcp(server_host, server_port);
-  std::thread event_loop_thread(&RdmaConnector::RunEventLoop, &connector);
+  RdmaManager manager(dev_name, test);
+  manager.ConnectTcp(server_host, server_port);
+  std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
 
   auto *conn = test->WaitConnection();
   fprintf(stderr, "ClientMain: connected.\n");
@@ -296,7 +296,7 @@ void ClientMain(int argc, char **argv) {
   fprintf(stderr, "ClientMain: mem[%lu:%lu].sum()=%lu\n", offset,
           offset + rand_len, sum);
 
-  auto send_buf = connector.allocator().Allocate();
+  auto send_buf = manager.allocator().Allocate();
   auto send_view = send_buf.AsMessageView();
   auto *req = reinterpret_cast<RpcRequest *>(send_view.bytes());
   strcpy(req->msg, "THIS IS A MESSAGE FROM THE CLIENT.");
@@ -304,7 +304,7 @@ void ClientMain(int argc, char **argv) {
   conn->AsyncSend(std::move(send_buf));
   fprintf(stderr, "ClientMain: AsyncSend.\n");
 
-  connector.StopEventLoop();
+  manager.StopEventLoop();
   fprintf(stderr, "ClientMain: Joining event loop.\n");
   event_loop_thread.join();
   fprintf(stderr, "ClientMain: event loop joined.\n");
@@ -326,7 +326,7 @@ class BenchSendHandler : public TestClientHandler {
     }
   }
 
-  void BenchSend(size_t num_packets, Connection *conn) {
+  void BenchSend(size_t num_packets, RdmaQueuePair *conn) {
     num_packets_ = num_packets;
     conn_ = conn;
     cnt_sent_ = 0;
@@ -385,7 +385,7 @@ class BenchSendHandler : public TestClientHandler {
   MemoryBlockAllocator *allocator_;
   std::mutex mutex_;
   std::condition_variable cv_;
-  Connection *conn_ = nullptr;
+  RdmaQueuePair *conn_ = nullptr;
   size_t num_packets_ = 0;
   size_t cnt_send_;
   std::atomic<size_t> cnt_sent_;
@@ -402,10 +402,10 @@ void BenchSendMain(int argc, char **argv) {
   size_t num_packets = std::stoul(argv[5]);
 
   auto handler = std::make_shared<BenchSendHandler>();
-  RdmaConnector connector(dev_name, handler);
-  handler->SetAllocator(connector.allocator());
-  connector.ConnectTcp(server_host, server_port);
-  std::thread event_loop_thread(&RdmaConnector::RunEventLoop, &connector);
+  RdmaManager manager(dev_name, handler);
+  handler->SetAllocator(manager.allocator());
+  manager.ConnectTcp(server_host, server_port);
+  std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
 
   auto *conn = handler->WaitConnection();
   fprintf(stderr, "BenchSendMain: connected.\n");
@@ -415,7 +415,7 @@ void BenchSendMain(int argc, char **argv) {
   fprintf(stderr, "start bench\n");
   handler->BenchSend(num_packets, conn);
 
-  connector.StopEventLoop();
+  manager.StopEventLoop();
   event_loop_thread.join();
 }
 

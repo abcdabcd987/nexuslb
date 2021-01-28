@@ -26,7 +26,7 @@ struct RemoteMemoryRegion {
   uint32_t rkey;
 };
 
-struct RdmaConnectorMessage {
+struct RdmaManagerMessage {
   enum class Type : uint8_t {
     kConnInfo,
     kMemoryRegion,
@@ -47,12 +47,12 @@ struct RdmaConnectorMessage {
 
 #pragma pack(pop)
 
-class Connection;
+class RdmaQueuePair;
 
 class EventHandler {
  public:
-  virtual void OnConnected(Connection *conn) = 0;
-  virtual void OnRemoteMemoryRegionReceived(Connection *conn, uint64_t addr,
+  virtual void OnConnected(RdmaQueuePair *conn) = 0;
+  virtual void OnRemoteMemoryRegionReceived(RdmaQueuePair *conn, uint64_t addr,
                                             size_t size) = 0;
   virtual void OnRdmaReadComplete(OwnedMemoryBlock buf) = 0;
   virtual void OnRecv(OwnedMemoryBlock buf) = 0;
@@ -65,23 +65,23 @@ enum class PollerType {
 };
 
 struct WorkRequestContext {
-  Connection &conn;
+  RdmaQueuePair &conn;
   OwnedMemoryBlock buf;
 
-  WorkRequestContext(Connection &conn, OwnedMemoryBlock buf)
+  WorkRequestContext(RdmaQueuePair &conn, OwnedMemoryBlock buf)
       : conn(conn), buf(std::move(buf)) {}
 };
 
-class RdmaConnector {
+class RdmaManager {
  public:
-  explicit RdmaConnector(std::string dev_name,
-                         std::shared_ptr<EventHandler> handler);
-  ~RdmaConnector();
+  explicit RdmaManager(std::string dev_name,
+                       std::shared_ptr<EventHandler> handler);
+  ~RdmaManager();
   void ListenTcp(uint16_t port, std::vector<uint8_t> &memory_region);
   void ConnectTcp(const std::string &addr, uint16_t port);
   void RunEventLoop();
   void StopEventLoop();
-  Connection *GetConnection();
+  RdmaQueuePair *GetConnection();
   MemoryBlockAllocator &allocator() { return local_buf_; }
 
  private:
@@ -99,10 +99,10 @@ class RdmaConnector {
   void AddConnection(TcpSocket tcp);
   void TcpAccept();
 
-  void AsyncSend(Connection &conn, OwnedMemoryBlock buf);
-  void AsyncRead(Connection &conn, /* OwnedMemoryBlock buf, */ size_t offset,
+  void AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf);
+  void AsyncRead(RdmaQueuePair &conn, /* OwnedMemoryBlock buf, */ size_t offset,
                  size_t length);
-  void PostReceive(Connection &conn);
+  void PostReceive(RdmaQueuePair &conn);
 
   std::string dev_name_;
   int dev_port_ = 0;
@@ -127,7 +127,7 @@ class RdmaConnector {
   std::unordered_map<uint64_t, std::unique_ptr<WorkRequestContext>>
       wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;
 
-  std::vector<std::unique_ptr<Connection>> connections_;
+  std::vector<std::unique_ptr<RdmaQueuePair>> connections_;
 
   EpollExecutor executor_;
   TcpAcceptor tcp_acceptor_;
@@ -148,33 +148,33 @@ class RdmaManagerAccessor {
   MemoryBlockAllocator &local_buf() const { return m_->local_buf_; }
   EventHandler *handler() const { return m_->handler_.get(); }
 
-  void AsyncSend(Connection &conn, OwnedMemoryBlock buf) {
+  void AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
     m_->AsyncSend(conn, std::move(buf));
   }
 
-  void AsyncRead(Connection &conn, /* OwnedMemoryBlock buf, */ size_t offset,
+  void AsyncRead(RdmaQueuePair &conn, /* OwnedMemoryBlock buf, */ size_t offset,
                  size_t length) {
     m_->AsyncRead(conn, offset, length);
   }
 
-  void PostReceive(Connection &conn) { m_->PostReceive(conn); }
+  void PostReceive(RdmaQueuePair &conn) { m_->PostReceive(conn); }
 
  private:
-  friend class RdmaConnector;
-  explicit RdmaManagerAccessor(RdmaConnector &manager) : m_(&manager) {}
-  RdmaConnector *m_;
+  friend class RdmaManager;
+  explicit RdmaManagerAccessor(RdmaManager &manager) : m_(&manager) {}
+  RdmaManager *m_;
 };
 
-class Connection {
+class RdmaQueuePair {
  public:
-  ~Connection();
+  ~RdmaQueuePair();
   void AsyncSend(OwnedMemoryBlock buf);
   void AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset, size_t length);
 
  private:
-  friend class RdmaConnector;
+  friend class RdmaManager;
 
-  Connection(RdmaManagerAccessor manager, TcpSocket tcp);
+  RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp);
   void MarkConnected();
   void SendMemoryRegions();
   void BuildQueuePair();
@@ -183,7 +183,7 @@ class Connection {
   void SendMemoryRegion();
   void RecvMemoryRegion();
   void TransitQueuePairToInit();
-  void TransitQueuePairToRTR(const RdmaConnectorMessage::ConnInfo &msg);
+  void TransitQueuePairToRTR(const RdmaManagerMessage::ConnInfo &msg);
   void TransitQueuePairToRTS();
 
   void PostReceive();

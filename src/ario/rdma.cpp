@@ -7,8 +7,8 @@ namespace ario {
 constexpr size_t kRdmaBufferPoolBits = 30;
 constexpr size_t kRdmaBufferBlockBits = 20;
 
-RdmaConnector::RdmaConnector(std::string dev_name,
-                             std::shared_ptr<EventHandler> handler)
+RdmaManager::RdmaManager(std::string dev_name,
+                         std::shared_ptr<EventHandler> handler)
     : dev_name_(std::move(dev_name)),
       handler_(std::move(handler)),
       local_buf_(kRdmaBufferPoolBits, kRdmaBufferBlockBits),
@@ -23,24 +23,24 @@ RdmaConnector::RdmaConnector(std::string dev_name,
   StartPoller();
 }
 
-void RdmaConnector::StartPoller() {
+void RdmaManager::StartPoller() {
   if (poller_type_ == PollerType::kBlocking) {
     cq_poller_thread_ =
-        std::thread(&RdmaConnector::PollCompletionQueueBlocking, this);
+        std::thread(&RdmaManager::PollCompletionQueueBlocking, this);
   } else {
     cq_poller_thread_ =
-        std::thread(&RdmaConnector::PollCompletionQueueSpinning, this);
+        std::thread(&RdmaManager::PollCompletionQueueSpinning, this);
   }
 }
 
-RdmaConnector::~RdmaConnector() {
+RdmaManager::~RdmaManager() {
   poller_stop_ = true;
   connections_.clear();
   cq_poller_thread_.join();
   if (ctx_) ibv_close_device(ctx_);
 }
 
-void RdmaConnector::CreateContext() {
+void RdmaManager::CreateContext() {
   int cnt, ret;
   ibv_context *ctx = nullptr;
   ibv_device **devs = ibv_get_device_list(&cnt);
@@ -82,15 +82,15 @@ void RdmaConnector::CreateContext() {
           dev_port_);
 }
 
-void RdmaConnector::ListenTcp(uint16_t port,
-                              std::vector<uint8_t> &memory_region) {
+void RdmaManager::ListenTcp(uint16_t port,
+                            std::vector<uint8_t> &memory_region) {
   ExposeMemory(memory_region.data(), memory_region.size());
   tcp_acceptor_.BindAndListen(port);
   fprintf(stderr, "TCP server listening on port %d\n", port);
   TcpAccept();
 }
 
-void RdmaConnector::TcpAccept() {
+void RdmaManager::TcpAccept() {
   tcp_acceptor_.AsyncAccept([this](int error, TcpSocket peer) {
     if (error) {
       fprintf(stderr, "TcpAccept error=%d\n", error);
@@ -102,28 +102,28 @@ void RdmaConnector::TcpAccept() {
   });
 }
 
-void RdmaConnector::ConnectTcp(const std::string &host, uint16_t port) {
+void RdmaManager::ConnectTcp(const std::string &host, uint16_t port) {
   fprintf(stderr, "Connecting TCP to host %s port %u\n", host.c_str(), port);
   tcp_socket_.Connect(executor_, host, port);
   fprintf(stderr, "TCP socket connected\n");
   AddConnection(std::move(tcp_socket_));
 }
 
-void RdmaConnector::RunEventLoop() { executor_.RunEventLoop(); }
+void RdmaManager::RunEventLoop() { executor_.RunEventLoop(); }
 
-void RdmaConnector::StopEventLoop() { executor_.StopEventLoop(); }
+void RdmaManager::StopEventLoop() { executor_.StopEventLoop(); }
 
-Connection *RdmaConnector::GetConnection() {
+RdmaQueuePair *RdmaManager::GetConnection() {
   if (connections_.empty()) return nullptr;
   return connections_.front().get();
 }
 
-void RdmaConnector::AddConnection(TcpSocket tcp) {
-  auto conn = new Connection(RdmaManagerAccessor(*this), std::move(tcp));
+void RdmaManager::AddConnection(TcpSocket tcp) {
+  auto conn = new RdmaQueuePair(RdmaManagerAccessor(*this), std::move(tcp));
   connections_.emplace_back(conn);
 }
 
-Connection::Connection(RdmaManagerAccessor manager, TcpSocket tcp)
+RdmaQueuePair::RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp)
     : manager_(manager), tcp_(std::move(tcp)) {
   int ret;
   is_connected_ = false;
@@ -134,16 +134,16 @@ Connection::Connection(RdmaManagerAccessor manager, TcpSocket tcp)
   RecvConnInfo();
 }
 
-Connection::~Connection() {
+RdmaQueuePair::~RdmaQueuePair() {
   if (qp_) ibv_destroy_qp(qp_);
 }
 
-void RdmaConnector::BuildProtectionDomain() {
+void RdmaManager::BuildProtectionDomain() {
   pd_ = ibv_alloc_pd(ctx_);
   if (!pd_) die_perror("ibv_alloc_pd");
 }
 
-void RdmaConnector::BuildCompletionQueue() {
+void RdmaManager::BuildCompletionQueue() {
   constexpr int kNumCompletionQueueEntries = 100;
 
   if (poller_type_ == PollerType::kBlocking) {
@@ -167,7 +167,7 @@ void RdmaConnector::BuildCompletionQueue() {
   }
 }
 
-void Connection::BuildQueuePair() {
+void RdmaQueuePair::BuildQueuePair() {
   constexpr uint32_t kMaxSendQueueSize = 1024;
   constexpr uint32_t kMaxRecvQueueSize = 1024;
   constexpr uint32_t kMaxSendScatterGatherElements = 16;
@@ -187,7 +187,7 @@ void Connection::BuildQueuePair() {
   if (!qp_) die_perror("ibv_create_qp");
 }
 
-void Connection::SendConnInfo() {
+void RdmaQueuePair::SendConnInfo() {
   ibv_port_attr attr;
   int ret = ibv_query_port(manager_.ctx(), manager_.dev_port(), &attr);
   if (ret) die_perror("SendConnInfo: ibv_query_port");
@@ -199,8 +199,8 @@ void Connection::SendConnInfo() {
     if (ret) die_perror("SendConnInfo: ibv_query_gid");
   }
 
-  auto msg = std::make_shared<RdmaConnectorMessage>();
-  msg->type = RdmaConnectorMessage::Type::kConnInfo;
+  auto msg = std::make_shared<RdmaManagerMessage>();
+  msg->type = RdmaManagerMessage::Type::kConnInfo;
   msg->payload.conn.lid = attr.lid;
   msg->payload.conn.gid = gid;
   msg->payload.conn.qp_num = qp_->qp_num;
@@ -219,16 +219,16 @@ void Connection::SendConnInfo() {
   });
 }
 
-void Connection::RecvConnInfo() {
+void RdmaQueuePair::RecvConnInfo() {
   fprintf(stderr, "Waiting for peer ConnInfo\n");
-  auto msg = std::make_shared<RdmaConnectorMessage>();
+  auto msg = std::make_shared<RdmaManagerMessage>();
   MutableBuffer buf(msg.get(), sizeof(*msg));
   tcp_.AsyncRead(buf, [msg = std::move(msg), this](int err, size_t) {
     if (err) {
       fprintf(stderr, "RecvConnInfo: AsyncRead err = %d\n", err);
       die("RecvConnInfo AsyncRead callback");
     }
-    if (msg->type != RdmaConnectorMessage::Type::kConnInfo) {
+    if (msg->type != RdmaManagerMessage::Type::kConnInfo) {
       fprintf(stderr, "RecvConnInfo: AsyncRead msg->type = %d\n",
               static_cast<int>(msg->type));
       die("RecvConnInfo AsyncRead callback");
@@ -246,10 +246,10 @@ void Connection::RecvConnInfo() {
   });
 }
 
-void Connection::SendMemoryRegion() {
+void RdmaQueuePair::SendMemoryRegion() {
   fprintf(stderr, "Sending MemoryRegion\n");
-  auto msg = std::make_shared<RdmaConnectorMessage>();
-  msg->type = RdmaConnectorMessage::Type::kMemoryRegion;
+  auto msg = std::make_shared<RdmaManagerMessage>();
+  msg->type = RdmaManagerMessage::Type::kMemoryRegion;
   msg->payload.mr.addr =
       reinterpret_cast<uint64_t>(manager_.explosed_mr()->addr);
   msg->payload.mr.size = manager_.explosed_mr()->length;
@@ -265,9 +265,9 @@ void Connection::SendMemoryRegion() {
   });
 }
 
-void Connection::RecvMemoryRegion() {
+void RdmaQueuePair::RecvMemoryRegion() {
   fprintf(stderr, "Waiting for peer MemoryRegion\n");
-  auto msg = std::make_shared<RdmaConnectorMessage>();
+  auto msg = std::make_shared<RdmaManagerMessage>();
   MutableBuffer buf(msg.get(), sizeof(*msg));
   tcp_.AsyncRead(buf, [msg = std::move(msg), this](int err, size_t) {
     if (err) {
@@ -277,7 +277,7 @@ void Connection::RecvMemoryRegion() {
               err);
       return;
     }
-    if (msg->type != RdmaConnectorMessage::Type::kMemoryRegion) {
+    if (msg->type != RdmaManagerMessage::Type::kMemoryRegion) {
       fprintf(stderr, "RecvMemoryRegion: AsyncRead msg->type = %d\n",
               static_cast<int>(msg->type));
       return;
@@ -289,7 +289,7 @@ void Connection::RecvMemoryRegion() {
   });
 }
 
-void Connection::TransitQueuePairToInit() {
+void RdmaQueuePair::TransitQueuePairToInit() {
   ibv_qp_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_INIT;
@@ -304,8 +304,8 @@ void Connection::TransitQueuePairToInit() {
   if (ret) die_perror("TransitQueuePairToInit");
 }
 
-void Connection::TransitQueuePairToRTR(
-    const RdmaConnectorMessage::ConnInfo &msg) {
+void RdmaQueuePair::TransitQueuePairToRTR(
+    const RdmaManagerMessage::ConnInfo &msg) {
   fprintf(stderr, "remote ConnInfo: qp_num=%d, lid=%d, gid[0]=%016lx:%016lx\n",
           msg.qp_num, msg.lid, msg.gid.global.subnet_prefix,
           msg.gid.global.interface_id);
@@ -337,7 +337,7 @@ void Connection::TransitQueuePairToRTR(
   if (ret) die_perror("TransitQueuePairToRTR");
 }
 
-void Connection::TransitQueuePairToRTS() {
+void RdmaQueuePair::TransitQueuePairToRTS() {
   ibv_qp_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_RTS;
@@ -356,12 +356,12 @@ void Connection::TransitQueuePairToRTS() {
   if (ret) die_perror("TransitQueuePairToRTS");
 }
 
-void RdmaConnector::RegisterMemory() {
+void RdmaManager::RegisterMemory() {
   local_mr_ = ibv_reg_mr(pd_, local_buf_.data(), local_buf_.pool_size(),
                          IBV_ACCESS_LOCAL_WRITE);
 }
 
-void RdmaConnector::ExposeMemory(void *addr, size_t size) {
+void RdmaManager::ExposeMemory(void *addr, size_t size) {
   if (exposed_mr_)
     die("Currently only one exposed memory region is supported.");
   exposed_mr_ = ibv_reg_mr(pd_, addr, size,
@@ -370,9 +370,9 @@ void RdmaConnector::ExposeMemory(void *addr, size_t size) {
   if (!exposed_mr_) die("ibv_reg_mr: rdma_remote_mr");
 }
 
-void Connection::PostReceive() { manager_.PostReceive(*this); }
+void RdmaQueuePair::PostReceive() { manager_.PostReceive(*this); }
 
-void RdmaConnector::PostReceive(Connection &conn) {
+void RdmaManager::PostReceive(RdmaQueuePair &conn) {
   ibv_recv_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
@@ -397,12 +397,12 @@ void RdmaConnector::PostReceive(Connection &conn) {
   if (ret) die("ibv_post_recv");
 }
 
-void Connection::AsyncSend(OwnedMemoryBlock buf) {
+void RdmaQueuePair::AsyncSend(OwnedMemoryBlock buf) {
   if (!is_connected_) die("Send: not connected.");
   manager_.AsyncSend(*this, std::move(buf));
 }
 
-void RdmaConnector::AsyncSend(Connection &conn, OwnedMemoryBlock buf) {
+void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
   ibv_send_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
@@ -430,14 +430,14 @@ void RdmaConnector::AsyncSend(Connection &conn, OwnedMemoryBlock buf) {
           wr.wr_id, sge.addr, sge.length, conn.qp_->qp_num);
 }
 
-void Connection::AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset,
-                           size_t length) {
+void RdmaQueuePair::AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset,
+                              size_t length) {
   manager_.AsyncRead(*this, offset, length);
 }
 
-void RdmaConnector::AsyncRead(Connection &conn,
-                              /* OwnedMemoryBlock buf, */ size_t offset,
-                              size_t length) {
+void RdmaManager::AsyncRead(RdmaQueuePair &conn,
+                            /* OwnedMemoryBlock buf, */ size_t offset,
+                            size_t length) {
   ibv_send_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
@@ -469,7 +469,7 @@ void RdmaConnector::AsyncRead(Connection &conn,
           wr.wr_id, offset, length, conn.qp_->qp_num);
 }
 
-void RdmaConnector::PollCompletionQueueBlocking() {
+void RdmaManager::PollCompletionQueueBlocking() {
   constexpr int kPollTimeoutMills = 1;
   struct ibv_cq *cq;
   struct ibv_wc wc;
@@ -505,7 +505,7 @@ void RdmaConnector::PollCompletionQueueBlocking() {
   }
 }
 
-void RdmaConnector::PollCompletionQueueSpinning() {
+void RdmaManager::PollCompletionQueueSpinning() {
   struct ibv_wc wc;
   while (!poller_stop_) {
     while (!poller_stop_ && ibv_poll_cq(cq_, 1, &wc)) {
@@ -515,7 +515,7 @@ void RdmaConnector::PollCompletionQueueSpinning() {
   }
 }
 
-void RdmaConnector::HandleWorkCompletion(ibv_wc *wc) {
+void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {
   if (wc->status != IBV_WC_SUCCESS) {
     fprintf(stderr, "COMPLETION FAILURE (%s WR #%lu) status[%d] = %s\n",
             (wc->opcode & IBV_WC_RECV) ? "RECV" : "SEND", wc->wr_id, wc->status,
@@ -554,7 +554,7 @@ void RdmaConnector::HandleWorkCompletion(ibv_wc *wc) {
   }
 }
 
-void Connection::MarkConnected() {
+void RdmaQueuePair::MarkConnected() {
   static constexpr size_t kRecvBacklog = 20;
   for (size_t i = 0; i < kRecvBacklog; ++i) {
     PostReceive();

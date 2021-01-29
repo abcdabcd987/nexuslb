@@ -9,7 +9,9 @@
 #include <queue>
 
 #include "nexus/common/model_def.h"
+#include "nexus/common/sleep_profile.h"
 #include "nexus/common/util.h"
+#include "nexus/proto/nnquery.pb.h"
 
 std::pair<double, double> MergeMeanStd(double mean1, double std1, int n1,
                                        double mean2, double std2, int n2) {
@@ -185,6 +187,23 @@ std::pair<uint32_t, float> ModelProfile::GetMaxThroughput(
   return {best_batch, max_throughput};
 }
 
+ModelProfile ModelProfile::FromSleepProfile(const SleepProfile& profile) {
+  constexpr float kStdFactor = 0.01;
+  ModelProfile p;
+  p.profile_id_ = "SleepProfile";
+  p.gpu_device_name_ = SleepProfile::kGpuDeviceName;
+  p.gpu_uuid_ = "";
+  for (uint32_t i = 1; i < 500; ++i) {
+    float f = profile.forward_us(i);
+    p.forward_lats_[i] = ProfileEntry{f, f * kStdFactor, 0, 0, 1};
+  }
+  p.preprocess_ = ProfileEntry{static_cast<float>(profile.preprocess_us()),
+                               profile.preprocess_us() * kStdFactor, 0, 0, 1};
+  p.postprocess_ = ProfileEntry{static_cast<float>(profile.postprocess_us()),
+                                profile.postprocess_us() * kStdFactor, 0, 0, 1};
+  return p;
+}
+
 ModelDatabase& ModelDatabase::Singleton() {
   CHECK_GT(FLAGS_model_root.length(), 0) << "Missing model_root";
   static ModelDatabase model_db_(FLAGS_model_root);
@@ -193,9 +212,19 @@ ModelDatabase& ModelDatabase::Singleton() {
 
 const YAML::Node* ModelDatabase::GetModelInfo(
     const std::string& model_id) const {
-  auto itr = model_info_table_.find(model_id);
+  ModelSession model_session;
+  ParseModelID(model_id, &model_session);
+  std::string key;
+  if (SleepProfile::MatchPrefix(model_session.framework())) {
+    model_session.set_framework("tensorflow");
+    key = ModelSessionToModelID(model_session);
+  } else {
+    key = model_id;
+  }
+  auto itr = model_info_table_.find(key);
   if (itr == model_info_table_.end()) {
-    LOG(ERROR) << "Cannot find model info for " << model_id;
+    LOG(ERROR) << "Cannot find model info for " << model_id << " (key=\"" << key
+               << "\")";
     return nullptr;
   }
   return &itr->second;
@@ -204,7 +233,14 @@ const YAML::Node* ModelDatabase::GetModelInfo(
 const YAML::Node* ModelDatabase::GetModelInfo(const std::string& framework,
                                               const std::string& model_name,
                                               uint32_t version) const {
-  auto model_id = ModelID(framework, model_name, version);
+  std::string key;
+  if (SleepProfile::MatchPrefix(framework)) {
+    key = "tensorflow";
+  } else {
+    key = framework;
+  }
+
+  auto model_id = ModelID(key, model_name, version);
   auto itr = model_info_table_.find(model_id);
   if (itr == model_info_table_.end()) {
     LOG(ERROR) << "Cannot find model info for " << model_id;
@@ -216,6 +252,23 @@ const YAML::Node* ModelDatabase::GetModelInfo(const std::string& framework,
 const ModelProfile* ModelDatabase::GetModelProfile(
     const std::string& gpu_device, const std::string& gpu_uuid,
     const std::string& profile_id) const {
+  if (gpu_device == SleepProfile::kGpuDeviceName) {
+    ModelSession model_session;
+    ParseModelSession(profile_id, &model_session);
+    auto iter = sleep_profiles_.find(model_session.framework());
+    if (iter != sleep_profiles_.end()) {
+      return &iter->second;
+    }
+
+    auto sleep = SleepProfile::Parse(model_session.framework());
+    if (!sleep.has_value()) {
+      LOG(FATAL) << "Failed to parse SleepProfile";
+    }
+    auto res = sleep_profiles_.insert(
+        {model_session.framework(), ModelProfile::FromSleepProfile(*sleep)});
+    return &res.first->second;
+  }
+
   auto itr = device_profile_table_.find(gpu_device);
   if (itr == device_profile_table_.end()) {
     LOG(ERROR) << "Cannot find model profile for GPU " << gpu_device;

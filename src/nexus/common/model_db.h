@@ -6,6 +6,8 @@
 #include <memory>
 #include <unordered_map>
 
+#include "nexus/common/sleep_profile.h"
+
 namespace nexus {
 
 struct ProfileEntry {
@@ -22,6 +24,8 @@ class ModelProfile {
   ModelProfile() {}
 
   ModelProfile(const std::string& file_path);
+
+  static ModelProfile FromSleepProfile(const SleepProfile& profile);
 
   void MergeProfile(const ModelProfile& rhs);
 
@@ -136,6 +140,7 @@ class ModelDatabase {
   /*! \brief Map from model name to TFShareInfo */
   std::unordered_map<std::string, std::shared_ptr<TFShareInfo>>
       tf_share_models_;
+  mutable std::unordered_map<std::string, ModelProfile> sleep_profiles_;
 };
 
 }  // namespace nexus

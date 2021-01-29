@@ -7,6 +7,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_set>
 
 #include "nexus/backend/gpu_executor.h"
@@ -15,6 +16,7 @@
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
+#include "nexus/common/sleep_profile.h"
 #include "nexus/proto/control.pb.h"
 
 DEFINE_int32(occupancy_valid, 10, "Backup backend occupancy valid time in ms");
@@ -41,7 +43,6 @@ BackendServer::BackendServer(std::string port, std::string rpc_port,
       grpc::CreateChannel(sch_addr, grpc::InsecureChannelCredentials());
   sch_stub_ = DispatcherCtrl::NewStub(channel);
 
-#ifdef USE_GPU
   // Init GPU executor
   LOG(INFO) << "Using PlanFollower as GpuExecutor";
   gpu_executor_.reset(new GpuExecutorPlanFollower(gpu_id));
@@ -62,9 +63,6 @@ BackendServer::BackendServer(std::string port, std::string rpc_port,
     // LOG(INFO) << "IO thread is pinned on CPU " << io_core;
     // cores.pop_back();
   }
-#else
-  LOG(FATAL) << "backend needs the USE_GPU flag set at compile-time.";
-#endif
 
   // Init workers
   if (num_workers == 0) {
@@ -238,7 +236,6 @@ void BackendServer::LoadModelEnqueue(const BackendLoadModelCommand& request) {
 }
 
 void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
-#ifdef USE_GPU
   // Start to update model table
   std::lock_guard<std::mutex> lock(model_table_mu_);
   auto model_sess_id = ModelSessionToString(request.model_session());
@@ -255,10 +252,18 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   *config.add_model_session() = request.model_session();
   config.set_batch(1);
   config.set_max_batch(request.max_batch());
+
+#ifdef USE_GPU
   auto gpu_device = DeviceManager::Singleton().GetGPUDevice(gpu_id_);
+  std::string gpu_name = gpu_device->device_name();
+  std::string gpu_uuid = gpu_device->uuid();
+#else
+  std::string gpu_name = SleepProfile::kGpuDeviceName;
+  std::string gpu_uuid = "";
+#endif
   auto profile_id = ModelSessionToProfileID(request.model_session());
-  auto* profile = ModelDatabase::Singleton().GetModelProfile(
-      gpu_device->device_name(), gpu_device->uuid(), profile_id);
+  auto* profile = ModelDatabase::Singleton().GetModelProfile(gpu_name, gpu_uuid,
+                                                             profile_id);
   if (!profile) return;
   auto memory_usage = profile->GetMemoryUsage(request.max_batch());
   config.set_memory_usage(memory_usage);
@@ -274,9 +279,6 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   // auto duty_cycle = request.model_session().latency_sla() * 1e3 / 2;
   // gpu_executor_->SetDutyCycle(duty_cycle);
   // LOG(INFO) << "Duty cycle: " << duty_cycle << " us";
-#else
-  LOG(FATAL) << "backend needs the USE_GPU flag set at compile-time.";
-#endif
 }
 
 void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
@@ -397,11 +399,7 @@ void BackendServer::MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task) {
     }
   }
   if (ready_plan) {
-#ifdef USE_GPU
     gpu_executor_->AddBatchPlan(ready_plan);
-#else
-    LOG(FATAL) << "Please compile with USE_GPU";
-#endif
   }
 }
 
@@ -466,7 +464,6 @@ void BackendServer::ModelTableDaemon() {
 }
 
 void BackendServer::Register() {
-#ifdef USE_GPU
   // Init node id
   std::uniform_int_distribution<uint32_t> dis(
       1, std::numeric_limits<uint32_t>::max());
@@ -478,10 +475,16 @@ void BackendServer::Register() {
   request.set_node_id(node_id_);
   request.set_server_port(port());
   request.set_rpc_port(rpc_service_.port());
+#ifdef USE_GPU
   GPUDevice* gpu_device = DeviceManager::Singleton().GetGPUDevice(gpu_id_);
   request.set_gpu_device_name(gpu_device->device_name());
   request.set_gpu_uuid(gpu_device->uuid());
   request.set_gpu_available_memory(gpu_device->FreeMemory());
+#else
+  request.set_gpu_device_name(SleepProfile::kGpuDeviceName);
+  request.set_gpu_uuid("FakeUUID-" + std::to_string(node_id_));
+  request.set_gpu_available_memory(0);
+#endif
 
   while (true) {
     grpc::ClientContext context;
@@ -505,9 +508,6 @@ void BackendServer::Register() {
     node_id_ = dis(rand_gen_);
     request.set_node_id(node_id_);
   }
-#else
-  LOG(FATAL) << "backend needs the USE_GPU flag set at compile-time.";
-#endif
 }
 
 void BackendServer::Unregister() {

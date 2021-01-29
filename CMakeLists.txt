@@ -85,6 +85,7 @@ add_library(common OBJECT
         src/nexus/common/metric.cpp
         src/nexus/common/model_db.cpp
         src/nexus/common/server_base.cpp
+        src/nexus/common/sleep_profile.cpp
         src/nexus/common/time_util.cpp
         src/nexus/common/util.cpp)
 target_include_directories(common PUBLIC
@@ -169,10 +170,12 @@ add_library(backend_obj
         src/nexus/backend/backup_client.cpp
         src/nexus/backend/batch_plan_context.cpp
         src/nexus/backend/batch_task.cpp
+        src/nexus/backend/gpu_executor.cpp
         src/nexus/backend/model_exec.cpp
         src/nexus/backend/model_ins.cpp
         src/nexus/backend/rpc_service.cpp
         src/nexus/backend/share_prefix_model.cpp
+        src/nexus/backend/sleep_model.cpp
         src/nexus/backend/slice.cpp
         src/nexus/backend/task.cpp
         src/nexus/backend/utils.cpp
@@ -191,8 +194,6 @@ if(USE_GPU)
             ${CUDA_PATH}/lib64/stubs/libcuda.so
             ${CUDA_PATH}/lib64/libcudart.so
             ${CUDA_PATH}/lib64/libcurand.so)
-    target_sources(backend_obj PRIVATE
-            src/nexus/backend/gpu_executor.cpp)
 endif()
 
 ## backend: TensorFlow support ##

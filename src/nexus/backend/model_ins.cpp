@@ -1,6 +1,11 @@
 #include "nexus/backend/model_ins.h"
 
+#include <stdexcept>
+
 #include "nexus/backend/share_prefix_model.h"
+#include "nexus/backend/sleep_model.h"
+#include "nexus/common/sleep_profile.h"
+#include "nexus/common/util.h"
 
 #ifdef USE_CAFFE
 #include "nexus/backend/caffe_densecap_model.h"
@@ -27,6 +32,7 @@ namespace backend {
 
 void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
                          std::unique_ptr<ModelInstance>* model) {
+  const std::string kSleepPrefix = "sleep#";
   auto beg = Clock::now();
   std::string framework = config.model_session(0).framework();
 #ifdef USE_TENSORFLOW
@@ -63,7 +69,13 @@ void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
       model->reset(new TensorflowModel(gpu_id, config));
     } else
 #endif
-    {
+        if (SleepProfile::MatchPrefix(framework)) {
+      auto profile = SleepProfile::Parse(framework);
+      if (!profile.has_value()) {
+        LOG(FATAL) << "Failed to parse SleepProfile.";
+      }
+      model->reset(new SleepModel(*profile, config));
+    } else {
       LOG(FATAL) << "Unknown framework " << framework;
     }
   }

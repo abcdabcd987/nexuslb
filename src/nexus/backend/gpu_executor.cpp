@@ -136,7 +136,10 @@ void GpuExecutorMultiBatching::Run() {
   caffe::Caffe::SetDevice(gpu_id_);
 #endif
 
+#ifdef USE_GPU
   NEXUS_CUDA_CHECK(cudaSetDevice(gpu_id_));
+#endif
+
   double min_cycle_us = 50.;  // us
   LOG(INFO) << "GpuExecutor started";
   while (running_) {

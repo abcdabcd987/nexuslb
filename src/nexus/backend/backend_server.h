@@ -14,6 +14,7 @@
 
 #include "nexus/backend/backup_client.h"
 #include "nexus/backend/batch_plan_context.h"
+#include "nexus/backend/gpu_executor.h"
 #include "nexus/backend/model_exec.h"
 #include "nexus/backend/rpc_service.h"
 #include "nexus/backend/task.h"
@@ -25,10 +26,6 @@
 #include "nexus/common/spinlock.h"
 #include "nexus/common/typedef.h"
 #include "nexus/proto/control.pb.h"
-
-#ifdef USE_GPU
-#include "nexus/backend/gpu_executor.h"
-#endif
 
 namespace nexus {
 namespace backend {
@@ -153,10 +150,8 @@ class BackendServer : public ServerBase, public MessageHandler {
   BlockPriorityQueue<Task> task_queue_;
   /*! \brief Worker thread pool */
   std::vector<std::unique_ptr<Worker>> workers_;
-#ifdef USE_GPU
   /*! \brief GPU executor */
   std::unique_ptr<GpuExecutorPlanFollower> gpu_executor_;
-#endif
   /*!
    * \brief Mapping from model session ID to model instance.
    * Guarded by model_table_mu_.p

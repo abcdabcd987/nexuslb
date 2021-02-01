@@ -125,6 +125,10 @@ class BackendServer : public ServerBase, public MessageHandler {
  private:
   /*! \brief GPU device index */
   int gpu_id_;
+  std::string gpu_name_;
+  std::string gpu_uuid_;
+  size_t gpu_memory_;
+
   /*! \brief Interval to update stats to scheduler in seconds */
   uint32_t beacon_interval_sec_;
   /*! \brief Flag for whether backend and daemon thread is running */

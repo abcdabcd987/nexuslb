@@ -2,13 +2,31 @@
 
 #include <glog/logging.h>
 
-namespace nexus {
+#include <fstream>
+#include <string>
 
-#ifdef USE_GPU
+namespace nexus {
 
 DEFINE_bool(generic_profile, false,
             "Use the generic profile for all GPUs of the same model instead of "
             "using profiles for each GPU card. (Applicable to Backend only)");
+
+CPUDevice::CPUDevice() : Device(kCPU) {
+  std::ifstream fin("/proc/cpuinfo");
+  std::string line;
+  cpu_model_ = "GenericCPU";
+  while (std::getline(fin, line)) {
+    if (line.rfind("model name", 0) == 0) {
+      auto pos = line.find(": ");
+      if (pos != std::string::npos) {
+        cpu_model_ = line.substr(pos + 2);
+        break;
+      }
+    }
+  }
+}
+
+#ifdef USE_GPU
 
 GPUDevice::GPUDevice(int gpu_id) : Device(kGPU), gpu_id_(gpu_id) {
   std::stringstream ss;

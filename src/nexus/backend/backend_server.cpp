@@ -14,6 +14,7 @@
 #include "nexus/backend/share_prefix_model.h"
 #include "nexus/backend/tf_share_model.h"
 #include "nexus/common/config.h"
+#include "nexus/common/device.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/sleep_profile.h"
@@ -32,6 +33,22 @@ BackendServer::BackendServer(std::string port, std::string rpc_port,
       running_(false),
       rpc_service_(this, rpc_port),
       rand_gen_(rd_()) {
+#ifdef USE_GPU
+  auto* gpu = DeviceManager::Singleton().GetGPUDevice(gpu_id_);
+  gpu_name_ = gpu->device_name();
+  gpu_uuid_ = gpu->uuid();
+  gpu_memory_ = gpu->FreeMemory();
+#elif defined(USE_TENSORFLOW)
+  auto* cpu = DeviceManager::Singleton().GetCPUDevice();
+  gpu_name_ = cpu->name();
+  gpu_uuid_ = "GenericCPU";
+  gpu_memory_ = 0;
+#else
+  gpu_name_ = SleepProfile::kGpuDeviceName;
+  gpu_uuid_ = "GenericFake";
+  gpu_memory_ = 0;
+#endif
+
   // Start RPC service
   rpc_service_.Start();
   // Init scheduler client
@@ -253,17 +270,9 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   config.set_batch(1);
   config.set_max_batch(request.max_batch());
 
-#ifdef USE_GPU
-  auto gpu_device = DeviceManager::Singleton().GetGPUDevice(gpu_id_);
-  std::string gpu_name = gpu_device->device_name();
-  std::string gpu_uuid = gpu_device->uuid();
-#else
-  std::string gpu_name = SleepProfile::kGpuDeviceName;
-  std::string gpu_uuid = "";
-#endif
   auto profile_id = ModelSessionToProfileID(request.model_session());
-  auto* profile = ModelDatabase::Singleton().GetModelProfile(gpu_name, gpu_uuid,
-                                                             profile_id);
+  auto* profile = ModelDatabase::Singleton().GetModelProfile(
+      gpu_name_, gpu_uuid_, profile_id);
   if (!profile) return;
   auto memory_usage = profile->GetMemoryUsage(request.max_batch());
   config.set_memory_usage(memory_usage);
@@ -475,16 +484,9 @@ void BackendServer::Register() {
   request.set_node_id(node_id_);
   request.set_server_port(port());
   request.set_rpc_port(rpc_service_.port());
-#ifdef USE_GPU
-  GPUDevice* gpu_device = DeviceManager::Singleton().GetGPUDevice(gpu_id_);
-  request.set_gpu_device_name(gpu_device->device_name());
-  request.set_gpu_uuid(gpu_device->uuid());
-  request.set_gpu_available_memory(gpu_device->FreeMemory());
-#else
-  request.set_gpu_device_name(SleepProfile::kGpuDeviceName);
-  request.set_gpu_uuid("FakeUUID-" + std::to_string(node_id_));
-  request.set_gpu_available_memory(0);
-#endif
+  request.set_gpu_device_name(gpu_name_);
+  request.set_gpu_uuid(gpu_uuid_);
+  request.set_gpu_available_memory(gpu_memory_);
 
   while (true) {
     grpc::ClientContext context;

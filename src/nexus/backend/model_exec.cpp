@@ -9,6 +9,7 @@
 #include "nexus/backend/batch_plan_context.h"
 #include "nexus/backend/model_ins.h"
 #include "nexus/backend/share_prefix_model.h"
+#include "nexus/common/device.h"
 #include "nexus/common/model_db.h"
 
 #ifdef USE_TENSORFLOW
@@ -37,6 +38,14 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
   auto gpu_device = DeviceManager::Singleton().GetGPUDevice(gpu_id);
   profile_ = ModelDatabase::Singleton().GetModelProfile(
       gpu_device->device_name(), gpu_device->uuid(), model_->profile_id());
+#else
+  if (gpu_id != -1) {
+    LOG(FATAL)
+        << "The code is complied without USE_GPU. Please set `gpu_id` to -1.";
+  }
+  auto* cpu = DeviceManager::Singleton().GetCPUDevice();
+  profile_ = ModelDatabase::Singleton().GetModelProfile(
+      cpu->name(), "GenericCPU", model_->profile_id());
 #endif
   req_counter_ = MetricRegistry::Singleton().CreateIntervalCounter(
       FLAGS_backend_count_interval);

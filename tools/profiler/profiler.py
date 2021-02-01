@@ -300,7 +300,10 @@ def generate_dataset(width, height):
 
 
 def profile_model(args):
-    gpus = parse_int_list(args.gpu_list)
+    if args.gpu_list == "-1":
+        gpus = [-1]
+    else:
+        gpus = parse_int_list(args.gpu_list)
     if len(gpus) != 1 and args.gpu_uuid:
         raise ValueError('--gpu_uuid cannot be set with more than one --gpus')
     generate_dataset(args.width, args.height)

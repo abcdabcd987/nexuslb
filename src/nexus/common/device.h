@@ -50,11 +50,13 @@ class CPUDevice : public Device {
 
   void Free(void* buf) final { free(buf); }
 
-  std::string name() const final { return "cpu"; }
+  std::string name() const override { return cpu_model_; }
 
  private:
-  CPUDevice() : Device(kCPU) {}
+  CPUDevice();
   friend class DeviceManager;
+
+  std::string cpu_model_;
 };
 
 #ifdef USE_GPU

@@ -73,9 +73,17 @@ class ModelProfiler {
     LOG(INFO) << "Profile model " << ModelSessionToProfileID(model_sess_);
     // Get test dataset
     ListImages(image_dir);
+    cpu_device_ = DeviceManager::Singleton().GetCPUDevice();
+#ifdef USE_GPU
     // Init GPU device
     NEXUS_CUDA_CHECK(cudaSetDevice(gpu_));
     gpu_device_ = DeviceManager::Singleton().GetGPUDevice(gpu_);
+#else
+    if (gpu_ != -1) {
+      LOG(FATAL) << "The code is compiled without USE_GPU. Please set "
+                    "`-gpu=-1` to profile on CPU.";
+    }
+#endif
   }
 
   void Profile(int min_batch, int max_batch, const std::string output = "",
@@ -108,7 +116,6 @@ class ModelProfiler {
     {
       config.set_batch(1);
       config.set_max_batch(1);
-      // auto model = CreateModelInstance(gpu_, config);
       std::unique_ptr<ModelInstance> model;
       CreateModelInstance(gpu_, config, &model);
       // prepare the input
@@ -155,8 +162,14 @@ class ModelProfiler {
     } else {
       *fout << ModelSessionToProfileID(model_sess_) << "\n";
     }
+#ifdef USE_GPU
     *fout << gpu_device_->device_name() << "\n";
     *fout << gpu_device_->uuid() << "\n";
+#else
+    *fout << cpu_device_->name() << "\n";
+    *fout << "GenericCPU"
+          << "\n";
+#endif
     *fout << "Forward latency\n";
     *fout
         << "batch,latency(us),std(us),static memory(B),peak memory(B),repeat\n";
@@ -218,7 +231,9 @@ class ModelProfiler {
       std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
 
+#ifdef USE_GPU
     LOG(INFO) << "Final free memory: " << gpu_device_->FreeMemory();
+#endif
     preproc_tasks.clear();
 
     // output to file
@@ -279,7 +294,10 @@ class ModelProfiler {
   int width_;
   std::vector<std::string> test_images_;
   std::vector<std::string> model_sessions_;
+  CPUDevice* cpu_device_;
+#ifdef USE_GPU
   GPUDevice* gpu_device_;
+#endif
 };
 
 }  // namespace backend

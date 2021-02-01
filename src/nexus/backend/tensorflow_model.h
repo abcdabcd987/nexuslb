@@ -58,7 +58,7 @@ class TensorflowModel : public ModelInstance {
   std::vector<float> input_mean_;
   std::vector<float> input_std_;
   std::unordered_map<int, std::string> classnames_;
-  tf::Allocator* gpu_allocator_;
+  tf::Allocator* tf_allocator_;
   std::vector<std::unique_ptr<tf::Tensor> > input_tensors_;
   bool first_input_array_;
 

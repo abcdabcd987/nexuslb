@@ -275,10 +275,8 @@ endif()
 
 
 ###### tools/profiler ######
-if(USE_GPU)
-    add_executable(profiler tools/profiler/profiler.cpp)
-    target_link_libraries(profiler PRIVATE common backend_obj)
-endif()
+add_executable(profiler tools/profiler/profiler.cpp)
+target_link_libraries(profiler PRIVATE common backend_obj)
 
 
 

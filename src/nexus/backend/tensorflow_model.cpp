@@ -20,6 +20,8 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
   CHECK(model_info_["model_file"]) << "Missing model_file in the model info";
 
   // Init session options
+#ifdef USE_GPU
+  auto& tf_option = gpu_option_;
   auto gpu_opt = gpu_option_.config.mutable_gpu_options();
   gpu_opt->set_visible_device_list(std::to_string(gpu_id));
   gpu_opt->set_allocator_type("BFC");
@@ -34,18 +36,20 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
     LOG(INFO) << "set_allow_growth(true)";
     gpu_opt->set_allow_growth(true);
   }
+#else
+  auto& tf_option = cpu_option_;
   (*cpu_option_.config.mutable_device_count())["GPU"] = 0;
+#endif
 
   // Init session and load model
-  session_.reset(tf::NewSession(gpu_option_));
+  session_.reset(tf::NewSession(tf_option));
   fs::path model_dir = fs::path(model_info_["model_dir"].as<std::string>());
   fs::path model_file = model_dir / model_info_["model_file"].as<std::string>();
   CHECK(fs::exists(model_file))
       << "model file " << model_file << " doesn't exist";
   tf::GraphDef graph_def;
   tf::Status status;
-  status =
-      tf::ReadBinaryProto(gpu_option_.env, model_file.string(), &graph_def);
+  status = tf::ReadBinaryProto(tf_option.env, model_file.string(), &graph_def);
   if (!status.ok()) {
     LOG(FATAL) << "Failed to load model " << model_file << " : "
                << status.ToString();
@@ -88,9 +92,13 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
   }
 
   // Get the GPU allocator for creating input buffer
-  tf::GPUProcessState* process_state = tf::GPUProcessState::singleton();
-  gpu_allocator_ = process_state->GetGPUAllocator(
+#ifdef USE_GPU
+  tf_allocator_ = tf::GPUProcessState::singleton()->GetGPUAllocator(
       gpu_option_.config.gpu_options(), tf::TfGpuId(0), 0);
+#else
+  tf_allocator_ =
+      tf::ProcessState::singleton()->GetCPUAllocator(tf::port::kNUMANoAffinity);
+#endif
 
   // Dry run the model to get the outpue size
   auto in_tensor = NewInputTensor()->Slice(0, 1);
@@ -105,9 +113,9 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
     tf::TensorShape shape;
     shape.AddDim(num_suffixes_);
     slice_beg_tensor_.reset(
-        new tf::Tensor(/* gpu_allocator_, */ tf::DT_INT32, shape));
+        new tf::Tensor(/* tf_allocator_, */ tf::DT_INT32, shape));
     slice_end_tensor_.reset(
-        new tf::Tensor(/* gpu_allocator_, */ tf::DT_INT32, shape));
+        new tf::Tensor(/* tf_allocator_, */ tf::DT_INT32, shape));
     set_slice_tensor(slice_beg_tensor_, std::vector<int32_t>(num_suffixes_, 0));
     set_slice_tensor(slice_end_tensor_, std::vector<int32_t>(num_suffixes_, 1));
     inputs.emplace_back(slice_beg_vector,
@@ -179,7 +187,12 @@ ArrayPtr TensorflowModel::CreateInputGpuArray() {
   }
   void* gpu_data = tensor->data();
   size_t nbytes = tensor->NumElements() * type_size(input_data_type_);
-  auto buf = std::make_shared<Buffer>(gpu_data, nbytes, gpu_device_);
+#ifdef USE_GPU
+  auto& device = gpu_device_;
+#else
+  auto& device = cpu_device_;
+#endif
+  auto buf = std::make_shared<Buffer>(gpu_data, nbytes, device);
   auto arr =
       std::make_shared<Array>(input_data_type_, tensor->NumElements(), buf);
   arr->set_tag(input_tensors_.size() - 1);
@@ -308,12 +321,12 @@ void TensorflowModel::Postprocess(std::shared_ptr<Task> task) {
 }
 
 uint64_t TensorflowModel::GetPeakBytesInUse() {
-  auto stats = gpu_allocator_->GetStats();
+  auto stats = tf_allocator_->GetStats();
   return stats->peak_bytes_in_use;
 }
 
 uint64_t TensorflowModel::GetBytesInUse() {
-  auto stats = gpu_allocator_->GetStats();
+  auto stats = tf_allocator_->GetStats();
   return stats->bytes_in_use;
 }
 
@@ -324,9 +337,9 @@ tf::Tensor* TensorflowModel::NewInputTensor() {
   }
   tf::Tensor* tensor;
   if (input_data_type_ == DT_UINT8) {
-    tensor = new tf::Tensor(gpu_allocator_, tf::DT_UINT8, shape);
+    tensor = new tf::Tensor(tf_allocator_, tf::DT_UINT8, shape);
   } else {
-    tensor = new tf::Tensor(gpu_allocator_, tf::DT_FLOAT, shape);
+    tensor = new tf::Tensor(tf_allocator_, tf::DT_FLOAT, shape);
   }
   input_tensors_.emplace_back(tensor);
   return tensor;

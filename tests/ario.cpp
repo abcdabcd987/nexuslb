@@ -17,21 +17,21 @@ struct RpcRequest {
   char msg[1000];
 };
 
-class TestHandler : public EventHandler {
+class TestHandler : public RdmaEventHandler {
  public:
   void OnRemoteMemoryRegionReceived(RdmaQueuePair *conn, uint64_t addr,
                                     size_t size) override {
     fprintf(stderr, "got memory region: addr=0x%016lx, size=%lu\n", addr, size);
   }
 
-  void OnRecv(OwnedMemoryBlock buf) override {
+  void OnRecv(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {
     auto view = buf.AsMessageView();
     auto *req = reinterpret_cast<RpcRequest *>(view.bytes());
     fprintf(stderr, "Recv message. view.bytes_length()=%u. msg=\"%s\"\n",
             view.bytes_length(), req->msg);
   }
 
-  void OnSent(OwnedMemoryBlock buf) override {}
+  void OnSent(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {}
 };
 
 class TestServerHandler : public TestHandler {
@@ -40,7 +40,7 @@ class TestServerHandler : public TestHandler {
     fprintf(stderr, "New RDMA connection.\n");
   }
 
-  void OnRdmaReadComplete(OwnedMemoryBlock buf) override {}
+  void OnRdmaReadComplete(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {}
 };
 
 class TestClientHandler : public TestHandler {
@@ -59,7 +59,7 @@ class TestClientHandler : public TestHandler {
     cv_.notify_all();
   }
 
-  void OnRdmaReadComplete(OwnedMemoryBlock buf) override {
+  void OnRdmaReadComplete(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {
     if (data_.has_value())
       die("TestHandler::OnRdmaReadComplete: data_.has_value()");
     data_ = std::move(buf);
@@ -324,7 +324,7 @@ class BenchSendHandler : public TestClientHandler {
     allocator_ = &allocator;
   }
 
-  void OnSent(OwnedMemoryBlock buf) override {
+  void OnSent(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {
     --cnt_flying_;
     ++cnt_sent_;
     if (cnt_sent_ == num_packets_) {

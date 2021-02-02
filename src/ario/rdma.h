@@ -49,14 +49,15 @@ struct RdmaManagerMessage {
 
 class RdmaQueuePair;
 
-class EventHandler {
+class RdmaEventHandler {
  public:
   virtual void OnConnected(RdmaQueuePair *conn) = 0;
   virtual void OnRemoteMemoryRegionReceived(RdmaQueuePair *conn, uint64_t addr,
                                             size_t size) = 0;
-  virtual void OnRdmaReadComplete(OwnedMemoryBlock buf) = 0;
-  virtual void OnRecv(OwnedMemoryBlock buf) = 0;
-  virtual void OnSent(OwnedMemoryBlock buf) = 0;
+  virtual void OnRdmaReadComplete(RdmaQueuePair *conn,
+                                  OwnedMemoryBlock buf) = 0;
+  virtual void OnRecv(RdmaQueuePair *conn, OwnedMemoryBlock buf) = 0;
+  virtual void OnSent(RdmaQueuePair *conn, OwnedMemoryBlock buf) = 0;
 };
 
 enum class PollerType {
@@ -74,11 +75,11 @@ struct WorkRequestContext {
 
 class RdmaManager {
  public:
-  RdmaManager(std::string dev_name, std::shared_ptr<EventHandler> handler,
+  RdmaManager(std::string dev_name, std::shared_ptr<RdmaEventHandler> handler,
               MemoryBlockAllocator *recv_buf);
   ~RdmaManager();
   void RegisterLocalMemory(MemoryBlockAllocator *buf);
-  void ExposeMemory(void* addr, size_t size);
+  void ExposeMemory(void *addr, size_t size);
   void ListenTcp(uint16_t port);
   void ConnectTcp(const std::string &addr, uint16_t port);
   void RunEventLoop();
@@ -104,7 +105,7 @@ class RdmaManager {
 
   std::string dev_name_;
   int dev_port_ = 0;
-  std::shared_ptr<EventHandler> handler_;
+  std::shared_ptr<RdmaEventHandler> handler_;
 
   MemoryBlockAllocator *recv_buf_;
 
@@ -144,7 +145,7 @@ class RdmaManagerAccessor {
   ibv_pd *pd() const { return m_->pd_; }
   ibv_cq *cq() const { return m_->cq_; }
   ibv_mr *explosed_mr() const { return m_->exposed_mr_; }
-  EventHandler *handler() const { return m_->handler_.get(); }
+  RdmaEventHandler *handler() const { return m_->handler_.get(); }
 
   void AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
     m_->AsyncSend(conn, std::move(buf));

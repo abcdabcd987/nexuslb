@@ -5,7 +5,7 @@
 namespace ario {
 
 RdmaManager::RdmaManager(std::string dev_name,
-                         std::shared_ptr<EventHandler> handler,
+                         std::shared_ptr<RdmaEventHandler> handler,
                          MemoryBlockAllocator *recv_buf)
     : dev_name_(std::move(dev_name)),
       handler_(std::move(handler)),
@@ -532,16 +532,16 @@ void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {
   }
   if (wc->opcode & IBV_WC_RECV) {
     PostReceive(wr_ctx->conn);
-    handler_->OnRecv(std::move(wr_ctx->buf));
+    handler_->OnRecv(&wr_ctx->conn, std::move(wr_ctx->buf));
     return;
   }
   switch (wc->opcode) {
     case IBV_WC_SEND: {
-      handler_->OnSent(std::move(wr_ctx->buf));
+      handler_->OnSent(&wr_ctx->conn, std::move(wr_ctx->buf));
       return;
     }
     case IBV_WC_RDMA_READ: {
-      handler_->OnRdmaReadComplete(std::move(wr_ctx->buf));
+      handler_->OnRdmaReadComplete(&wr_ctx->conn, std::move(wr_ctx->buf));
       return;
     }
     // TODO: handle all opcode

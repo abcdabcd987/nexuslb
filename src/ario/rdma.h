@@ -1,5 +1,4 @@
 #pragma once
-#include <bits/stdint-uintn.h>
 #include <infiniband/verbs.h>
 #include <poll.h>
 
@@ -10,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "ario/epoll.h"
@@ -74,22 +74,20 @@ struct WorkRequestContext {
 
 class RdmaManager {
  public:
-  explicit RdmaManager(std::string dev_name,
-                       std::shared_ptr<EventHandler> handler);
+  RdmaManager(std::string dev_name, std::shared_ptr<EventHandler> handler,
+              MemoryBlockAllocator *recv_buf);
   ~RdmaManager();
+  void RegisterLocalMemory(MemoryBlockAllocator *buf);
   void ListenTcp(uint16_t port, std::vector<uint8_t> &memory_region);
   void ConnectTcp(const std::string &addr, uint16_t port);
   void RunEventLoop();
   void StopEventLoop();
-  RdmaQueuePair *GetConnection();
-  MemoryBlockAllocator &allocator() { return local_buf_; }
 
  private:
   friend class RdmaManagerAccessor;
   void CreateContext();
   void BuildProtectionDomain();
   void BuildCompletionQueue();
-  void RegisterMemory();
   void ExposeMemory(void *addr, size_t size);
   void StartPoller();
   void PollCompletionQueueBlocking();
@@ -100,7 +98,7 @@ class RdmaManager {
   void TcpAccept();
 
   void AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf);
-  void AsyncRead(RdmaQueuePair &conn, /* OwnedMemoryBlock buf, */ size_t offset,
+  void AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf, size_t offset,
                  size_t length);
   void PostReceive(RdmaQueuePair &conn);
 
@@ -108,15 +106,17 @@ class RdmaManager {
   int dev_port_ = 0;
   std::shared_ptr<EventHandler> handler_;
 
-  MemoryBlockAllocator local_buf_;
+  MemoryBlockAllocator *recv_buf_;
 
   ibv_context *ctx_ = nullptr;
   ibv_pd *pd_ = nullptr;
   ibv_cq *cq_ = nullptr;
   ibv_comp_channel *comp_channel_ = nullptr;
   pollfd comp_channel_pollfd_;
-  ibv_mr *local_mr_ = nullptr;
-  ibv_mr *exposed_mr_ = nullptr;
+
+  std::mutex mr_mutex_;
+  std::unordered_map<void *, ibv_mr *> mr_ /* GUARDED_BY(mr_mutex_) */;
+  ibv_mr *exposed_mr_;
 
   PollerType poller_type_;
   std::atomic<bool> poller_stop_{false};
@@ -143,18 +143,16 @@ class RdmaManagerAccessor {
   ibv_context *ctx() const { return m_->ctx_; }
   ibv_pd *pd() const { return m_->pd_; }
   ibv_cq *cq() const { return m_->cq_; }
-  ibv_mr *local_mr() const { return m_->local_mr_; }
   ibv_mr *explosed_mr() const { return m_->exposed_mr_; }
-  MemoryBlockAllocator &local_buf() const { return m_->local_buf_; }
   EventHandler *handler() const { return m_->handler_.get(); }
 
   void AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
     m_->AsyncSend(conn, std::move(buf));
   }
 
-  void AsyncRead(RdmaQueuePair &conn, /* OwnedMemoryBlock buf, */ size_t offset,
+  void AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf, size_t offset,
                  size_t length) {
-    m_->AsyncRead(conn, offset, length);
+    m_->AsyncRead(conn, std::move(buf), offset, length);
   }
 
   void PostReceive(RdmaQueuePair &conn) { m_->PostReceive(conn); }
@@ -169,7 +167,7 @@ class RdmaQueuePair {
  public:
   ~RdmaQueuePair();
   void AsyncSend(OwnedMemoryBlock buf);
-  void AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset, size_t length);
+  void AsyncRead(OwnedMemoryBlock buf, size_t offset, size_t length);
 
  private:
   friend class RdmaManager;

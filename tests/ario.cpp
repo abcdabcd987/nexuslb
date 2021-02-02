@@ -10,6 +10,9 @@
 
 using namespace ario;
 
+constexpr size_t kRdmaBufPoolBits = __builtin_ctzl(128 << 20);
+constexpr size_t kRdmaBufBlockBits = __builtin_ctzl(2 << 20);
+
 struct RpcRequest {
   char msg[1000];
 };
@@ -250,7 +253,8 @@ void ServerMain(int argc, char **argv) {
   FillMemoryPool(memory_pool);
 
   auto test = std::make_shared<TestServerHandler>();
-  RdmaManager manager(dev_name, test);
+  MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
+  RdmaManager manager(dev_name, test, &buf);
   manager.ListenTcp(listen_port, memory_pool);
   // std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
   manager.RunEventLoop();
@@ -265,7 +269,10 @@ void ClientMain(int argc, char **argv) {
   uint16_t server_port = std::stoi(argv[4]);
 
   auto test = std::make_shared<TestClientHandler>();
-  RdmaManager manager(dev_name, test);
+  MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
+  RdmaManager manager(dev_name, test, &buf);
+  MemoryBlockAllocator read_buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
+  manager.RegisterLocalMemory(&read_buf);
   manager.ConnectTcp(server_host, server_port);
   std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
 
@@ -273,7 +280,7 @@ void ClientMain(int argc, char **argv) {
   fprintf(stderr, "ClientMain: connected.\n");
   test->WaitMemoryRegion();
 
-  conn->AsyncRead(0, 1024);
+  conn->AsyncRead(read_buf.Allocate(), 0, 1024);
   auto read_data = test->WaitRead();
   if (read_data.empty()) die("read_data.empty()");
   auto read_view = read_data.AsMessageView();
@@ -286,7 +293,7 @@ void ClientMain(int argc, char **argv) {
 
   size_t offset = 42 << 20;
   size_t rand_len = 1 << 20;
-  conn->AsyncRead(offset, rand_len);
+  conn->AsyncRead(read_buf.Allocate(), offset, rand_len);
   read_data = test->WaitRead();
   read_view = read_data.AsMessageView();
   uint64_t sum = 0;
@@ -296,7 +303,7 @@ void ClientMain(int argc, char **argv) {
   fprintf(stderr, "ClientMain: mem[%lu:%lu].sum()=%lu\n", offset,
           offset + rand_len, sum);
 
-  auto send_buf = manager.allocator().Allocate();
+  auto send_buf = buf.Allocate();
   auto send_view = send_buf.AsMessageView();
   auto *req = reinterpret_cast<RpcRequest *>(send_view.bytes());
   strcpy(req->msg, "THIS IS A MESSAGE FROM THE CLIENT.");
@@ -402,8 +409,9 @@ void BenchSendMain(int argc, char **argv) {
   size_t num_packets = std::stoul(argv[5]);
 
   auto handler = std::make_shared<BenchSendHandler>();
-  RdmaManager manager(dev_name, handler);
-  handler->SetAllocator(manager.allocator());
+  MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
+  RdmaManager manager(dev_name, handler, &buf);
+  handler->SetAllocator(buf);
   manager.ConnectTcp(server_host, server_port);
   std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
 

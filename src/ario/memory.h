@@ -40,6 +40,8 @@ class MemoryBlockAllocator {
   size_t block_size() const { return block_size_; }
   size_t blocks() const { return blocks_; }
   uint8_t *data() const { return data_.get(); }
+  uint32_t rdma_lkey() const { return rdma_lkey_; }
+  void set_rdma_lkey(uint32_t rdma_lkey) { rdma_lkey_ = rdma_lkey; }
 
   OwnedMemoryBlock Allocate() /* REQUIRES(mutex_) */;
   void Free(OwnedMemoryBlock &&block) /* REQUIRES(mutex_) */;
@@ -51,6 +53,7 @@ class MemoryBlockAllocator {
   size_t pool_size_ = 0;
   size_t block_size_ = 0;
   size_t blocks_ = 0;
+  uint32_t rdma_lkey_ = 0;
   std::unique_ptr<uint8_t[]> data_;
 
   std::mutex mutex_;
@@ -95,6 +98,11 @@ class OwnedMemoryBlock {
   size_t size() const {
     EnsureNonEmpty();
     return size_;
+  }
+
+  uint32_t rdma_lkey() const {
+    EnsureNonEmpty();
+    return allocator_->rdma_lkey();
   }
 
   MessageView AsMessageView() const {

@@ -10,6 +10,7 @@ MemoryBlockAllocator::MemoryBlockAllocator(size_t pool_bits, size_t block_bits)
       pool_size_(1UL << pool_bits),
       block_size_(1UL << block_bits),
       blocks_(1UL << (pool_bits - block_bits)),
+      rdma_lkey_(0),
       data_(new uint8_t[pool_size_]),
       availability_(blocks_, true) {
   available_blocks_.reserve(blocks_);
@@ -24,6 +25,7 @@ MemoryBlockAllocator::MemoryBlockAllocator(MemoryBlockAllocator &&other)
       pool_size_(std::exchange(other.pool_size_, 0)),
       block_size_(std::exchange(other.block_size_, 0)),
       blocks_(std::exchange(other.blocks_, 0)),
+      rdma_lkey_(std::exchange(other.rdma_lkey_, 0)),
       data_(std::move(other.data_)),
       available_blocks_(std::move(other.available_blocks_)),
       availability_(std::move(other.availability_)) {}
@@ -36,6 +38,7 @@ MemoryBlockAllocator &MemoryBlockAllocator::operator=(
   pool_size_ = std::exchange(other.pool_size_, 0);
   block_size_ = std::exchange(other.block_size_, 0);
   blocks_ = std::exchange(other.blocks_, 0);
+  rdma_lkey_ = std::exchange(other.rdma_lkey_, 0);
   data_ = std::move(other.data_);
   available_blocks_ = std::move(other.available_blocks_);
   availability_ = std::move(other.availability_);

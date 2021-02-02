@@ -4,14 +4,12 @@
 
 namespace ario {
 
-constexpr size_t kRdmaBufferPoolBits = 30;
-constexpr size_t kRdmaBufferBlockBits = 20;
-
 RdmaManager::RdmaManager(std::string dev_name,
-                         std::shared_ptr<EventHandler> handler)
+                         std::shared_ptr<EventHandler> handler,
+                         MemoryBlockAllocator *recv_buf)
     : dev_name_(std::move(dev_name)),
       handler_(std::move(handler)),
-      local_buf_(kRdmaBufferPoolBits, kRdmaBufferBlockBits),
+      recv_buf_(recv_buf),
       poller_type_(PollerType::kBlocking),
       tcp_acceptor_(executor_) {
   // TODO: RAII
@@ -19,7 +17,7 @@ RdmaManager::RdmaManager(std::string dev_name,
   CreateContext();
   BuildProtectionDomain();
   BuildCompletionQueue();
-  RegisterMemory();
+  RegisterLocalMemory(recv_buf_);
   StartPoller();
 }
 
@@ -112,11 +110,6 @@ void RdmaManager::ConnectTcp(const std::string &host, uint16_t port) {
 void RdmaManager::RunEventLoop() { executor_.RunEventLoop(); }
 
 void RdmaManager::StopEventLoop() { executor_.StopEventLoop(); }
-
-RdmaQueuePair *RdmaManager::GetConnection() {
-  if (connections_.empty()) return nullptr;
-  return connections_.front().get();
-}
 
 void RdmaManager::AddConnection(TcpSocket tcp) {
   auto conn = new RdmaQueuePair(RdmaManagerAccessor(*this), std::move(tcp));
@@ -356,18 +349,27 @@ void RdmaQueuePair::TransitQueuePairToRTS() {
   if (ret) die_perror("TransitQueuePairToRTS");
 }
 
-void RdmaManager::RegisterMemory() {
-  local_mr_ = ibv_reg_mr(pd_, local_buf_.data(), local_buf_.pool_size(),
-                         IBV_ACCESS_LOCAL_WRITE);
+void RdmaManager::RegisterLocalMemory(MemoryBlockAllocator *buf) {
+  std::lock_guard<std::mutex> lock(mr_mutex_);
+  auto *addr = buf->data();
+  if (mr_.count(addr))
+    die("RdmaManager::RegisterLocalMemory: Already registered.");
+  auto *mr = ibv_reg_mr(pd_, addr, buf->pool_size(), IBV_ACCESS_LOCAL_WRITE);
+  if (!mr) die("RdmaManager::RegisterLocalMemory: ibv_reg_mr");
+  mr_[addr] = mr;
+  buf->set_rdma_lkey(mr->lkey);
 }
 
 void RdmaManager::ExposeMemory(void *addr, size_t size) {
   if (exposed_mr_)
     die("Currently only one exposed memory region is supported.");
-  exposed_mr_ = ibv_reg_mr(pd_, addr, size,
-                           IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                               IBV_ACCESS_REMOTE_READ);
-  if (!exposed_mr_) die("ibv_reg_mr: rdma_remote_mr");
+  auto *mr = ibv_reg_mr(pd_, addr, size,
+                        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+                            IBV_ACCESS_REMOTE_READ);
+  if (!mr) die("ibv_reg_mr: RdmaManager::ExposeMemory");
+  exposed_mr_ = mr;
+  std::lock_guard<std::mutex> lock(mr_mutex_);
+  mr_[addr] = mr;
 }
 
 void RdmaQueuePair::PostReceive() { manager_.PostReceive(*this); }
@@ -381,10 +383,10 @@ void RdmaManager::PostReceive(RdmaQueuePair &conn) {
   wr.sg_list = &sge;
   wr.num_sge = 1;
 
-  auto buf = local_buf_.Allocate();
+  auto buf = recv_buf_->Allocate();
   sge.addr = reinterpret_cast<uint64_t>(buf.data());
   sge.length = buf.size();
-  sge.lkey = local_mr_->lkey;
+  sge.lkey = buf.rdma_lkey();
   {
     std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
     wr_ctx_[wr.wr_id] =
@@ -416,7 +418,7 @@ void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
   auto msg = buf.AsMessageView();
   sge.addr = reinterpret_cast<uint64_t>(buf.data());
   sge.length = msg.total_length();
-  sge.lkey = local_mr_->lkey;
+  sge.lkey = buf.rdma_lkey();
 
   {
     std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
@@ -430,14 +432,13 @@ void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
           wr.wr_id, sge.addr, sge.length, conn.qp_->qp_num);
 }
 
-void RdmaQueuePair::AsyncRead(/* OwnedMemoryBlock buf, */ size_t offset,
+void RdmaQueuePair::AsyncRead(OwnedMemoryBlock buf, size_t offset,
                               size_t length) {
-  manager_.AsyncRead(*this, offset, length);
+  manager_.AsyncRead(*this, std::move(buf), offset, length);
 }
 
-void RdmaManager::AsyncRead(RdmaQueuePair &conn,
-                            /* OwnedMemoryBlock buf, */ size_t offset,
-                            size_t length) {
+void RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
+                            size_t offset, size_t length) {
   ibv_send_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
@@ -450,11 +451,10 @@ void RdmaManager::AsyncRead(RdmaQueuePair &conn,
   wr.wr.rdma.remote_addr = conn.remote_mr_.addr + offset;
   wr.wr.rdma.rkey = conn.remote_mr_.rkey;
 
-  auto buf = local_buf_.Allocate();
   auto msg = buf.AsMessageView();
   sge.addr = reinterpret_cast<uintptr_t>(msg.bytes());
   sge.length = length;
-  sge.lkey = local_mr_->lkey;
+  sge.lkey = buf.rdma_lkey();
   msg.bytes_length() = length;
 
   {

@@ -255,7 +255,8 @@ void ServerMain(int argc, char **argv) {
   auto test = std::make_shared<TestServerHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
   RdmaManager manager(dev_name, test, &buf);
-  manager.ListenTcp(listen_port, memory_pool);
+  manager.ExposeMemory(memory_pool.data(), memory_pool.size());
+  manager.ListenTcp(listen_port);
   // std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
   manager.RunEventLoop();
   manager.StopEventLoop();

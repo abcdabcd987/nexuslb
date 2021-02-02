@@ -78,7 +78,8 @@ class RdmaManager {
               MemoryBlockAllocator *recv_buf);
   ~RdmaManager();
   void RegisterLocalMemory(MemoryBlockAllocator *buf);
-  void ListenTcp(uint16_t port, std::vector<uint8_t> &memory_region);
+  void ExposeMemory(void* addr, size_t size);
+  void ListenTcp(uint16_t port);
   void ConnectTcp(const std::string &addr, uint16_t port);
   void RunEventLoop();
   void StopEventLoop();
@@ -88,7 +89,6 @@ class RdmaManager {
   void CreateContext();
   void BuildProtectionDomain();
   void BuildCompletionQueue();
-  void ExposeMemory(void *addr, size_t size);
   void StartPoller();
   void PollCompletionQueueBlocking();
   void PollCompletionQueueSpinning();

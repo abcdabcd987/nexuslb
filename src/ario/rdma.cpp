@@ -80,9 +80,7 @@ void RdmaManager::CreateContext() {
           dev_port_);
 }
 
-void RdmaManager::ListenTcp(uint16_t port,
-                            std::vector<uint8_t> &memory_region) {
-  ExposeMemory(memory_region.data(), memory_region.size());
+void RdmaManager::ListenTcp(uint16_t port) {
   tcp_acceptor_.BindAndListen(port);
   fprintf(stderr, "TCP server listening on port %d\n", port);
   TcpAccept();

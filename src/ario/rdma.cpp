@@ -453,8 +453,7 @@ void RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
   sge.addr = reinterpret_cast<uintptr_t>(msg.bytes());
   sge.length = length;
   sge.lkey = buf.rdma_lkey();
-  msg.bytes_length() = length;
-
+  msg.set_bytes_length(length);
   {
     std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
     wr_ctx_[wr.wr_id] =

@@ -308,7 +308,7 @@ void ClientMain(int argc, char **argv) {
   auto send_view = send_buf.AsMessageView();
   auto *req = reinterpret_cast<RpcRequest *>(send_view.bytes());
   strcpy(req->msg, "THIS IS A MESSAGE FROM THE CLIENT.");
-  send_view.bytes_length() = sizeof(*req);
+  send_view.set_bytes_length(sizeof(*req));
   conn->AsyncSend(std::move(send_buf));
   fprintf(stderr, "ClientMain: AsyncSend.\n");
 
@@ -358,7 +358,7 @@ class BenchSendHandler : public TestClientHandler {
       auto send_view = send_buf.AsMessageView();
       auto *req = reinterpret_cast<RpcRequest *>(send_view.bytes());
       snprintf(req->msg, sizeof(req->msg), "THIS IS PACKET #%08lu", cnt_send_);
-      send_view.bytes_length() = sizeof(*req);
+      send_view.set_bytes_length(sizeof(*req));
       conn_->AsyncSend(std::move(send_buf));
       ++cnt_flying_;
       ++cnt_send_;

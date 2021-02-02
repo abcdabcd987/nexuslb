@@ -66,7 +66,12 @@ class MessageView {
   explicit MessageView(uint8_t *buf) : buf_(buf) {}
   using length_type = uint32_t;
   uint8_t *buf() { return buf_; }
-  length_type &bytes_length() { return *reinterpret_cast<length_type *>(buf_); }
+  length_type bytes_length() const {
+    return *reinterpret_cast<length_type *>(buf_);
+  }
+  void set_bytes_length(length_type bytes_length) {
+    *reinterpret_cast<length_type *>(buf_) = bytes_length;
+  }
   uint8_t *bytes() { return &buf_[sizeof(length_type)]; }
   length_type total_length() { return sizeof(length_type) + bytes_length(); }
 

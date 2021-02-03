@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "ario/ario.h"
-#include "ario/rdma.h"
 #include "nexus/backend/batch_plan_context.h"
 #include "nexus/backend/gpu_executor.h"
 #include "nexus/backend/model_exec.h"
@@ -22,6 +21,7 @@
 #include "nexus/common/backend_pool.h"
 #include "nexus/common/block_queue.h"
 #include "nexus/common/model_def.h"
+#include "nexus/common/rdma_sender.h"
 #include "nexus/common/server_base.h"
 #include "nexus/common/spinlock.h"
 #include "nexus/common/typedef.h"
@@ -79,9 +79,6 @@ class BackendServer : public ServerBase {
    */
   ModelTable GetModelTable();
 
-  void SendMessage(ario::RdmaQueuePair* conn,
-                   const google::protobuf::Message& message);
-
  private:
   /*! \brief Daemon thread that sends stats to scheduler periodically. */
   void Daemon();
@@ -128,8 +125,8 @@ class BackendServer : public ServerBase {
 
   RdmaHandler rdma_handler_;
   ario::MemoryBlockAllocator small_buffers_;
-  ario::MemoryBlockAllocator large_buffers_;
   ario::RdmaManager rdma_;
+  RdmaSender rdma_sender_;
   std::thread rdma_ev_thread_;
 
   /*! \brief Interval to update stats to scheduler in seconds */

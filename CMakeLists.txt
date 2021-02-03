@@ -100,6 +100,7 @@ add_library(common OBJECT
         src/nexus/common/message.cpp
         src/nexus/common/metric.cpp
         src/nexus/common/model_db.cpp
+        src/nexus/common/rdma_sender.cpp
         src/nexus/common/server_base.cpp
         src/nexus/common/sleep_profile.cpp
         src/nexus/common/time_util.cpp
@@ -140,7 +141,6 @@ add_executable(dispatcher
         src/nexus/dispatcher/dispatcher.cpp
         src/nexus/dispatcher/dispatcher_main.cpp
         src/nexus/dispatcher/frontend_delegate.cpp
-        src/nexus/dispatcher/rpc_service.cpp
         src/nexus/dispatcher/session_context.cpp)
 target_include_directories(dispatcher PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src

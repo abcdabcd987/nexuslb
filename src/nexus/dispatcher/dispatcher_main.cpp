@@ -5,10 +5,8 @@
 #include "nexus/common/util.h"
 #include "nexus/dispatcher/dispatcher.h"
 
-DEFINE_string(port, "7001", "Server port");
-DEFINE_string(rpc_port, "7002", "RPC port");
-DEFINE_int32(udp_port, DISPATCHER_RPC_DEFAULT_PORT, "UDP RPC server port");
-DEFINE_int32(udp_threads, 1, "Number of threads for UDP RPC servers");
+DEFINE_string(rdma_dev, "", "RDMA device name");
+DEFINE_uint32(port, 7001, "TCP port used to setup RDMA connection.");
 DEFINE_string(udp_threads_pin_cpus, "",
               "Pin udp threads to the CPUs specified by the list. The list "
               "should contain exactly twice elements as the `-udp_thread`. "
@@ -41,7 +39,7 @@ int main(int argc, char** argv) {
   google::ParseCommandLineFlags(&argc, &argv, true);
   google::InstallFailureSignalHandler();
   auto cores = ParseCores(FLAGS_udp_threads_pin_cpus);
-  nexus::dispatcher::Dispatcher dispatcher(FLAGS_rpc_port, FLAGS_udp_port,
-                                           FLAGS_udp_threads, std::move(cores));
+  nexus::dispatcher::Dispatcher dispatcher(FLAGS_rdma_dev, FLAGS_port,
+                                           std::move(cores));
   dispatcher.Run();
 }

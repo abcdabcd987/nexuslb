@@ -17,90 +17,63 @@
 #include <utility>
 
 #include "nexus/common/connection.h"
+#include "nexus/common/rdma_sender.h"
 #include "nexus/common/server_base.h"
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/delayed_scheduler.h"
-#include "nexus/dispatcher/rpc_service.h"
 #include "nexus/proto/control.pb.h"
 
 namespace nexus {
 namespace dispatcher {
 
-class Dispatcher;
 class FrontendDelegate;
 class BackendDelegate;
 class ModelSessionContext;
 
-struct RequestContext {
-  std::array<uint8_t, 1400> buf;
-  size_t len;
-  boost::asio::ip::udp::endpoint endpoint;
-};
-
-class UdpRpcServer {
- public:
-  UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher, int rx_cpu,
-               int worker_cpu);
-  ~UdpRpcServer();
-  void Run();
-  void Stop();
-  void SendDispatchReply(boost::asio::ip::udp::endpoint endpoint,
-                         const DispatchReply& reply);
-
- private:
-  void AsyncReceive();
-  void WorkerThread();
-  void HandleRequest(std::unique_ptr<RequestContext> ctx);
-
-  const int udp_rpc_port_;
-  const int rx_cpu_;
-  const int worker_cpu_;
-  // TODO: refactor
-  Dispatcher* const dispatcher_;
-
-  boost::asio::io_context io_context_;
-  boost::asio::ip::udp::socket rx_socket_;
-  boost::asio::ip::udp::socket tx_socket_;
-  std::thread worker_thread_;
-  std::atomic<bool> running_{false};
-
-  std::mutex queue_mutex_;
-  std::condition_variable queue_cv_;
-  std::deque<std::unique_ptr<RequestContext>> queue_;
-  std::unique_ptr<RequestContext> incoming_request_;
-  // TODO: memory pool maybe?
-};
-
 class Dispatcher {
  public:
-  Dispatcher(std::string rpc_port, int udp_port, int num_udp_threads,
-             std::vector<int> pin_cpus);
-
+  Dispatcher(std::string rdma_dev, uint16_t port, std::vector<int> pin_cpus);
   virtual ~Dispatcher();
 
   void Run();
-
   void Stop();
 
-  CtrlStatus DispatchRequest(QueryProto query_without_input,
-                             boost::asio::ip::udp::endpoint frontend_endpoint);
-
-  // gRPC handlers
-
-  void HandleRegister(const grpc::ServerContext& ctx,
-                      const RegisterRequest& request, RegisterReply* reply);
-  void HandleUnregister(const grpc::ServerContext& ctx,
-                        const UnregisterRequest& request, RpcReply* reply);
-  void HandleLoadModel(const grpc::ServerContext& ctx,
-                       const LoadModelRequest& request, LoadModelReply* reply);
-  void HandleKeepAlive(const grpc::ServerContext& ctx,
-                       const KeepAliveRequest& request, RpcReply* reply);
-
  private:
+  class RdmaHandler : public ario::RdmaEventHandler {
+   public:
+    void OnConnected(ario::RdmaQueuePair* conn) override;
+    void OnRemoteMemoryRegionReceived(ario::RdmaQueuePair* conn, uint64_t addr,
+                                      size_t size) override;
+    void OnRdmaReadComplete(ario::RdmaQueuePair* conn,
+                            ario::OwnedMemoryBlock buf) override;
+    void OnRecv(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) override;
+    void OnSent(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) override;
+    void OnError(ario::RdmaQueuePair* conn, ario::RdmaError error) override;
+
+   private:
+    friend class Dispatcher;
+    explicit RdmaHandler(Dispatcher& outer);
+    Dispatcher& outer_;
+  };
+
+  void HandleDispatch(DispatchRequest* request, DispatchReply* reply,
+                      long dispatcher_recv_ns);
+  void HandleRegister(ario::RdmaQueuePair* conn, const RegisterRequest& request,
+                      RegisterReply* reply);
+  void HandleUnregister(const UnregisterRequest& request, RpcReply* reply);
+  void HandleLoadModel(const LoadModelRequest& request, LoadModelReply* reply);
+  void HandleKeepAlive(const KeepAliveRequest& request, RpcReply* reply);
+
   friend class DispatcherAccessor;
-  const int udp_port_;
-  const int num_udp_threads_;
+  std::string rdma_dev_;
+  uint16_t tcp_server_port_;
   const std::vector<int> pin_cpus_;
+
+  RdmaHandler rdma_handler_;
+  ario::MemoryBlockAllocator small_buffers_;
+  ario::RdmaManager rdma_;
+  RdmaSender rdma_sender_;
+  std::thread rdma_ev_thread_;
 
   /*! \brief Indicator whether the dispatcher is running */
   std::atomic_bool running_;
@@ -108,8 +81,6 @@ class Dispatcher {
   uint32_t beacon_interval_sec_;
   /*! \brief Frontend node ID */
   NodeId node_id_;
-  /*! \brief RPC service */
-  RpcService rpc_service_;
   /*! \brief Mapping from frontend node id to frontend client */
   std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>>
       frontends_ /* GUARDED_BY(mutex_) */;
@@ -127,10 +98,6 @@ class Dispatcher {
 
   delayed::DelayedScheduler scheduler_;
   std::vector<std::thread> scheduler_threads_;
-
-  // UDP RPC Server
-  std::vector<std::thread> workers_;
-  std::vector<std::unique_ptr<UdpRpcServer>> udp_rpc_servers_;
 };
 
 }  // namespace dispatcher

@@ -6,31 +6,32 @@
 #include <cstdlib>
 #include <string>
 
-#include "nexus/proto/control.grpc.pb.h"
+#include "ario/ario.h"
+#include "nexus/common/rdma_sender.h"
+#include "nexus/proto/control.pb.h"
 
 namespace nexus {
 namespace dispatcher {
 class FrontendDelegate {
  public:
-  FrontendDelegate(uint32_t node_id, const std::string& ip,
-                   const std::string& server_port, const std::string& rpc_addr,
-                   int beacon_sec);
+  FrontendDelegate(uint32_t node_id, std::string ip, uint16_t port,
+                   int beacon_sec, ario::RdmaQueuePair* conn,
+                   RdmaSender rdma_sender);
 
   uint32_t node_id() const { return node_id_; }
 
   void Tick();
-  bool IsAlive();
-  void UpdateBackendList(const BackendListUpdates& request);
-  void MarkQueryDroppedByDispatcher(const DispatchReply& request);
+  void UpdateBackendList(BackendListUpdates&& request);
+  void MarkQueryDroppedByDispatcher(DispatchReply&& request);
 
  private:
   uint32_t node_id_;
   std::string ip_;
-  std::string server_port_;
-  std::string rpc_port_;
+  uint16_t port_;
   int beacon_sec_;
   long timeout_ms_;
-  std::unique_ptr<FrontendCtrl::Stub> stub_;
+  ario::RdmaQueuePair* conn_;
+  RdmaSender rdma_sender_;
   std::chrono::time_point<std::chrono::system_clock> last_time_;
 };
 

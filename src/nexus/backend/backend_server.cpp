@@ -34,8 +34,8 @@ BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
       rdma_dev_(std::move(rdma_dev)),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
-      large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
       rdma_(rdma_dev_, nullptr, &small_buffers_),
+      rdma_sender_(&small_buffers_),
       running_(false),
       rand_gen_(rd_()) {
 #ifdef USE_GPU
@@ -98,7 +98,8 @@ BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
     }
   }
   for (size_t i = 0; i < num_workers; ++i) {
-    std::unique_ptr<Worker> worker(new Worker(i, this, task_queue_));
+    std::unique_ptr<Worker> worker(
+        new Worker(i, this, rdma_sender_, task_queue_));
     if (cores.empty()) {
       worker->Start();
     } else {
@@ -195,7 +196,7 @@ void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
       BackendReply resp;
       auto* reply = resp.mutable_load_model();
       reply->set_status(CtrlStatus::CTRL_OK);
-      outer_.SendMessage(conn, resp);
+      outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
     case BackendRequest::RequestCase::kEnqueueQuery: {
@@ -208,19 +209,19 @@ void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
       auto* reply = resp.mutable_enqueue_query();
       reply->set_status(ok ? CtrlStatus::CTRL_OK
                            : CtrlStatus(task->result.status()));
-      outer_.SendMessage(conn, resp);
+      outer_.rdma_sender_.SendMessage(conn, resp);
     }
     case BackendRequest::RequestCase::kEnqueueBatchplan: {
       BackendReply resp;
       outer_.HandleEnqueueBatchPlan(req.enqueue_batchplan(),
                                     resp.mutable_enqueue_batchplan());
-      outer_.SendMessage(conn, resp);
+      outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
     case BackendRequest::RequestCase::kCheckAlive: {
       BackendReply resp;
       resp.mutable_check_alive()->set_status(CtrlStatus::CTRL_OK);
-      outer_.SendMessage(conn, resp);
+      outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
     case BackendRequest::RequestCase::kTellNodeId: {
@@ -270,16 +271,6 @@ void BackendServer::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
 
 void BackendServer::HandleAccept() {
   LOG(ERROR) << "Deprecated: BackendServer::HandleAccept";
-}
-
-void BackendServer::SendMessage(ario::RdmaQueuePair* conn,
-                                const google::protobuf::Message& message) {
-  auto buf = small_buffers_.Allocate();
-  auto view = buf.AsMessageView();
-  view.set_bytes_length(message.ByteSizeLong());
-  bool ok = message.SerializeToArray(view.bytes(), view.bytes_length());
-  CHECK(ok) << "BackendServer::SendMessage: failed to SerializeToArray";
-  conn->AsyncSend(std::move(buf));
 }
 
 void BackendServer::HandleFetchImageReply(FetchImageReply reply) {
@@ -410,7 +401,7 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
   req->set_global_id(global_id.t);
   VLOG(1) << "Send FetchImageRequest: global_id=" << global_id.t;
 
-  SendMessage(frontend_conn, request);
+  rdma_sender_.SendMessage(frontend_conn, request);
   return true;
 }
 

@@ -9,7 +9,6 @@
 #include <sys/socket.h>
 
 #include <algorithm>
-#include <boost/asio.hpp>
 #include <chrono>
 #include <sstream>
 
@@ -25,8 +24,6 @@
 #include "nexus/dispatcher/session_context.h"
 #include "nexus/proto/control.pb.h"
 
-using boost::asio::ip::udp;
-
 namespace {
 void PinCpu(pthread_t thread, int cpu) {
   cpu_set_t cpuset;
@@ -40,185 +37,17 @@ void PinCpu(pthread_t thread, int cpu) {
 namespace nexus {
 namespace dispatcher {
 
-UdpRpcServer::UdpRpcServer(int udp_rpc_port, Dispatcher* dispatcher, int rx_cpu,
-                           int worker_cpu)
-    : udp_rpc_port_(udp_rpc_port),
-      rx_cpu_(rx_cpu),
-      worker_cpu_(worker_cpu),
-      dispatcher_(dispatcher),
-      rx_socket_(io_context_),
-      tx_socket_(io_context_) {}
-
-UdpRpcServer::~UdpRpcServer() {
-  if (running_) {
-    LOG(WARNING) << "Calling Stop() in ~UdpRpcServer()";
-    Stop();
-  }
-}
-
-void UdpRpcServer::Run() {
-  rx_socket_.open(udp::v4());
-#ifdef SO_REUSEPORT
-  typedef boost::asio::detail::socket_option::boolean<SOL_SOCKET, SO_REUSEPORT>
-      reuse_port;
-  rx_socket_.set_option(reuse_port(true));
-#endif
-  rx_socket_.bind(udp::endpoint(udp::v4(), udp_rpc_port_));
-  tx_socket_.open(udp::v4());
-  tx_socket_.bind(udp::endpoint(udp::v4(), 0));
-
-  running_ = true;
-  worker_thread_ = std::thread(&UdpRpcServer::WorkerThread, this);
-  incoming_request_.reset(new RequestContext);
-  AsyncReceive();
-
-  // Pin cpu
-  std::stringstream ss;
-  ss << "UDP RPC server is listening on " << rx_socket_.local_endpoint();
-  if (rx_cpu_ >= 0) {
-    PinCpu(pthread_self(), rx_cpu_);
-    ss << " (pinned on CPU " << rx_cpu_ << ")";
-  }
-  ss << " and sending from " << tx_socket_.local_endpoint();
-  if (worker_cpu_ >= 0) {
-    PinCpu(worker_thread_.native_handle(), worker_cpu_);
-    ss << " (pinned on CPU " << worker_cpu_ << ")";
-  }
-  LOG(INFO) << ss.str();
-
-  // Block until done
-  io_context_.run();
-}
-
-void UdpRpcServer::Stop() {
-  running_ = false;
-  io_context_.stop();
-  rx_socket_.cancel();
-  tx_socket_.cancel();
-  worker_thread_.join();
-}
-
-void UdpRpcServer::AsyncReceive() {
-  rx_socket_.async_receive_from(
-      boost::asio::buffer(incoming_request_->buf), incoming_request_->endpoint,
-      [this](boost::system::error_code ec, size_t len) {
-        if (ec == boost::asio::error::operation_aborted) {
-          return;
-        }
-        if (ec || !len) {
-          AsyncReceive();
-          return;
-        }
-        incoming_request_->len = len;
-        {
-          std::unique_lock<std::mutex> lock(queue_mutex_);
-          queue_.emplace_back(std::move(incoming_request_));
-          queue_cv_.notify_one();
-        }
-        incoming_request_.reset(new RequestContext);
-        AsyncReceive();
-      });
-}
-
-void UdpRpcServer::WorkerThread() {
-  std::deque<std::unique_ptr<RequestContext>> q;
-  while (running_) {
-    // Move requests from the global queue to the local queue
-    {
-      std::unique_lock<std::mutex> lock(queue_mutex_);
-      if (queue_.empty()) {
-        // Wait on the CV only when the queue is empty.
-        // Hopefully this could reduce the times of context switching.
-        queue_cv_.wait(lock, [this] { return !queue_.empty(); });
-      }
-      while (!queue_.empty()) {
-        auto request = std::move(queue_.front());
-        queue_.pop_front();
-        q.emplace_back(std::move(request));
-      }
-    }
-
-    // Handle requests
-    while (!q.empty()) {
-      HandleRequest(std::move(q.front()));
-      q.pop_front();
-    }
-  }
-}
-
-namespace {
-
-int ns(const std::chrono::time_point<std::chrono::high_resolution_clock>& x,
-       const std::chrono::time_point<std::chrono::high_resolution_clock>& y) {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(y - x).count();
-}
-
-}  // namespace
-
-void UdpRpcServer::HandleRequest(std::unique_ptr<RequestContext> ctx) {
-  auto dispatcher_recv_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          Clock::now().time_since_epoch())
-          .count();
-  DispatchRequest request;
-  // Validate request
-  bool ok = request.ParseFromString(
-      std::string(ctx->buf.data(), ctx->buf.data() + ctx->len));
-  if (!ok) {
-    LOG_EVERY_N(ERROR, 128)
-        << "Bad request. Failed to ParseFromString. Total length = "
-        << ctx->len;
-    return;
-  }
-  auto client_endpoint = boost::asio::ip::udp::endpoint(ctx->endpoint.address(),
-                                                        request.udp_rpc_port());
-
-  // Handle request
-  DispatchReply reply;
-  *reply.mutable_model_session() = request.model_session();
-  reply.set_query_id(request.query_id());
-  QueryProto query;
-  query.Swap(request.mutable_query_without_input());
-  query.mutable_clock()->set_dispatcher_recv_ns(dispatcher_recv_ns);
-  auto status = dispatcher_->DispatchRequest(std::move(query), client_endpoint);
-
-  // Reply to the frontend.
-  reply.set_status(status);
-  SendDispatchReply(client_endpoint, reply);
-}
-
-void UdpRpcServer::SendDispatchReply(boost::asio::ip::udp::endpoint endpoint,
-                                     const DispatchReply& reply) {
-  // Send reply. I think using blocking APIs should be okay here?
-  auto msg = reply.SerializeAsString();
-  if (msg.empty()) {
-    LOG(ERROR) << "Failed to reply.SerializeAsString()";
-    return;
-  }
-
-  auto len = tx_socket_.send_to(boost::asio::buffer(msg), endpoint);
-  if (len != msg.size()) {
-    LOG(WARNING) << "UDP RPC server reply sent " << len << " bytes, expecting "
-                 << msg.size() << " bytes";
-  }
-}
-
-Dispatcher::Dispatcher(std::string rpc_port, int udp_port, int num_udp_threads,
+Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
                        std::vector<int> pin_cpus)
-    : udp_port_(udp_port),
-      num_udp_threads_(num_udp_threads),
+    : rdma_dev_(std::move(rdma_dev)),
+      tcp_server_port_(port),
       pin_cpus_(std::move(pin_cpus)),
-      rpc_service_(this, rpc_port, 1),
+      rdma_handler_(*this),
+      small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
+      rdma_(rdma_dev_, &rdma_handler_, &small_buffers_),
+      rdma_sender_(&small_buffers_),
       scheduler_(DispatcherAccessor(*this)) {
-#ifndef SO_REUSEPORT
-  CHECK_EQ(num_udp_threads, 1) << "SO_REUSEPORT is not supported. UDP RPC "
-                                  "server must be run in single threaded mode.";
-#endif
-  if (!pin_cpus_.empty()) {
-    CHECK_EQ(num_udp_threads_ * 2, pin_cpus_.size())
-        << "UDP RPC thread affinity settings should contain exactly twice the "
-           "number of thread.";
-  }
+  CHECK(!pin_cpus_.empty()) << "Currently CPU pinning is not supported.";
 }
 
 Dispatcher::~Dispatcher() {
@@ -230,17 +59,8 @@ Dispatcher::~Dispatcher() {
 void Dispatcher::Run() {
   running_ = true;
 
-  // Start RPC service
-  rpc_service_.Start();
-
-  // Run UDP RPC server
-  for (int i = 0; i < num_udp_threads_; ++i) {
-    int cpu1 = pin_cpus_.empty() ? -1 : pin_cpus_.at(i * 2);
-    int cpu2 = pin_cpus_.empty() ? -1 : pin_cpus_.at(i * 2 + 1);
-    udp_rpc_servers_.emplace_back(
-        new UdpRpcServer(udp_port_, this, cpu1, cpu2));
-    workers_.emplace_back(&UdpRpcServer::Run, udp_rpc_servers_.back().get());
-  }
+  rdma_.ListenTcp(tcp_server_port_);
+  rdma_ev_thread_ = std::thread(&ario::RdmaManager::RunEventLoop, &rdma_);
 
   // Start a single threaded scheduler.
   scheduler_threads_.emplace_back(&decltype(scheduler_)::RunAsWorker,
@@ -256,29 +76,105 @@ void Dispatcher::Stop() {
   LOG(INFO) << "Shutting down the dispatcher.";
   running_ = false;
 
-  // Stop RPC service
-  rpc_service_.Stop();
-
-  // Stop UDP RPC server
-  for (auto& server : udp_rpc_servers_) {
-    server->Stop();
-  }
-
-  // Stop scheduler.
+  // Stop everything
+  rdma_.StopEventLoop();
   scheduler_.Stop();
 
   // Join all threads.
-  for (auto& thread : workers_) {
-    thread.join();
-  }
   for (auto& thread : scheduler_threads_) {
     thread.join();
   }
+  rdma_ev_thread_.join();
 }
 
-CtrlStatus Dispatcher::DispatchRequest(
-    QueryProto query_without_input,
-    boost::asio::ip::udp::endpoint frontend_endpoint) {
+Dispatcher::RdmaHandler::RdmaHandler(Dispatcher& outer) : outer_(outer) {}
+
+void Dispatcher::RdmaHandler::OnConnected(ario::RdmaQueuePair* conn) {
+  // Do nothing
+}
+
+void Dispatcher::RdmaHandler::OnRemoteMemoryRegionReceived(
+    ario::RdmaQueuePair* conn, uint64_t addr, size_t size) {
+  // Do nothing.
+}
+
+void Dispatcher::RdmaHandler::OnRdmaReadComplete(ario::RdmaQueuePair* conn,
+                                                 ario::OwnedMemoryBlock buf) {
+  // Do nothing.
+}
+
+void Dispatcher::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
+                                     ario::OwnedMemoryBlock buf) {
+  auto dispatcher_recv_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
+  auto view = buf.AsMessageView();
+  DispatcherRequest req;
+  bool ok = req.ParseFromArray(view.bytes(), view.bytes_length());
+  if (!ok) {
+    LOG(ERROR) << "ParseFromArray failed";
+    return;
+  }
+  switch (req.request_case()) {
+    case DispatcherRequest::RequestCase::kRegister: {
+      DispatcherReply resp;
+      outer_.HandleRegister(conn, req.register_(), resp.mutable_register_());
+      outer_.rdma_sender_.SendMessage(conn, resp);
+      break;
+    }
+    case DispatcherRequest::RequestCase::kUnregister: {
+      DispatcherReply resp;
+      outer_.HandleUnregister(req.unregister(), resp.mutable_unregister());
+      outer_.rdma_sender_.SendMessage(conn, resp);
+      break;
+    }
+    case DispatcherRequest::RequestCase::kLoadModel: {
+      DispatcherReply resp;
+      outer_.HandleLoadModel(req.load_model(), resp.mutable_load_model());
+      outer_.rdma_sender_.SendMessage(conn, resp);
+      break;
+    }
+    case DispatcherRequest::RequestCase::kKeepAlive: {
+      DispatcherReply resp;
+      outer_.HandleKeepAlive(req.keep_alive(), resp.mutable_keep_alive());
+      outer_.rdma_sender_.SendMessage(conn, resp);
+      break;
+    }
+    case DispatcherRequest::RequestCase::kDispatch: {
+      DispatcherReply resp;
+      outer_.HandleDispatch(req.mutable_dispatch(), resp.mutable_dispatch(),
+                            dispatcher_recv_ns);
+      outer_.rdma_sender_.SendMessage(conn, resp);
+      break;
+    }
+    default: {
+      LOG(ERROR) << "Unknown DispatcherRequest::RequestCase: "
+                 << req.request_case();
+      return;
+    }
+  }
+}
+
+void Dispatcher::RdmaHandler::OnSent(ario::RdmaQueuePair* conn,
+                                     ario::OwnedMemoryBlock buf) {
+  // Do nothing.
+}
+
+void Dispatcher::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
+                                      ario::RdmaError error) {
+  LOG(ERROR) << "TODO: Dispatcher::RdmaHandler::OnError";
+}
+
+void Dispatcher::HandleDispatch(DispatchRequest* request, DispatchReply* reply,
+                                long dispatcher_recv_ns) {
+  *reply->mutable_model_session() = request->model_session();
+  reply->set_query_id(request->query_id());
+  QueryProto query_without_input;
+  query_without_input.Swap(request->mutable_query_without_input());
+  query_without_input.mutable_clock()->set_dispatcher_recv_ns(
+      dispatcher_recv_ns);
+
   // Update punch clock
   auto dispatcher_sched_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -293,21 +189,18 @@ CtrlStatus Dispatcher::DispatchRequest(
 
   // Enqueue query
   auto status = scheduler_.EnqueueQuery(std::move(query_without_input));
-  return status;
+  reply->set_status(status);
 }
 
-void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
+void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
                                 const RegisterRequest& request,
                                 RegisterReply* reply) {
-  std::vector<std::string> tokens;
-  SplitString(ctx.peer(), ':', &tokens);
-  std::string ip = tokens[1];
   LOG(INFO) << "Register server: " << request.DebugString();
   switch (request.node_type()) {
     case NodeType::FRONTEND_NODE: {
       auto frontend = std::make_shared<FrontendDelegate>(
-          request.node_id(), ip, request.server_port(), request.rpc_port(),
-          beacon_interval_sec_);
+          request.node_id(), conn->peer_ip(), conn->peer_tcp_port(),
+          beacon_interval_sec_, conn, rdma_sender_);
       {
         std::lock_guard<std::mutex> lock(mutex_);
         auto frontend_id = NodeId(frontend->node_id());
@@ -327,7 +220,7 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
         }
       }
       VLOG(1) << "Send UpdateBackendList: frontend_id=" << frontend->node_id();
-      frontend->UpdateBackendList(update);
+      frontend->UpdateBackendList(std::move(update));
       VLOG(1) << "Finish sending UpdateBackendList: frontend_id="
               << frontend->node_id();
 
@@ -338,9 +231,10 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
     }
     case NodeType::BACKEND_NODE: {
       auto backend = std::make_shared<BackendDelegate>(
-          request.node_id(), ip, request.server_port(), request.rpc_port(),
+          request.node_id(), conn->peer_ip(), conn->peer_tcp_port(),
           request.gpu_device_name(), request.gpu_uuid(),
-          request.gpu_available_memory(), beacon_interval_sec_);
+          request.gpu_available_memory(), beacon_interval_sec_, conn,
+          rdma_sender_);
       auto backend_id = NodeId(backend->node_id());
       std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
           sessions;
@@ -390,7 +284,7 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
       for (auto iter : frontends) {
         VLOG(1) << "UpdateBackendList (adding backend_id=" << backend->node_id()
                 << "): frontend_id=" << iter.second->node_id();
-        iter.second->UpdateBackendList(update);
+        iter.second->UpdateBackendList(std::move(update));
         VLOG(1) << "Finish UpdateBackendList (adding backend_id="
                 << backend->node_id()
                 << "): frontend_id=" << iter.second->node_id();
@@ -408,8 +302,7 @@ void Dispatcher::HandleRegister(const grpc::ServerContext& ctx,
   }
 }
 
-void Dispatcher::HandleUnregister(const grpc::ServerContext& ctx,
-                                  const UnregisterRequest& request,
+void Dispatcher::HandleUnregister(const UnregisterRequest& request,
                                   RpcReply* reply) {
   // TODO
   LOG(ERROR) << "HandleUnregister not implemented. Request: "
@@ -417,8 +310,7 @@ void Dispatcher::HandleUnregister(const grpc::ServerContext& ctx,
   reply->set_status(CtrlStatus::CTRL_OK);
 }
 
-void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
-                                 const LoadModelRequest& request,
+void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
                                  LoadModelReply* reply) {
   auto model_info = ModelDatabase::Singleton().GetModelInfo(
       ModelSessionToModelID(request.model_session()));
@@ -473,8 +365,7 @@ void Dispatcher::HandleLoadModel(const grpc::ServerContext& ctx,
   }
 }
 
-void Dispatcher::HandleKeepAlive(const grpc::ServerContext& ctx,
-                                 const KeepAliveRequest& request,
+void Dispatcher::HandleKeepAlive(const KeepAliveRequest& request,
                                  RpcReply* reply) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto node_id = NodeId(request.node_id());

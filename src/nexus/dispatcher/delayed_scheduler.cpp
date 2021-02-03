@@ -299,7 +299,7 @@ void DelayedScheduler::WorkFullSchedule() {
                       dispatch_reply.mutable_model_session());
     dispatch_reply.set_query_id(qctx->proto.query_id());
     dispatch_reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
-    frontend->MarkQueryDroppedByDispatcher(dispatch_reply);
+    frontend->MarkQueryDroppedByDispatcher(std::move(dispatch_reply));
   }
   VLOG(1) << "WorkFullSchedule: done";
 }
@@ -528,7 +528,7 @@ void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
   }
   // Send to backend
   VLOG(1) << "WorkFinalizePlan: send to backend.";
-  delegate->EnqueueBatchPlan(proto);
+  delegate->EnqueueBatchPlan(std::move(proto));
   VLOG(1) << "WorkFinalizePlan: done.";
 }
 

@@ -12,10 +12,11 @@
 namespace nexus {
 namespace backend {
 
-Worker::Worker(int index, BackendServer* server,
+Worker::Worker(int index, BackendServer* server, RdmaSender rdma_sender,
                BlockPriorityQueue<Task>& task_queue)
     : index_(index),
       server_(server),
+      rdma_sender_(rdma_sender),
       task_queue_(task_queue),
       running_(false) {}
 
@@ -120,7 +121,7 @@ void Worker::SendReply(std::shared_ptr<Task> task) {
   BackendReply resp;
   // TODO: avoid copy.
   resp.mutable_query_result()->CopyFrom(task->result);
-  server_->SendMessage(task->connection, resp);
+  rdma_sender_.SendMessage(task->connection, resp);
 }
 
 }  // namespace backend

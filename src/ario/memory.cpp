@@ -1,5 +1,7 @@
 #include "ario/memory.h"
 
+#include <stdexcept>
+
 namespace ario {
 
 MemoryBlockAllocator::MemoryBlockAllocator() {}
@@ -92,6 +94,36 @@ void MemoryBlockAllocator::Free(OwnedMemoryBlock &&block) {
   block.allocator_ = nullptr;
   block.data_ = nullptr;
   block.size_ = 0;
+}
+
+MessageView::MessageView(OwnedMemoryBlock &block) : block_(block) {}
+
+uint8_t *MessageView::buf() { return block_.data_; }
+
+MessageView::length_type MessageView::bytes_length() const {
+  return *reinterpret_cast<length_type *>(block_.data_);
+}
+
+MessageView::length_type MessageView::max_bytes_length() const {
+  return block_.size() - sizeof(length_type);
+}
+
+void MessageView::set_bytes_length(length_type bytes_length) {
+  if (bytes_length + sizeof(length_type) > block_.size()) {
+    throw std::out_of_range(
+        "bytes_length + sizeof(length_type) > block_.size()");
+  }
+  *reinterpret_cast<length_type *>(block_.data_) = bytes_length;
+}
+
+uint8_t *MessageView::bytes() { return &block_.data_[sizeof(length_type)]; }
+
+const uint8_t *MessageView::bytes() const {
+  return &block_.data_[sizeof(length_type)];
+}
+
+MessageView::length_type MessageView::total_length() const {
+  return sizeof(length_type) + bytes_length();
 }
 
 OwnedMemoryBlock::OwnedMemoryBlock()

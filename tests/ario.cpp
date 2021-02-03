@@ -32,6 +32,11 @@ class TestHandler : public RdmaEventHandler {
   }
 
   void OnSent(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {}
+
+  void OnError(RdmaQueuePair *conn, RdmaError error) override {
+    fprintf(stderr, "TestHandler::OnError. error=%d\n",
+            static_cast<int>(error));
+  }
 };
 
 class TestServerHandler : public TestHandler {
@@ -282,24 +287,24 @@ void ClientMain(int argc, char **argv) {
   test->WaitMemoryRegion();
 
   conn->AsyncRead(read_buf.Allocate(), 0, 1024);
-  auto read_data = test->WaitRead();
-  if (read_data.empty()) die("read_data.empty()");
-  auto read_view = read_data.AsMessageView();
-  auto msg_len = *reinterpret_cast<uint32_t *>(read_view.bytes());
-  std::string msg(read_view.bytes() + 4, read_view.bytes() + 4 + msg_len);
+  auto read1_data = test->WaitRead();
+  if (read1_data.empty()) die("read_data.empty()");
+  auto read1_view = read1_data.AsMessageView();
+  auto msg_len = *reinterpret_cast<uint32_t *>(read1_view.bytes());
+  std::string msg(read1_view.bytes() + 4, read1_view.bytes() + 4 + msg_len);
   fprintf(stderr,
-          "ClientMain: Read(mem[0:1024]). read_view.bytes_length()=%u. "
+          "ClientMain: Read(mem[0:1024]). read1_view.bytes_length()=%u. "
           "msg_len=%u. msg: %s\n",
-          read_view.bytes_length(), msg_len, msg.c_str());
+          read1_view.bytes_length(), msg_len, msg.c_str());
 
   size_t offset = 42 << 20;
   size_t rand_len = 1 << 20;
   conn->AsyncRead(read_buf.Allocate(), offset, rand_len);
-  read_data = test->WaitRead();
-  read_view = read_data.AsMessageView();
+  auto read2_data = test->WaitRead();
+  auto read2_view = read2_data.AsMessageView();
   uint64_t sum = 0;
-  for (size_t i = 0; i < read_view.bytes_length(); ++i) {
-    sum += read_view.bytes()[i];
+  for (size_t i = 0; i < read2_view.bytes_length(); ++i) {
+    sum += read2_view.bytes()[i];
   }
   fprintf(stderr, "ClientMain: mem[%lu:%lu].sum()=%lu\n", offset,
           offset + rand_len, sum);

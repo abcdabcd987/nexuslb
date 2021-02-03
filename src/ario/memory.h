@@ -63,20 +63,23 @@ class MemoryBlockAllocator {
 
 class MessageView {
  public:
-  explicit MessageView(uint8_t *buf) : buf_(buf) {}
+  explicit MessageView(OwnedMemoryBlock &block);
+  MessageView(const MessageView &other) = delete;
+  MessageView &operator=(const MessageView &other) = delete;
+  MessageView(MessageView &&other) = delete;
+  MessageView &operator=(MessageView &&other) = delete;
+
   using length_type = uint32_t;
-  uint8_t *buf() { return buf_; }
-  length_type bytes_length() const {
-    return *reinterpret_cast<length_type *>(buf_);
-  }
-  void set_bytes_length(length_type bytes_length) {
-    *reinterpret_cast<length_type *>(buf_) = bytes_length;
-  }
-  uint8_t *bytes() { return &buf_[sizeof(length_type)]; }
-  length_type total_length() { return sizeof(length_type) + bytes_length(); }
+  uint8_t *buf();
+  length_type bytes_length() const;
+  length_type max_bytes_length() const;
+  void set_bytes_length(length_type bytes_length);
+  uint8_t *bytes();
+  const uint8_t *bytes() const;
+  length_type total_length() const;
 
  private:
-  uint8_t *buf_;
+  OwnedMemoryBlock &block_;
 };
 
 class OwnedMemoryBlock {
@@ -110,13 +113,14 @@ class OwnedMemoryBlock {
     return allocator_->rdma_lkey();
   }
 
-  MessageView AsMessageView() const {
+  MessageView AsMessageView() {
     EnsureNonEmpty();
-    return MessageView(data_);
+    return MessageView(*this);
   }
 
  private:
   friend class MemoryBlockAllocator;
+  friend class MessageView;
   OwnedMemoryBlock(MemoryBlockAllocator *allocator, uint8_t *data, size_t size);
 
   void EnsureNonEmpty() const {

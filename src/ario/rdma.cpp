@@ -1,5 +1,7 @@
 #include "ario/rdma.h"
 
+#include <cstdio>
+
 #include "ario/utils.h"
 
 namespace ario {
@@ -127,6 +129,10 @@ RdmaQueuePair::RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp)
 
 RdmaQueuePair::~RdmaQueuePair() {
   if (qp_) ibv_destroy_qp(qp_);
+}
+
+void RdmaQueuePair::Shutdown() {
+  fprintf(stderr, "TODO: RdmaQueuePair::Shutdown\n");
 }
 
 void RdmaManager::BuildProtectionDomain() {

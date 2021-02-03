@@ -49,6 +49,10 @@ struct RdmaManagerMessage {
 
 class RdmaQueuePair;
 
+enum class RdmaError {
+  kDisconnect,
+};
+
 class RdmaEventHandler {
  public:
   virtual void OnConnected(RdmaQueuePair *conn) = 0;
@@ -58,6 +62,7 @@ class RdmaEventHandler {
                                   OwnedMemoryBlock buf) = 0;
   virtual void OnRecv(RdmaQueuePair *conn, OwnedMemoryBlock buf) = 0;
   virtual void OnSent(RdmaQueuePair *conn, OwnedMemoryBlock buf) = 0;
+  virtual void OnError(RdmaQueuePair *conn, RdmaError error) = 0;
 };
 
 enum class PollerType {
@@ -169,6 +174,10 @@ class RdmaQueuePair {
   ~RdmaQueuePair();
   void AsyncSend(OwnedMemoryBlock buf);
   void AsyncRead(OwnedMemoryBlock buf, size_t offset, size_t length);
+  void Shutdown();
+
+  uint64_t tag() const { return tag_; }
+  void set_tag(uint64_t tag) { tag_ = tag; }
 
  private:
   friend class RdmaManager;
@@ -195,6 +204,7 @@ class RdmaQueuePair {
   ibv_qp *qp_ = nullptr;
 
   RemoteMemoryRegion remote_mr_{};
+  uint64_t tag_ = 0;
 };
 
 }  // namespace ario

@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_set>
 
+#include "ario/rdma.h"
 #include "nexus/backend/gpu_executor.h"
 #include "nexus/backend/share_prefix_model.h"
 #include "nexus/backend/tf_share_model.h"
@@ -25,13 +26,17 @@ DEFINE_int32(occupancy_valid, 10, "Backup backend occupancy valid time in ms");
 namespace nexus {
 namespace backend {
 
-BackendServer::BackendServer(std::string port, std::string rpc_port,
+BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
                              std::string sch_addr, int gpu_id,
                              size_t num_workers, std::vector<int> cores)
-    : ServerBase(port),
+    : ServerBase(std::to_string(port)),
       gpu_id_(gpu_id),
+      rdma_dev_(std::move(rdma_dev)),
+      rdma_handler_(*this),
+      small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
+      large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
+      rdma_(rdma_dev_, nullptr, &small_buffers_),
       running_(false),
-      rpc_service_(this, rpc_port),
       rand_gen_(rd_()) {
 #ifdef USE_GPU
   auto* gpu = DeviceManager::Singleton().GetGPUDevice(gpu_id_);
@@ -49,16 +54,19 @@ BackendServer::BackendServer(std::string port, std::string rpc_port,
   gpu_memory_ = 0;
 #endif
 
-  // Start RPC service
-  rpc_service_.Start();
+  rdma_.ListenTcp(port);
+
   // Init scheduler client
-  if (sch_addr.find(':') == std::string::npos) {
-    // Add default scheduler port if no port specified
-    sch_addr += ":" + std::to_string(SCHEDULER_DEFAULT_PORT);
+  uint16_t sch_port;
+  auto sch_colon_idx = sch_addr.find(':');
+  if (sch_colon_idx == std::string::npos) {
+    sch_port = SCHEDULER_DEFAULT_PORT;
+  } else {
+    sch_port = std::stoi(sch_addr.substr(sch_colon_idx + 1));
+    sch_addr.resize(sch_colon_idx - 1);
   }
-  auto channel =
-      grpc::CreateChannel(sch_addr, grpc::InsecureChannelCredentials());
-  sch_stub_ = DispatcherCtrl::NewStub(channel);
+  rdma_.ConnectTcp(sch_addr, sch_port);
+  rdma_ev_thread_ = std::thread(&ario::RdmaManager::RunEventLoop, &rdma_);
 
   // Init GPU executor
   LOG(INFO) << "Using PlanFollower as GpuExecutor";
@@ -125,17 +133,16 @@ void BackendServer::Stop() {
   Unregister();
   // Stop accept new connections
   ServerBase::Stop();
+  rdma_.StopEventLoop();
   // Stop all frontend connections
   for (auto conn : all_connections_) {
-    conn->Stop();
+    conn->Shutdown();
   }
   all_connections_.clear();
   node_connections_.clear();
   map_connection_nodeid_.clear();
-#ifdef USE_GPU
-  // Stop GPU executor
+
   gpu_executor_->Stop();
-#endif
   // Stop workers
   for (auto& worker : workers_) {
     worker->Stop();
@@ -148,67 +155,131 @@ void BackendServer::Stop() {
   if (model_table_thread_.joinable()) {
     model_table_thread_.join();
   }
-  // Stop RPC service
-  rpc_service_.Stop();
+  rdma_ev_thread_.join();
+
   LOG(INFO) << "Backend server stopped";
 }
 
-void BackendServer::HandleAccept() {
-  VLOG(1) << "HandleAccept";
-  std::lock_guard<std::mutex> lock(mu_connections_);
-  auto conn = std::make_shared<Connection>(std::move(socket_), this);
-  all_connections_.insert(conn);
-  conn->Start();
+BackendServer::RdmaHandler::RdmaHandler(BackendServer& outer) : outer_(outer) {}
+
+void BackendServer::RdmaHandler::OnConnected(ario::RdmaQueuePair* conn) {
+  VLOG(1) << "BackendServer::RdmaHandler::OnConnected";
+  std::lock_guard<std::mutex> lock(outer_.mu_connections_);
+  outer_.all_connections_.insert(conn);
 }
 
-void BackendServer::HandleConnected(std::shared_ptr<Connection> conn) {
+void BackendServer::RdmaHandler::OnRemoteMemoryRegionReceived(
+    ario::RdmaQueuePair* conn, uint64_t addr, size_t size) {
+  // Do nothing for now. TODO
+}
+
+void BackendServer::RdmaHandler::OnRdmaReadComplete(
+    ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) {
+  LOG(FATAL)
+      << "NotImplemented: BackendServer::RdmaHandler::OnRdmaReadComplete";
+}
+
+void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
+                                        ario::OwnedMemoryBlock buf) {
+  auto view = buf.AsMessageView();
+  BackendRequest req;
+  bool ok = req.ParseFromArray(view.bytes(), view.bytes_length());
+  if (!ok) {
+    LOG(ERROR) << "ParseFromArray failed";
+    return;
+  }
+  switch (req.request_case()) {
+    case BackendRequest::RequestCase::kLoadModel: {
+      outer_.LoadModelEnqueue(req.load_model());
+
+      BackendReply resp;
+      auto* reply = resp.mutable_load_model();
+      reply->set_status(CtrlStatus::CTRL_OK);
+      outer_.SendMessage(conn, resp);
+      break;
+    }
+    case BackendRequest::RequestCase::kEnqueueQuery: {
+      const auto& msg = req.enqueue_query();
+      auto task = std::make_shared<Task>(nullptr);
+      task->SetQuery(msg.query_without_input());
+      bool ok = outer_.EnqueueQuery(task);
+
+      BackendReply resp;
+      auto* reply = resp.mutable_enqueue_query();
+      reply->set_status(ok ? CtrlStatus::CTRL_OK
+                           : CtrlStatus(task->result.status()));
+      outer_.SendMessage(conn, resp);
+    }
+    case BackendRequest::RequestCase::kEnqueueBatchplan: {
+      BackendReply resp;
+      outer_.HandleEnqueueBatchPlan(req.enqueue_batchplan(),
+                                    resp.mutable_enqueue_batchplan());
+      outer_.SendMessage(conn, resp);
+      break;
+    }
+    case BackendRequest::RequestCase::kCheckAlive: {
+      BackendReply resp;
+      resp.mutable_check_alive()->set_status(CtrlStatus::CTRL_OK);
+      outer_.SendMessage(conn, resp);
+      break;
+    }
+    case BackendRequest::RequestCase::kTellNodeId: {
+      const auto& msg = req.tell_node_id();
+      auto node_id = NodeId(msg.node_id());
+      VLOG(1) << "kConnFrontBack: frontend_id=" << node_id.t;
+      outer_.node_connections_[node_id] = conn;
+      outer_.map_connection_nodeid_[conn] = node_id;
+      break;
+    }
+    case BackendRequest::RequestCase::kFetchImageReply: {
+      // TODO: replace with READ
+      auto* msg = req.mutable_fetch_image_reply();
+      outer_.HandleFetchImageReply(std::move(*msg));
+      break;
+    }
+    default: {
+      LOG(ERROR) << "Unknown BackendRequest::RequestCase: "
+                 << req.request_case();
+      return;
+    }
+  }
+}
+
+void BackendServer::RdmaHandler::OnSent(ario::RdmaQueuePair* conn,
+                                        ario::OwnedMemoryBlock buf) {
   // Do nothing.
 }
 
-void BackendServer::HandleMessage(std::shared_ptr<Connection> conn,
-                                  std::shared_ptr<Message> message) {
-  switch (message->type()) {
-    case kConnFrontBack: {
-      TellNodeIdMessage msg;
-      message->DecodeBody(&msg);
-      auto node_id = NodeId(msg.node_id());
-      VLOG(1) << "kConnFrontBack: frontend_id=" << node_id.t;
-      node_connections_[node_id] = conn;
-      map_connection_nodeid_[conn] = node_id;
-      break;
-    }
-    case kBackendRelayReply: {
-      std::static_pointer_cast<BackupClient>(conn)->Reply(std::move(message));
-      break;
-    }
-    case kFetchImageReply: {
-      FetchImageReply reply;
-      message->DecodeBody(&reply);
-      HandleFetchImageReply(std::move(reply));
-      break;
-    }
-    default:
-      LOG(ERROR) << "Wrong message type: " << message->type();
-  }
-}
-
-void BackendServer::HandleError(std::shared_ptr<Connection> conn,
-                                boost::system::error_code ec) {
-  if (ec == boost::asio::error::eof ||
-      ec == boost::asio::error::connection_reset) {
+void BackendServer::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
+                                         ario::RdmaError error) {
+  if (error == ario::RdmaError::kDisconnect) {
     LOG(INFO) << "Frontend disconnected.";
     // frontend disconnects
   } else {
-    LOG(ERROR) << "Connection error (" << ec << "): " << ec.message();
+    LOG(ERROR) << "Connection error.";
   }
-  std::lock_guard<std::mutex> lock(mu_connections_);
-  auto iter = map_connection_nodeid_.find(conn);
-  if (iter != map_connection_nodeid_.end()) {
-    node_connections_.erase(iter->second);
-    map_connection_nodeid_.erase(iter);
+  std::lock_guard<std::mutex> lock(outer_.mu_connections_);
+  auto iter = outer_.map_connection_nodeid_.find(conn);
+  if (iter != outer_.map_connection_nodeid_.end()) {
+    outer_.node_connections_.erase(iter->second);
+    outer_.map_connection_nodeid_.erase(iter);
   }
-  all_connections_.erase(conn);
-  conn->Stop();
+  outer_.all_connections_.erase(conn);
+  conn->Shutdown();
+}
+
+void BackendServer::HandleAccept() {
+  LOG(ERROR) << "Deprecated: BackendServer::HandleAccept";
+}
+
+void BackendServer::SendMessage(ario::RdmaQueuePair* conn,
+                                const google::protobuf::Message& message) {
+  auto buf = small_buffers_.Allocate();
+  auto view = buf.AsMessageView();
+  view.set_bytes_length(message.ByteSizeLong());
+  bool ok = message.SerializeToArray(view.bytes(), view.bytes_length());
+  CHECK(ok) << "BackendServer::SendMessage: failed to SerializeToArray";
+  conn->AsyncSend(std::move(buf));
 }
 
 void BackendServer::HandleFetchImageReply(FetchImageReply reply) {
@@ -290,22 +361,12 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   // LOG(INFO) << "Duty cycle: " << duty_cycle << " us";
 }
 
-void BackendServer::HandleEnqueueQuery(const grpc::ServerContext&,
-                                       const EnqueueQueryCommand& req,
-                                       RpcReply* reply) {
-  auto task = std::make_shared<Task>(nullptr);
-  task->SetQuery(req.query_without_input());
-  bool ok = EnqueueQuery(task);
-  reply->set_status(ok ? CtrlStatus::CTRL_OK
-                       : CtrlStatus(task->result.status()));
-}
-
 bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
   VLOG(1) << "EnqueueQuery: frontend_id=" << task->query.frontend_id()
           << ", model_session=" << task->query.model_session_id()
           << ", query_id=" << task->query.query_id()
           << ", global_id=" << task->query.global_id();
-  std::shared_ptr<Connection> frontend_conn;
+  ario::RdmaQueuePair* frontend_conn;
   {
     auto frontend_id = NodeId(task->query.frontend_id());
     auto iter = node_connections_.find(frontend_id);
@@ -342,20 +403,18 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
           .count();
   task->query.mutable_clock()->set_backend_fetch_image_ns(
       backend_fetch_image_ns);
-  FetchImageRequest request;
-  *request.mutable_model_session_id() = task->query.model_session_id();
-  request.set_query_id(task->query.query_id());
-  request.set_global_id(global_id.t);
+  FrontendRequest request;
+  auto* req = request.mutable_fetch_image();
+  *req->mutable_model_session_id() = task->query.model_session_id();
+  req->set_query_id(task->query.query_id());
+  req->set_global_id(global_id.t);
   VLOG(1) << "Send FetchImageRequest: global_id=" << global_id.t;
-  auto msg = std::make_shared<Message>(MessageType::kFetchImageRequest,
-                                       request.ByteSizeLong());
-  msg->EncodeBody(request);
-  frontend_conn->Write(std::move(msg));
+
+  SendMessage(frontend_conn, request);
   return true;
 }
 
-void BackendServer::HandleEnqueueBatchPlan(const grpc::ServerContext&,
-                                           const BatchPlanProto& req,
+void BackendServer::HandleEnqueueBatchPlan(const BatchPlanProto& req,
                                            RpcReply* reply) {
   auto backend_recv_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                              Clock::now().time_since_epoch())
@@ -427,11 +486,6 @@ BackendServer::ModelTable BackendServer::GetModelTable() {
   return model_table_;
 }
 
-std::shared_ptr<BackupClient> BackendServer::GetBackupClient(
-    uint32_t backend_id) {
-  return nullptr;
-}
-
 void BackendServer::Daemon() {
   while (running_) {
     auto next_time = Clock::now() + std::chrono::seconds(beacon_interval_sec_);
@@ -483,7 +537,6 @@ void BackendServer::Register() {
   request.set_node_type(BACKEND_NODE);
   request.set_node_id(node_id_);
   request.set_server_port(port());
-  request.set_rpc_port(rpc_service_.port());
   request.set_gpu_device_name(gpu_name_);
   request.set_gpu_uuid(gpu_uuid_);
   request.set_gpu_available_memory(gpu_memory_);

@@ -17,8 +17,9 @@
 using namespace nexus;
 using namespace nexus::backend;
 
-DEFINE_string(port, std::to_string(BACKEND_DEFAULT_PORT), "server port");
-DEFINE_string(rpc_port, std::to_string(BACKEND_DEFAULT_RPC_PORT), "RPC port");
+DEFINE_string(rdma_dev, "", "RDMA device name");
+DEFINE_uint32(port, BACKEND_DEFAULT_PORT,
+              "TCP port used to setup RDMA connection.");
 DEFINE_string(sch_addr, "127.0.0.1",
               "scheduler IP address "
               "(use default port 10001 if no port specified)");
@@ -70,8 +71,8 @@ int main(int argc, char **argv) {
   // Setup backtrace on segfault
   google::InstallFailureSignalHandler();
   // Decide server IP address
-  LOG(INFO) << "Backend server: port " << FLAGS_port << ", rpc port "
-            << FLAGS_rpc_port << ", workers " << FLAGS_num_workers << ", gpu "
+  LOG(INFO) << "Backend server: rdma_dev " << FLAGS_rdma_dev << ", port "
+            << FLAGS_port << ", workers " << FLAGS_num_workers << ", gpu "
             << FLAGS_gpu;
   // Initialize _Hack_Images
   {
@@ -81,7 +82,7 @@ int main(int argc, char **argv) {
   }
   // Create the backend server
   std::vector<int> cores = ParseCores(FLAGS_cores);
-  BackendServer server(FLAGS_port, FLAGS_rpc_port, FLAGS_sch_addr, FLAGS_gpu,
+  BackendServer server(FLAGS_rdma_dev, FLAGS_port, FLAGS_sch_addr, FLAGS_gpu,
                        FLAGS_num_workers, cores);
   server_ptr = &server;
   server.Run();

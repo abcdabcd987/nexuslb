@@ -17,19 +17,59 @@ service SchedulerCtrl {
 service FrontendCtrl {
   rpc UpdateModelRoutes(ModelRouteUpdates) returns (RpcReply) {}
   rpc CheckAlive(CheckAliveRequest) returns (RpcReply) {}
-
   rpc UpdateBackendList(BackendListUpdates) returns (RpcReply) {}
   rpc MarkQueryDroppedByDispatcher(DispatchReply) returns (RpcReply) {}
+}
+
+message FrontendRequest {
+  uint64 req_id = 1;
+  oneof request {
+    CheckAliveRequest check_alive = 11;
+    BackendListUpdates update_backend_list = 12;
+    DispatchReply mark_query_dropped = 13;
+    FetchImageRequest fetch_image = 14;
+  }
+}
+
+message FrontendReply {
+  uint64 req_id = 1;
+  oneof reply {
+    RpcReply check_alive = 11;
+    RpcReply update_backend_list = 12;
+    RpcReply mark_query_dropped = 13;
+  }
 }
 
 service BackendCtrl {
   rpc UpdateModelTable(ModelTableConfig) returns (RpcReply) {}
   rpc CheckAlive(CheckAliveRequest) returns (RpcReply) {}
   rpc CurrentUtilization(UtilizationRequest) returns (UtilizationReply) {}
-
   rpc LoadModel(BackendLoadModelCommand) returns (RpcReply) {}
   rpc EnqueueQuery(EnqueueQueryCommand) returns (RpcReply) {}
   rpc EnqueueBatchPlan(BatchPlanProto) returns (RpcReply) {}
+}
+
+message BackendRequest {
+  uint64 req_id = 1;
+  oneof request {
+    BackendLoadModelCommand load_model = 11;
+    EnqueueQueryCommand enqueue_query = 12;
+    BatchPlanProto enqueue_batchplan = 13;
+    CheckAliveRequest check_alive = 14;
+    TellNodeIdMessage tell_node_id = 15;
+    FetchImageReply fetch_image_reply = 16; // TODO: replace with READ
+  }
+}
+
+message BackendReply {
+  uint64 req_id = 1;
+  oneof reply {
+    RpcReply load_model = 11;
+    RpcReply enqueue_query = 12;
+    RpcReply enqueue_batchplan = 13;
+    RpcReply check_alive = 14;
+    QueryResultProto query_result = 15;
+  }
 }
 
 service DispatcherCtrl {
@@ -37,6 +77,26 @@ service DispatcherCtrl {
   rpc Unregister(UnregisterRequest) returns (RpcReply) {}
   rpc LoadModel(LoadModelRequest) returns (LoadModelReply) {}
   rpc KeepAlive(KeepAliveRequest) returns (RpcReply) {}
+}
+
+message DispatcherRequest {
+  uint64 req_id = 1;
+  oneof request {
+    RegisterRequest register = 11;
+    UnregisterRequest unregister = 12;
+    LoadModelRequest load_model = 13;
+    KeepAliveRequest keep_alive = 14;
+  }
+}
+
+message DispatcherReply {
+  uint64 req_id = 1;
+  oneof reply {
+    RegisterReply register = 11;
+    RpcReply unregister = 12;
+    LoadModelReply load_model = 13;
+    RpcReply keep_alive = 14;
+  }
 }
 
 enum NodeType {

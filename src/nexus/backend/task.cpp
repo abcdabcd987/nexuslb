@@ -16,7 +16,7 @@ std::atomic<uint64_t> Task::global_task_id_(0);
 
 Task::Task() : Task(nullptr) {}
 
-Task::Task(std::shared_ptr<Connection> conn)
+Task::Task(ario::RdmaQueuePair* conn)
     : DeadlineItem(),
       connection(conn),
       model(nullptr),
@@ -26,9 +26,7 @@ Task::Task(std::shared_ptr<Connection> conn)
   timer.Record("begin");
 }
 
-void Task::SetConnection(std::shared_ptr<Connection> conn) {
-  connection = std::move(conn);
-}
+void Task::SetConnection(ario::RdmaQueuePair* conn) { connection = conn; }
 
 void Task::SetPlanId(PlanId plan_id) { this->plan_id = plan_id; }
 

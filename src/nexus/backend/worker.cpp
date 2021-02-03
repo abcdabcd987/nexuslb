@@ -7,6 +7,7 @@
 
 #include "nexus/backend/backend_server.h"
 #include "nexus/backend/model_ins.h"
+#include "nexus/proto/control.pb.h"
 
 namespace nexus {
 namespace backend {
@@ -75,28 +76,7 @@ void Worker::Process(std::shared_ptr<Task> task) {
         if (task->result.status() != CTRL_OK) {
           SendReply(std::move(task));
         } else {
-          // Relay to the request to backup servers
-          std::vector<uint32_t> backups = task->model->BackupBackends();
-          double min_util = 1.;
-          std::shared_ptr<BackupClient> best_backup = nullptr;
-          for (auto backend_id : backups) {
-            auto backup = server_->GetBackupClient(backend_id);
-            double util = backup->GetUtilization();
-            if (util < min_util) {
-              min_util = util;
-              best_backup = backup;
-            }
-          }
-          if (best_backup != nullptr) {
-            // LOG(INFO) << "Relay request " << task->query.model_session_id()
-            // <<
-            //     " to backup " << best_backup->node_id() <<
-            //     " with utilization " << min_util;
-            best_backup->Forward(std::move(task));
-          } else {
-            LOG(INFO) << "All backup servers are full";
-            task->model->Preprocess(task, true);
-          }
+          task->model->Preprocess(task, true);
         }
       }
       break;
@@ -137,9 +117,10 @@ void Worker::SendReply(std::shared_ptr<Task> task) {
   if (task->msg_type == kBackendRelay) {
     reply_type = kBackendRelayReply;
   }
-  auto msg = std::make_shared<Message>(reply_type, task->result.ByteSizeLong());
-  msg->EncodeBody(task->result);
-  task->connection->Write(std::move(msg));
+  BackendReply resp;
+  // TODO: avoid copy.
+  resp.mutable_query_result()->CopyFrom(task->result);
+  server_->SendMessage(task->connection, resp);
 }
 
 }  // namespace backend

@@ -39,6 +39,22 @@ ProcessorCount(NPROC)
 find_package(Threads REQUIRED)
 
 
+
+###### ario ######
+add_library(ario
+        src/ario/epoll.cpp
+        src/ario/memory.cpp
+        src/ario/rdma.cpp
+        src/ario/tcp.cpp
+        src/ario/utils.cpp)
+target_include_directories(ario PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(ario PUBLIC cxx_std_17)
+target_link_libraries(ario PRIVATE Threads::Threads)
+target_link_libraries(ario PRIVATE ibverbs)
+set_target_properties(ario PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+
 ###### protobuf & gRPC ######
 set(GENERATED_SRC_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GENERATED_SRC_DIR}/src/nexus/proto)
@@ -92,26 +108,11 @@ target_include_directories(common PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${GENERATED_SRC_DIR}/src)
 target_compile_features(common PUBLIC cxx_std_17)
+target_link_libraries(common PUBLIC ario)
 target_link_libraries(common PUBLIC
         yaml-cpp gflags glog::glog gRPC::grpc++ GTest::GTest protobuf::libprotobuf
         ${OpenCV_LIBS} Boost::filesystem Boost::system)
 set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-
-
-###### ario ######
-add_library(ario
-        src/ario/epoll.cpp
-        src/ario/memory.cpp
-        src/ario/rdma.cpp
-        src/ario/tcp.cpp
-        src/ario/utils.cpp)
-target_include_directories(ario PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_features(ario PUBLIC cxx_std_17)
-target_link_libraries(ario PRIVATE Threads::Threads)
-target_link_libraries(ario PRIVATE ibverbs)
-set_target_properties(ario PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 
 
@@ -167,13 +168,11 @@ target_link_libraries(nexus PUBLIC common)
 ###### backend ######
 add_library(backend_obj
         src/nexus/backend/backend_server.cpp
-        src/nexus/backend/backup_client.cpp
         src/nexus/backend/batch_plan_context.cpp
         src/nexus/backend/batch_task.cpp
         src/nexus/backend/gpu_executor.cpp
         src/nexus/backend/model_exec.cpp
         src/nexus/backend/model_ins.cpp
-        src/nexus/backend/rpc_service.cpp
         src/nexus/backend/share_prefix_model.cpp
         src/nexus/backend/sleep_model.cpp
         src/nexus/backend/slice.cpp

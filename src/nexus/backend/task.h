@@ -9,6 +9,7 @@
 #include <opencv2/opencv.hpp>
 #include <optional>
 
+#include "ario/ario.h"
 #include "nexus/common/block_queue.h"
 #include "nexus/common/connection.h"
 #include "nexus/common/data_type.h"
@@ -88,7 +89,7 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
    * \brief Construct a task with connection to frontend.
    * \param conn Connection to frontend server
    */
-  Task(std::shared_ptr<Connection> conn);
+  Task(ario::RdmaQueuePair* conn);
   /*!
    * \brief Decode query from message.
    * \param message Message received from frontend
@@ -114,14 +115,14 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
    */
   bool AddVirtualOutput(int index);
 
-  void SetConnection(std::shared_ptr<Connection> conn);
+  void SetConnection(ario::RdmaQueuePair* conn);
   void SetPlanId(PlanId plan_id);
 
   /*! \brief Task id */
   uint64_t task_id;
   std::optional<PlanId> plan_id;
   /*! \brief Connection to frontend. */
-  std::shared_ptr<Connection> connection;
+  ario::RdmaQueuePair* connection;
   /*! \brief Message type */
   MessageType msg_type;
   /*! \brief Query to process */

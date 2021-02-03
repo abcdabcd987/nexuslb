@@ -80,7 +80,7 @@ struct WorkRequestContext {
 
 class RdmaManager {
  public:
-  RdmaManager(std::string dev_name, std::shared_ptr<RdmaEventHandler> handler,
+  RdmaManager(std::string dev_name, RdmaEventHandler *handler,
               MemoryBlockAllocator *recv_buf);
   ~RdmaManager();
   void RegisterLocalMemory(MemoryBlockAllocator *buf);
@@ -110,7 +110,7 @@ class RdmaManager {
 
   std::string dev_name_;
   int dev_port_ = 0;
-  std::shared_ptr<RdmaEventHandler> handler_;
+  RdmaEventHandler *handler_;
 
   MemoryBlockAllocator *recv_buf_;
 
@@ -150,7 +150,7 @@ class RdmaManagerAccessor {
   ibv_pd *pd() const { return m_->pd_; }
   ibv_cq *cq() const { return m_->cq_; }
   ibv_mr *explosed_mr() const { return m_->exposed_mr_; }
-  RdmaEventHandler *handler() const { return m_->handler_.get(); }
+  RdmaEventHandler *handler() const { return m_->handler_; }
 
   void AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
     m_->AsyncSend(conn, std::move(buf));
@@ -178,6 +178,8 @@ class RdmaQueuePair {
 
   uint64_t tag() const { return tag_; }
   void set_tag(uint64_t tag) { tag_ = tag; }
+  const std::string &peer_ip() const;
+  uint16_t peer_tcp_port() const;
 
  private:
   friend class RdmaManager;
@@ -199,10 +201,7 @@ class RdmaQueuePair {
   RdmaManagerAccessor manager_;
   TcpSocket tcp_;
   bool is_connected_ = false;
-
-  // Owned by this RdmaQueuePair
   ibv_qp *qp_ = nullptr;
-
   RemoteMemoryRegion remote_mr_{};
   uint64_t tag_ = 0;
 };

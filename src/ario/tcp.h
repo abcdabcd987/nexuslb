@@ -23,10 +23,13 @@ class TcpSocket {
   void AsyncWrite(ConstBuffer buffer,
                   std::function<void(int err, size_t len)> &&handler);
 
+  const std::string &peer_ip() const;
+  uint16_t peer_port() const;
+
  private:
   friend class TcpAcceptor;
   class Impl;
-  TcpSocket(EpollExecutor &executor, int fd);
+  TcpSocket(std::unique_ptr<Impl> impl);
   void AddEpollWatch();
 
   std::unique_ptr<Impl> impl_;

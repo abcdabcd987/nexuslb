@@ -6,11 +6,10 @@
 
 namespace ario {
 
-RdmaManager::RdmaManager(std::string dev_name,
-                         std::shared_ptr<RdmaEventHandler> handler,
+RdmaManager::RdmaManager(std::string dev_name, RdmaEventHandler *handler,
                          MemoryBlockAllocator *recv_buf)
     : dev_name_(std::move(dev_name)),
-      handler_(std::move(handler)),
+      handler_(handler),
       recv_buf_(recv_buf),
       poller_type_(PollerType::kBlocking),
       tcp_acceptor_(executor_) {
@@ -134,6 +133,10 @@ RdmaQueuePair::~RdmaQueuePair() {
 void RdmaQueuePair::Shutdown() {
   fprintf(stderr, "TODO: RdmaQueuePair::Shutdown\n");
 }
+
+const std::string &RdmaQueuePair::peer_ip() const { return tcp_.peer_ip(); }
+
+uint16_t RdmaQueuePair::peer_tcp_port() const { return tcp_.peer_port(); }
 
 void RdmaManager::BuildProtectionDomain() {
   pd_ = ibv_alloc_pd(ctx_);

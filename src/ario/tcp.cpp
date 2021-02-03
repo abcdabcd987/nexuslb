@@ -39,6 +39,7 @@ class TcpSocket::Impl {
 
  private:
   friend class TcpSocket;
+  friend class TcpAcceptor;
   class EpollHandler : public EpollEventHandler {
    public:
     explicit EpollHandler(Impl &super);
@@ -48,7 +49,8 @@ class TcpSocket::Impl {
     Impl &super_;
   };
 
-  Impl(EpollExecutor &executor, int fd);
+  Impl(EpollExecutor &executor, int fd, std::string peer_ip,
+       uint16_t peer_port);
   bool DoRead();
   bool DoWrite();
   void OnReadAvailable();
@@ -57,6 +59,8 @@ class TcpSocket::Impl {
 
   EpollExecutor &executor_;
   EpollHandler epoll_handler_;
+  std::string peer_ip_;
+  uint16_t peer_port_;
 
   std::mutex mutex_;
   int fd_;
@@ -66,8 +70,13 @@ class TcpSocket::Impl {
   std::optional<TcpAsyncOpContext<const void>> write_context_;
 };
 
-TcpSocket::Impl::Impl(EpollExecutor &executor, int fd)
-    : executor_(executor), epoll_handler_(*this), fd_(fd) {}
+TcpSocket::Impl::Impl(EpollExecutor &executor, int fd, std::string peer_ip,
+                      uint16_t peer_port)
+    : executor_(executor),
+      epoll_handler_(*this),
+      peer_ip_(std::move(peer_ip)),
+      peer_port_(peer_port),
+      fd_(fd) {}
 
 TcpSocket::Impl::~Impl() { Shutdown(); }
 
@@ -190,8 +199,11 @@ TcpSocket &TcpSocket::operator=(TcpSocket &&other) = default;
 
 TcpSocket::~TcpSocket() = default;
 
-TcpSocket::TcpSocket(EpollExecutor &executor, int fd)
-    : impl_(new TcpSocket::Impl(executor, fd)) {}
+TcpSocket::TcpSocket(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
+const std::string &TcpSocket::peer_ip() const { return impl_->peer_ip_; }
+
+uint16_t TcpSocket::peer_port() const { return impl_->peer_port_; }
 
 bool TcpSocket::IsValid() const { return impl_.get() != nullptr; }
 
@@ -247,7 +259,7 @@ void TcpSocket::Connect(EpollExecutor &executor, const std::string &host,
   }
 
   SetNonBlocking(fd);
-  impl_.reset(new TcpSocket::Impl(executor, fd));
+  impl_.reset(new TcpSocket::Impl(executor, fd, host, port));
   AddEpollWatch();
 }
 
@@ -334,7 +346,9 @@ void TcpAcceptor::DoAccept() {
           ntohs(client_addr.sin_port));
 
   SetNonBlocking(client_fd);
-  TcpSocket peer(executor_, client_fd);
+  auto impl = std::unique_ptr<TcpSocket::Impl>(new TcpSocket::Impl(
+      executor_, client_fd, str_addr, client_addr.sin_port));
+  TcpSocket peer(std::move(impl));
   peer.AddEpollWatch();
   handler(0, std::move(peer));
 }

@@ -257,9 +257,9 @@ void ServerMain(int argc, char **argv) {
   std::vector<uint8_t> memory_pool(100 << 20);
   FillMemoryPool(memory_pool);
 
-  auto test = std::make_shared<TestServerHandler>();
+  auto test = std::make_unique<TestServerHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  RdmaManager manager(dev_name, test, &buf);
+  RdmaManager manager(dev_name, test.get(), &buf);
   manager.ExposeMemory(memory_pool.data(), memory_pool.size());
   manager.ListenTcp(listen_port);
   // std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
@@ -274,9 +274,9 @@ void ClientMain(int argc, char **argv) {
   std::string server_host = argv[3];
   uint16_t server_port = std::stoi(argv[4]);
 
-  auto test = std::make_shared<TestClientHandler>();
+  auto test = std::make_unique<TestClientHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  RdmaManager manager(dev_name, test, &buf);
+  RdmaManager manager(dev_name, test.get(), &buf);
   MemoryBlockAllocator read_buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
   manager.RegisterLocalMemory(&read_buf);
   manager.ConnectTcp(server_host, server_port);
@@ -414,9 +414,9 @@ void BenchSendMain(int argc, char **argv) {
   uint16_t server_port = std::stoi(argv[4]);
   size_t num_packets = std::stoul(argv[5]);
 
-  auto handler = std::make_shared<BenchSendHandler>();
+  auto handler = std::make_unique<BenchSendHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  RdmaManager manager(dev_name, handler, &buf);
+  RdmaManager manager(dev_name, handler.get(), &buf);
   handler->SetAllocator(buf);
   manager.ConnectTcp(server_host, server_port);
   std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);

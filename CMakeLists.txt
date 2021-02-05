@@ -152,11 +152,9 @@ target_link_libraries(dispatcher PRIVATE common)
 ###### frontend libnexus.so ######
 add_library(nexus SHARED
         src/nexus/app/app_base.cpp
-        src/nexus/app/dispatcher_rpc_client.cpp
         src/nexus/app/frontend.cpp
         src/nexus/app/model_handler.cpp
         src/nexus/app/request_context.cpp
-        src/nexus/app/rpc_service.cpp
         src/nexus/app/worker.cpp)
 target_include_directories(nexus PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src

@@ -110,49 +110,46 @@ void Dispatcher::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
           Clock::now().time_since_epoch())
           .count();
   auto view = buf.AsMessageView();
-  DispatcherRequest req;
+  ControlMessage req;
   bool ok = req.ParseFromArray(view.bytes(), view.bytes_length());
   if (!ok) {
     LOG(ERROR) << "ParseFromArray failed";
     return;
   }
-  switch (req.request_case()) {
-    case DispatcherRequest::RequestCase::kRegister: {
-      DispatcherReply resp;
-      outer_.HandleRegister(conn, req.register_(), resp.mutable_register_());
+  switch (req.message_case()) {
+    case ControlMessage::MessageCase::kRegisterRequest: {
+      ControlMessage resp;
+      outer_.HandleRegister(conn, req.register_request(),
+                            resp.mutable_register_reply());
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
-    case DispatcherRequest::RequestCase::kUnregister: {
-      DispatcherReply resp;
-      outer_.HandleUnregister(req.unregister(), resp.mutable_unregister());
+    case ControlMessage::MessageCase::kUnregisterRequest: {
+      ControlMessage resp;
+      outer_.HandleUnregister(req.unregister_request(),
+                              resp.mutable_unregister_reply());
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
-    case DispatcherRequest::RequestCase::kLoadModel: {
-      DispatcherReply resp;
-      outer_.HandleLoadModel(req.load_model(), resp.mutable_load_model());
+    case ControlMessage::MessageCase::kAddModel: {
+      ControlMessage resp;
+      outer_.HandleLoadModel(req.add_model(), resp.mutable_add_model_reply());
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
-    case DispatcherRequest::RequestCase::kKeepAlive: {
-      DispatcherReply resp;
-      outer_.HandleKeepAlive(req.keep_alive(), resp.mutable_keep_alive());
+    case ControlMessage::MessageCase::kInformAlive: {
+      outer_.HandleInformAlive(req.inform_alive());
+      break;
+    }
+    case ControlMessage::MessageCase::kDispatch: {
+      ControlMessage resp;
+      outer_.HandleDispatch(req.mutable_dispatch(),
+                            resp.mutable_dispatch_reply(), dispatcher_recv_ns);
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
-    case DispatcherRequest::RequestCase::kDispatch: {
-      DispatcherReply resp;
-      outer_.HandleDispatch(req.mutable_dispatch(), resp.mutable_dispatch(),
-                            dispatcher_recv_ns);
-      outer_.rdma_sender_.SendMessage(conn, resp);
-      break;
-    }
-    default: {
-      LOG(ERROR) << "Unknown DispatcherRequest::RequestCase: "
-                 << req.request_case();
-      return;
-    }
+    default:
+      LOG(FATAL) << "Unhandled message: " << req.DebugString();
   }
 }
 
@@ -365,34 +362,33 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
   }
 }
 
-void Dispatcher::HandleKeepAlive(const KeepAliveRequest& request,
-                                 RpcReply* reply) {
+void Dispatcher::HandleInformAlive(const KeepAliveRequest& request) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto node_id = NodeId(request.node_id());
   switch (request.node_type()) {
     case NodeType::FRONTEND_NODE: {
       auto it = frontends_.find(node_id);
       if (it == frontends_.end()) {
-        reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
+        LOG(ERROR) << "InformAlive: Server not registered. node_id="
+                   << node_id.t;
       } else {
         it->second->Tick();
-        reply->set_status(CtrlStatus::CTRL_OK);
+        return;
       }
       break;
     }
     case NodeType::BACKEND_NODE: {
       auto it = backends_.find(node_id);
       if (it == backends_.end()) {
-        reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
+        LOG(ERROR) << "InformAlive: Server not registered. node_id="
+                   << node_id.t;
       } else {
         it->second->Tick();
-        reply->set_status(CtrlStatus::CTRL_OK);
       }
       break;
     }
     default: {
-      LOG(ERROR) << "Unknown node type: " << NodeType_Name(request.node_type());
-      reply->set_status(CtrlStatus::CTRL_SERVER_NOT_REGISTERED);
+      LOG(ERROR) << "InformAlive: Unknown node type: " << request.node_type();
     }
   }
 }

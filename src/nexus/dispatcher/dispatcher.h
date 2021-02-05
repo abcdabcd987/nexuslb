@@ -62,7 +62,7 @@ class Dispatcher {
                       RegisterReply* reply);
   void HandleUnregister(const UnregisterRequest& request, RpcReply* reply);
   void HandleLoadModel(const LoadModelRequest& request, LoadModelReply* reply);
-  void HandleKeepAlive(const KeepAliveRequest& request, RpcReply* reply);
+  void HandleInformAlive(const KeepAliveRequest& request);
 
   friend class DispatcherAccessor;
   std::string rdma_dev_;

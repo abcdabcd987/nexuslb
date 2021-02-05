@@ -21,25 +21,6 @@ service FrontendCtrl {
   rpc MarkQueryDroppedByDispatcher(DispatchReply) returns (RpcReply) {}
 }
 
-message FrontendRequest {
-  uint64 req_id = 1;
-  oneof request {
-    CheckAliveRequest check_alive = 11;
-    BackendListUpdates update_backend_list = 12;
-    DispatchReply mark_query_dropped = 13;
-    FetchImageRequest fetch_image = 14;
-  }
-}
-
-message FrontendReply {
-  uint64 req_id = 1;
-  oneof reply {
-    RpcReply check_alive = 11;
-    RpcReply update_backend_list = 12;
-    RpcReply mark_query_dropped = 13;
-  }
-}
-
 service BackendCtrl {
   rpc UpdateModelTable(ModelTableConfig) returns (RpcReply) {}
   rpc CheckAlive(CheckAliveRequest) returns (RpcReply) {}
@@ -49,29 +30,6 @@ service BackendCtrl {
   rpc EnqueueBatchPlan(BatchPlanProto) returns (RpcReply) {}
 }
 
-message BackendRequest {
-  uint64 req_id = 1;
-  oneof request {
-    BackendLoadModelCommand load_model = 11;
-    EnqueueQueryCommand enqueue_query = 12;
-    BatchPlanProto enqueue_batchplan = 13;
-    CheckAliveRequest check_alive = 14;
-    TellNodeIdMessage tell_node_id = 15;
-    FetchImageReply fetch_image_reply = 16; // TODO: replace with READ
-  }
-}
-
-message BackendReply {
-  uint64 req_id = 1;
-  oneof reply {
-    RpcReply load_model = 11;
-    RpcReply enqueue_query = 12;
-    RpcReply enqueue_batchplan = 13;
-    RpcReply check_alive = 14;
-    QueryResultProto query_result = 15;
-  }
-}
-
 service DispatcherCtrl {
   rpc Register(RegisterRequest) returns (RegisterReply) {}
   rpc Unregister(UnregisterRequest) returns (RpcReply) {}
@@ -79,25 +37,44 @@ service DispatcherCtrl {
   rpc KeepAlive(KeepAliveRequest) returns (RpcReply) {}
 }
 
-message DispatcherRequest {
-  uint64 req_id = 1;
-  oneof request {
-    RegisterRequest register = 11;
-    UnregisterRequest unregister = 12;
-    LoadModelRequest load_model = 13;
-    KeepAliveRequest keep_alive = 14;
-    DispatchRequest dispatch = 15;
-  }
-}
+message ControlMessage {
+  oneof message {
+    // Frontend/Backend <- Dispatcher
+    RegisterReply register_reply = 11;
+    RpcReply unregister_reply = 12;
+    CheckAliveRequest check_alive = 13;
 
-message DispatcherReply {
-  uint64 req_id = 1;
-  oneof reply {
-    RegisterReply register = 11;
-    RpcReply unregister = 12;
-    LoadModelReply load_model = 13;
-    RpcReply keep_alive = 14;
-    DispatchReply dispatch = 15;
+    // Dispatcher <- Frontend/Backend
+    RegisterRequest register_request = 14;
+    UnregisterRequest unregister_request = 15;
+    KeepAliveRequest inform_alive = 16;
+
+    // Dispatcher <- Frontend
+    LoadModelRequest add_model = 17;
+    DispatchRequest dispatch = 18;
+
+    // Frontend <- Dispatcher
+    LoadModelReply add_model_reply = 19;
+    BackendListUpdates update_backend_list = 20;
+    DispatchReply dispatch_reply = 21;
+
+    // Dispatcher <- Backend
+    RpcReply load_model_reply = 22;
+    RpcReply enqueue_query_reply = 23;
+    RpcReply enqueue_batchplan_reply = 24;
+
+    // Backend <- Dispatcher
+    BackendLoadModelCommand load_model = 25;
+    EnqueueQueryCommand enqueue_query = 26;
+    BatchPlanProto enqueue_batchplan = 27;
+
+    // Frontend <- Backend
+    QueryResultProto query_result = 28;
+    FetchImageRequest fetch_image_request = 1001; // TODO: replace with READ
+
+    // Backend <- Frontend
+    TellNodeIdMessage tell_node_id = 29;
+    FetchImageReply fetch_image_reply = 1002; // TODO: replace with READ
   }
 }
 
@@ -278,7 +255,6 @@ message DispatchRequest {
   ModelSession model_session = 1;
   uint64 query_id = 2;
   QueryProto query_without_input = 4;
-  uint32 udp_rpc_port = 3;
 }
 
 message DispatchReply {

@@ -4,6 +4,7 @@
 
 #include <boost/asio.hpp>
 #include <limits>
+#include <mutex>
 
 #include "nexus/common/config.h"
 #include "nexus/common/model_def.h"
@@ -14,24 +15,32 @@ DECLARE_int32(load_balance);
 namespace nexus {
 namespace app {
 
-Frontend::Frontend(std::string port, std::string rpc_port, std::string sch_addr,
-                   std::string dispatcher_addr,
-                   uint32_t dispatcher_rpc_timeout_us)
-    : ServerBase(port),
-      rpc_service_(this, rpc_port),
-      rand_gen_(rd_()),
-      dispatcher_rpc_client_(&io_context_, std::move(dispatcher_addr),
-                             dispatcher_rpc_timeout_us) {
-  // Start RPC service
-  rpc_service_.Start();
-  // Init scheduler client
-  if (sch_addr.find(':') == std::string::npos) {
-    // Add default scheduler port if no port specified
-    sch_addr += ":" + std::to_string(SCHEDULER_DEFAULT_PORT);
+Frontend::Frontend(std::string rdma_dev, uint16_t rdma_tcp_server_port,
+                   std::string nexus_server_port, std::string sch_addr)
+    : ServerBase(nexus_server_port),
+      rdma_handler_(*this),
+      small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
+      large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
+      rdma_(rdma_dev, &rdma_handler_, &small_buffers_),
+      rdma_sender_(&small_buffers_),
+      rd_(),
+      rand_gen_(rd_()) {
+  rdma_.ExposeMemory(large_buffers_.data(), large_buffers_.pool_size());
+  rdma_.ListenTcp(rdma_tcp_server_port);
+
+  uint16_t sch_port;
+  auto sch_colon_idx = sch_addr.find(':');
+  if (sch_colon_idx == std::string::npos) {
+    sch_port = SCHEDULER_DEFAULT_PORT;
+  } else {
+    sch_port = std::stoi(sch_addr.substr(sch_colon_idx + 1));
+    sch_addr.resize(sch_colon_idx - 1);
   }
-  auto channel =
-      grpc::CreateChannel(sch_addr, grpc::InsecureChannelCredentials());
-  sch_stub_ = DispatcherCtrl::NewStub(channel);
+
+  rdma_.ConnectTcp(sch_addr, sch_port);
+  rdma_ev_thread_ = std::thread(&ario::RdmaManager::RunEventLoop, &rdma_);
+  dispatcher_conn_ = promise_dispatcher_conn_.get_future().get();
+
   // Init Node ID and register frontend to scheduler
   Register();
 }
@@ -43,10 +52,6 @@ Frontend::~Frontend() {
 }
 
 void Frontend::Run(QueryProcessor* qp, size_t nthreads) {
-  if (FLAGS_load_balance == LB_Dispatcher) {
-    dispatcher_rpc_client_.Start();
-  }
-
   for (size_t i = 0; i < nthreads; ++i) {
     std::unique_ptr<Worker> worker(new Worker(qp, request_pool_));
     worker->Start();
@@ -65,6 +70,7 @@ void Frontend::Stop() {
   Unregister();
   // Stop all accept new connections
   ServerBase::Stop();
+  rdma_.StopEventLoop();
   // Stop all frontend connections
   for (auto conn : connection_pool_) {
     conn->Stop();
@@ -81,12 +87,99 @@ void Frontend::Stop() {
     worker->Join();
   }
   daemon_thread_.join();
-  if (FLAGS_load_balance == LB_Dispatcher) {
-    dispatcher_rpc_client_.Stop();
-  }
-  // Stop RPC service
-  rpc_service_.Stop();
+  rdma_ev_thread_.join();
   LOG(INFO) << "Frontend server stopped";
+}
+
+Frontend::RdmaHandler::RdmaHandler(Frontend& outer) : outer_(outer) {}
+
+void Frontend::RdmaHandler::OnConnected(ario::RdmaQueuePair* conn) {
+  outer_.promise_dispatcher_conn_.set_value(conn);
+}
+
+void Frontend::RdmaHandler::OnRemoteMemoryRegionReceived(
+    ario::RdmaQueuePair* conn, uint64_t addr, size_t size) {
+  // Do nothing
+}
+
+void Frontend::RdmaHandler::OnRdmaReadComplete(ario::RdmaQueuePair* conn,
+                                               ario::OwnedMemoryBlock buf) {
+  // Do nothing
+}
+
+void Frontend::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
+                                   ario::OwnedMemoryBlock buf) {
+  auto view = buf.AsMessageView();
+  ControlMessage msg;
+  bool ok = msg.ParseFromArray(view.bytes(), view.bytes_length());
+  if (!ok) {
+    LOG(ERROR) << "ParseFromArray failed";
+    return;
+  }
+  switch (msg.message_case()) {
+    case ControlMessage::MessageCase::kRegisterReply: {
+      // from Dispatcher
+      outer_.promise_register_reply_.set_value(
+          std::move(*msg.mutable_register_reply()));
+      break;
+    }
+    case ControlMessage::MessageCase::kUnregisterReply: {
+      // from Dispatcher
+      outer_.promise_unregister_reply_.set_value(
+          std::move(*msg.mutable_unregister_reply()));
+      break;
+    }
+    case ControlMessage::MessageCase::kCheckAlive: {
+      // from Dispatcher
+      ControlMessage resp;
+      auto* reply = resp.mutable_inform_alive();
+      reply->set_node_type(FRONTEND_NODE);
+      reply->set_node_id(outer_.node_id_);
+      outer_.rdma_sender_.SendMessage(conn, resp);
+      break;
+    }
+    case ControlMessage::MessageCase::kAddModelReply: {
+      // from Dispatcher
+      outer_.promise_load_model_reply_.set_value(
+          std::move(*msg.mutable_add_model_reply()));
+      break;
+    }
+    case ControlMessage::MessageCase::kUpdateBackendList: {
+      // from Dispatcher
+      outer_.UpdateBackendList(msg.update_backend_list());
+      break;
+    }
+    case ControlMessage::MessageCase::kDispatchReply: {
+      // from Dispatcher
+      outer_.HandleDispatcherReply(msg.dispatch_reply());
+      break;
+    }
+    case ControlMessage::MessageCase::kFetchImageRequest: {
+      // from Backend
+      // TODO: replace with READ
+      ControlMessage resp;
+      outer_.FetchImage(msg.fetch_image_request(),
+                        resp.mutable_fetch_image_reply());
+      outer_.rdma_sender_.SendMessage(conn, resp);
+      break;
+    }
+    case ControlMessage::ControlMessage::kQueryResult: {
+      outer_.HandleQueryResult(msg.query_result());
+      break;
+    }
+    default:
+      LOG(FATAL) << "Unhandled message: " << msg.DebugString();
+  }
+}
+
+void Frontend::RdmaHandler::OnSent(ario::RdmaQueuePair* conn,
+                                   ario::OwnedMemoryBlock buf) {
+  // Do nothing
+}
+
+void Frontend::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
+                                    ario::RdmaError error) {
+  LOG(ERROR) << "TODO: Frontend::RdmaHandler::OnError";
 }
 
 void Frontend::HandleAccept() {
@@ -139,52 +232,44 @@ void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
           std::make_shared<RequestContext>(user_sess, message, request_pool_));
       break;
     }
-    case kBackendReply: {
-      QueryResultProto result;
-      message->DecodeBody(&result);
-      std::string model_session_id = result.model_session_id();
-      auto itr = model_pool_.find(model_session_id);
-      if (itr == model_pool_.end()) {
-        LOG(ERROR) << "Cannot find model handler for " << model_session_id;
-        break;
-      }
-      itr->second->HandleBackendReply(result);
-      break;
-    }
-    case kFetchImageRequest: {
-      FetchImageRequest request;
-      message->DecodeBody(&request);
-      auto iter = model_pool_.find(request.model_session_id());
-      if (iter == model_pool_.end()) {
-        LOG(ERROR) << "Cannot find model handler for "
-                   << request.model_session_id();
-        break;
-      }
-      auto qid = request.query_id();
-      VLOG(1) << "kFetchImageRequest: model_session="
-              << request.model_session_id() << ", query_id=" << qid;
-      FetchImageReply reply;
-      reply.set_global_id(request.global_id());
-      bool ok = iter->second->FetchImage(QueryId(qid), reply.mutable_input());
-      if (ok) {
-        reply.set_status(CtrlStatus::CTRL_OK);
-      } else {
-        reply.set_status(CtrlStatus::CTRL_IMAGE_NOT_FOUND);
-        LOG(ERROR) << "FetchImage not found. model_session_id="
-                   << request.model_session_id()
-                   << ", global_id=" << request.global_id();
-      }
-      auto msg = std::make_shared<Message>(MessageType::kFetchImageReply,
-                                           reply.ByteSizeLong());
-      msg->EncodeBody(reply);
-      conn->Write(std::move(msg));
-      break;
-    }
     default: {
       LOG(ERROR) << "Wrong message type: " << message->type();
       // TODO: handle wrong type
       break;
     }
+  }
+}
+
+void Frontend::HandleQueryResult(const QueryResultProto& result) {
+  std::string model_session_id = result.model_session_id();
+  auto itr = model_pool_.find(model_session_id);
+  if (itr == model_pool_.end()) {
+    LOG(ERROR) << "Cannot find model handler for " << model_session_id;
+    return;
+  }
+  itr->second->HandleBackendReply(result);
+}
+
+void Frontend::FetchImage(const FetchImageRequest& request,
+                          FetchImageReply* reply) {
+  auto iter = model_pool_.find(request.model_session_id());
+  if (iter == model_pool_.end()) {
+    LOG(ERROR) << "Cannot find model handler for "
+               << request.model_session_id();
+    return;
+  }
+  auto qid = request.query_id();
+  VLOG(1) << "kFetchImageRequest: model_session=" << request.model_session_id()
+          << ", query_id=" << qid;
+  reply->set_global_id(request.global_id());
+  bool ok = iter->second->FetchImage(QueryId(qid), reply->mutable_input());
+  if (ok) {
+    reply->set_status(CtrlStatus::CTRL_OK);
+  } else {
+    reply->set_status(CtrlStatus::CTRL_IMAGE_NOT_FOUND);
+    LOG(ERROR) << "FetchImage not found. model_session_id="
+               << request.model_session_id()
+               << ", global_id=" << request.global_id();
   }
 }
 
@@ -224,20 +309,16 @@ std::shared_ptr<UserSession> Frontend::GetUserSession(uint32_t uid) {
   return itr->second;
 }
 
-std::shared_ptr<ModelHandler> Frontend::LoadModel(const LoadModelRequest& req) {
-  return LoadModel(req, LoadBalancePolicy(FLAGS_load_balance));
+std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req) {
+  return LoadModel(std::move(req), LoadBalancePolicy(FLAGS_load_balance));
 }
 
-std::shared_ptr<ModelHandler> Frontend::LoadModel(const LoadModelRequest& req,
+std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req,
                                                   LoadBalancePolicy lb_policy) {
-  LoadModelReply reply;
-  grpc::ClientContext context;
-  grpc::Status status = sch_stub_->LoadModel(&context, req, &reply);
-  if (!status.ok()) {
-    LOG(ERROR) << "Failed to connect to scheduler: " << status.error_message()
-               << "(" << status.error_code() << ")";
-    return nullptr;
-  }
+  ControlMessage request;
+  request.mutable_add_model()->Swap(&req);
+  rdma_sender_.SendMessage(dispatcher_conn_, request);
+  auto reply = std::move(promise_load_model_reply_.get_future().get());
   if (reply.status() != CTRL_OK) {
     LOG(ERROR) << "Load model error: " << CtrlStatus_Name(reply.status());
     return nullptr;
@@ -245,7 +326,7 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(const LoadModelRequest& req,
   auto model_session_id = ModelSessionToString(req.model_session());
   auto model_handler =
       std::make_shared<ModelHandler>(model_session_id, backend_pool_, lb_policy,
-                                     &dispatcher_rpc_client_, node_id_);
+                                     node_id_, dispatcher_conn_, rdma_sender_);
   // Only happens at Setup stage, so no concurrent modification to model_pool_
   model_pool_.emplace(model_handler->model_session_id(), model_handler);
   // UpdateBackendPoolAndModelRoute(reply.model_route());
@@ -269,74 +350,38 @@ void Frontend::Register() {
   node_id_ = dis(rand_gen_);
 
   // Prepare request
-  RegisterRequest request;
+  ControlMessage msg;
+  auto& request = *msg.mutable_register_request();
   request.set_node_type(FRONTEND_NODE);
   request.set_node_id(node_id_);
   request.set_server_port(port());
-  request.set_rpc_port(rpc_service_.port());
 
-  while (true) {
-    grpc::ClientContext context;
-    RegisterReply reply;
-    grpc::Status status = sch_stub_->Register(&context, request, &reply);
-    if (!status.ok()) {
-      LOG(FATAL) << "Failed to connect to scheduler: " << status.error_message()
-                 << "(" << status.error_code() << ")";
-    }
-    CtrlStatus ret = reply.status();
-    if (ret == CTRL_OK) {
-      beacon_interval_sec_ = reply.beacon_interval_sec();
-      VLOG(1) << "Register done.";
-      return;
-    }
-    if (ret != CTRL_FRONTEND_NODE_ID_CONFLICT) {
-      LOG(FATAL) << "Failed to register frontend to scheduler: "
-                 << CtrlStatus_Name(ret);
-    }
-    // Frontend ID conflict, need to generate a new one
-    node_id_ = dis(rand_gen_);
-    request.set_node_id(node_id_);
+  rdma_sender_.SendMessage(dispatcher_conn_, msg);
+  auto reply = std::move(promise_register_reply_.get_future().get());
+  if (reply.status() == CtrlStatus::CTRL_OK) {
+    beacon_interval_sec_ = reply.beacon_interval_sec();
+    VLOG(1) << "Register done.";
+  } else {
+    LOG(FATAL) << "Failed to register frontend to dispatcher: "
+               << CtrlStatus_Name(reply.status());
   }
 }
 
 void Frontend::Unregister() {
-  UnregisterRequest request;
+  ControlMessage msg;
+  auto& request = *msg.mutable_unregister_request();
   request.set_node_type(FRONTEND_NODE);
   request.set_node_id(node_id_);
 
-  grpc::ClientContext context;
-  RpcReply reply;
-  grpc::Status status = sch_stub_->Unregister(&context, request, &reply);
-  if (!status.ok()) {
-    LOG(ERROR) << "Failed to connect to scheduler: " << status.error_message()
-               << "(" << status.error_code() << ")";
-    return;
-  }
+  rdma_sender_.SendMessage(dispatcher_conn_, msg);
+  auto reply = std::move(promise_unregister_reply_.get_future().get());
   CtrlStatus ret = reply.status();
   if (ret != CTRL_OK) {
     LOG(ERROR) << "Failed to unregister frontend: " << CtrlStatus_Name(ret);
   }
 }
 
-void Frontend::KeepAlive() {
-  grpc::ClientContext context;
-  KeepAliveRequest request;
-  request.set_node_type(FRONTEND_NODE);
-  request.set_node_id(node_id_);
-  RpcReply reply;
-  grpc::Status status = sch_stub_->KeepAlive(&context, request, &reply);
-  if (!status.ok()) {
-    LOG(ERROR) << "Failed to connect to scheduler: " << status.error_message()
-               << "(" << status.error_code() << ")";
-    return;
-  }
-  CtrlStatus ret = reply.status();
-  if (ret != CTRL_OK) {
-    LOG(ERROR) << "KeepAlive error: " << CtrlStatus_Name(ret);
-  }
-}
-void Frontend::UpdateBackendList(const BackendListUpdates& request,
-                                 RpcReply* reply) {
+void Frontend::UpdateBackendList(const BackendListUpdates& request) {
   // TODO: remove this rpc when we remove TellNodeIdMessage.
   VLOG(1) << "UpdateBackendList: backends_size()=" << request.backends_size();
   for (auto backend_info : request.backends()) {
@@ -347,21 +392,18 @@ void Frontend::UpdateBackendList(const BackendListUpdates& request,
         std::make_shared<BackendSession>(backend_info, io_context_, this);
     backend_pool_.AddBackend(conn);
   }
-  reply->set_status(CtrlStatus::CTRL_OK);
   VLOG(1) << "UpdateBackendList: done";
 }
 
-void Frontend::MarkQueryDroppedByDispatcher(const DispatchReply& request,
-                                            RpcReply* reply) {
+void Frontend::HandleDispatcherReply(const DispatchReply& request) {
   auto model_session_id = ModelSessionToString(request.model_session());
   auto iter = model_pool_.find(model_session_id);
   if (iter == model_pool_.end()) {
-    LOG(ERROR) << "MarkQueryDroppedByDispatcher cannot find ModelSession: "
+    LOG(ERROR) << "HandleDispatcherReply cannot find ModelSession: "
                << model_session_id;
     return;
   }
   iter->second->HandleDispatcherReply(request);
-  reply->set_status(CtrlStatus::CTRL_OK);
 }
 
 void Frontend::RegisterUser(std::shared_ptr<UserSession> user_sess,

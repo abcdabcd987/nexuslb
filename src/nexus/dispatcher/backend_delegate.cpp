@@ -35,7 +35,7 @@ void BackendDelegate::Tick() { last_time_ = std::chrono::system_clock::now(); }
 
 void BackendDelegate::SendLoadModelCommand(const ModelSession& model_session,
                                            uint32_t max_batch) {
-  BackendRequest req;
+  ControlMessage req;
   auto* request = req.mutable_load_model();
   *request->mutable_model_session() = model_session;
   request->set_max_batch(max_batch);
@@ -44,7 +44,7 @@ void BackendDelegate::SendLoadModelCommand(const ModelSession& model_session,
 }
 
 void BackendDelegate::EnqueueBatchPlan(BatchPlanProto&& request) {
-  BackendRequest req;
+  ControlMessage req;
   *req.mutable_enqueue_batchplan() = std::move(request);
   rdma_sender_.SendMessage(conn_, req);
   Tick();

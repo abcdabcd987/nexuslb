@@ -128,6 +128,12 @@ class BackendServer : public ServerBase {
   ario::RdmaManager rdma_;
   RdmaSender rdma_sender_;
   std::thread rdma_ev_thread_;
+  ario::RdmaQueuePair* dispatcher_conn_ = nullptr;
+
+  // Ugly promises because ario doesn't have RPC
+  std::promise<ario::RdmaQueuePair*> promise_dispatcher_conn_;
+  std::promise<RegisterReply> promise_register_reply_;
+  std::promise<RpcReply> promise_unregister_reply_;
 
   /*! \brief Interval to update stats to scheduler in seconds */
   uint32_t beacon_interval_sec_;
@@ -135,8 +141,6 @@ class BackendServer : public ServerBase {
   std::atomic_bool running_;
   /*! \brief Backend node id */
   uint32_t node_id_;
-  /*! \brief RPC client for sending requests to scheduler */
-  std::unique_ptr<DispatcherCtrl::Stub> sch_stub_;
   /*! \brief Daemon thread */
   std::thread daemon_thread_;
 

@@ -12,9 +12,8 @@ namespace app {
 
 class AppBase : public Frontend {
  public:
-  AppBase(const std::string& port, const std::string& rpc_port,
-          const std::string& sch_addr, const std::string& dispatcher_addr,
-          uint32_t dispatcher_rpc_timeout_us, size_t nthreads);
+  AppBase(std::string rdma_dev, uint16_t rdma_tcp_server_port,
+          std::string nexus_server_port, std::string sch_addr, size_t nthreads);
 
   ~AppBase() override;
 

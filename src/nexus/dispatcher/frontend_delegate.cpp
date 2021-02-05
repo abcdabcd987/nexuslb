@@ -24,15 +24,15 @@ FrontendDelegate::FrontendDelegate(uint32_t node_id, std::string ip,
 void FrontendDelegate::Tick() { last_time_ = std::chrono::system_clock::now(); }
 
 void FrontendDelegate::UpdateBackendList(BackendListUpdates&& request) {
-  FrontendRequest req;
+  ControlMessage req;
   *req.mutable_update_backend_list() = std::move(request);
   rdma_sender_.SendMessage(conn_, req);
   Tick();
 }
 
 void FrontendDelegate::MarkQueryDroppedByDispatcher(DispatchReply&& request) {
-  FrontendRequest req;
-  *req.mutable_mark_query_dropped() = std::move(request);
+  ControlMessage req;
+  *req.mutable_dispatch_reply() = std::move(request);
   rdma_sender_.SendMessage(conn_, req);
   Tick();
 }

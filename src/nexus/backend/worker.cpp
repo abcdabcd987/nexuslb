@@ -118,7 +118,7 @@ void Worker::SendReply(std::shared_ptr<Task> task) {
   if (task->msg_type == kBackendRelay) {
     reply_type = kBackendRelayReply;
   }
-  BackendReply resp;
+  ControlMessage resp;
   // TODO: avoid copy.
   resp.mutable_query_result()->CopyFrom(task->result);
   rdma_sender_.SendMessage(task->connection, resp);

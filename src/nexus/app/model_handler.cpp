@@ -81,15 +81,18 @@ std::atomic<uint64_t> ModelHandler::global_query_id_(0);
 
 ModelHandler::ModelHandler(const std::string& model_session_id,
                            BackendPool& pool, LoadBalancePolicy lb_policy,
-                           DispatcherRpcClient* dispatcher_rpc_client,
-                           NodeId frontend_id)
+                           NodeId frontend_id,
+                           ario::RdmaQueuePair* dispatcher_conn,
+                           RdmaSender rdma_sender)
     : frontend_id_(frontend_id),
       model_session_id_(model_session_id),
       backend_pool_(pool),
       lb_policy_(lb_policy),
+      dispatcher_conn_(dispatcher_conn),
+      rdma_sender_(rdma_sender),
       total_throughput_(0.),
-      rand_gen_(rd_()),
-      dispatcher_rpc_client_(dispatcher_rpc_client) {
+      rd_(),
+      rand_gen_(rd_()) {
   ParseModelSession(model_session_id, &model_session_);
   counter_ =
       MetricRegistry::Singleton().CreateIntervalCounter(FLAGS_count_interval);
@@ -157,8 +160,12 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   if (lb_policy_ != LB_Dispatcher) {
     LOG(FATAL) << "TODO: remove lb_policy_";
   } else {
-    dispatcher_rpc_client_->AsyncQuery(model_session_, qid,
-                                       std::move(query_without_input), this);
+    ControlMessage msg;
+    auto* request = msg.mutable_dispatch();
+    *request->mutable_model_session() = model_session_;
+    *request->mutable_query_without_input() = std::move(query_without_input);
+    request->set_query_id(qid);
+    rdma_sender_.SendMessage(dispatcher_conn_, msg);
   }
 
   auto reply = std::make_shared<QueryResult>(qid);

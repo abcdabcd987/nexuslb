@@ -9,10 +9,11 @@
 #include <string>
 #include <unordered_map>
 
-#include "nexus/app/dispatcher_rpc_client.h"
+#include "ario/ario.h"
 #include "nexus/common/backend_pool.h"
 #include "nexus/common/data_type.h"
 #include "nexus/common/metric.h"
+#include "nexus/common/rdma_sender.h"
 #include "nexus/common/typedef.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -83,8 +84,8 @@ enum LoadBalancePolicy {
 class ModelHandler {
  public:
   ModelHandler(const std::string& model_session_id, BackendPool& pool,
-               LoadBalancePolicy lb_policy,
-               DispatcherRpcClient* dispatcher_rpc_client, NodeId frontend_id);
+               LoadBalancePolicy lb_policy, NodeId frontend_id,
+               ario::RdmaQueuePair* dispatcher_conn, RdmaSender rdma_sender);
 
   ~ModelHandler();
 
@@ -126,6 +127,9 @@ class ModelHandler {
   LoadBalancePolicy lb_policy_;
   static std::atomic<uint64_t> global_query_id_;
 
+  ario::RdmaQueuePair* dispatcher_conn_;
+  RdmaSender rdma_sender_;
+
   std::vector<uint32_t> backends_;
   /*!
    * \brief Mapping from backend id to its serving rate,
@@ -151,7 +155,6 @@ class ModelHandler {
   std::mt19937 rand_gen_;
 
   std::atomic<bool> running_;
-  DispatcherRpcClient* dispatcher_rpc_client_;
 };
 
 }  // namespace app

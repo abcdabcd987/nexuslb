@@ -204,24 +204,18 @@ void RdmaQueuePair::SendConnInfo() {
   msg->payload.conn.lid = attr.lid;
   msg->payload.conn.gid = gid;
   msg->payload.conn.qp_num = qp_->qp_num;
-  fprintf(stderr, "local ConnInfo: qp_num=%d, lid=%d, gid[0]=%016lx:%016lx\n",
-          qp_->qp_num, attr.lid, gid.global.subnet_prefix,
-          gid.global.interface_id);
 
-  fprintf(stderr, "Sending ConnInfo\n");
   ConstBuffer buf(msg.get(), sizeof(*msg));
   tcp_.AsyncWrite(buf, [this, msg = std::move(msg)](int err, size_t) {
     if (err) {
       fprintf(stderr, "SendConnInfo: AsyncWrite err = %d\n", err);
       die("SendConnInfo AsyncWrite callback");
     }
-    fprintf(stderr, "ConnInfo sent\n");
     RecvConnInfo();
   });
 }
 
 void RdmaQueuePair::RecvConnInfo() {
-  fprintf(stderr, "Waiting for peer ConnInfo\n");
   auto msg = std::make_shared<RdmaManagerMessage>();
   MutableBuffer buf(msg.get(), sizeof(*msg));
   tcp_.AsyncRead(buf, [msg = std::move(msg), this](int err, size_t) {
@@ -234,7 +228,6 @@ void RdmaQueuePair::RecvConnInfo() {
               static_cast<int>(msg->type));
       die("RecvConnInfo AsyncRead callback");
     }
-    fprintf(stderr, "Received peer ConnInfo\n");
 
     TransitQueuePairToRTR(msg->payload.conn);
     TransitQueuePairToRTS();
@@ -248,7 +241,6 @@ void RdmaQueuePair::RecvConnInfo() {
 }
 
 void RdmaQueuePair::SendMemoryRegion() {
-  fprintf(stderr, "Sending MemoryRegion\n");
   auto msg = std::make_shared<RdmaManagerMessage>();
   msg->type = RdmaManagerMessage::Type::kMemoryRegion;
   msg->payload.mr.addr =
@@ -262,12 +254,10 @@ void RdmaQueuePair::SendMemoryRegion() {
       fprintf(stderr, "SendMemoryRegion: AsyncWrite err = %d\n", err);
       die("SendMemoryRegion AsyncWrite callback");
     }
-    fprintf(stderr, "MemoryRegion sent\n");
   });
 }
 
 void RdmaQueuePair::RecvMemoryRegion() {
-  fprintf(stderr, "Waiting for peer MemoryRegion\n");
   auto msg = std::make_shared<RdmaManagerMessage>();
   MutableBuffer buf(msg.get(), sizeof(*msg));
   tcp_.AsyncRead(buf, [msg = std::move(msg), this](int err, size_t) {
@@ -307,9 +297,6 @@ void RdmaQueuePair::TransitQueuePairToInit() {
 
 void RdmaQueuePair::TransitQueuePairToRTR(
     const RdmaManagerMessage::ConnInfo &msg) {
-  fprintf(stderr, "remote ConnInfo: qp_num=%d, lid=%d, gid[0]=%016lx:%016lx\n",
-          msg.qp_num, msg.lid, msg.gid.global.subnet_prefix,
-          msg.gid.global.interface_id);
   ibv_qp_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_RTR;
@@ -401,8 +388,6 @@ void RdmaManager::PostReceive(RdmaQueuePair &conn) {
         std::make_unique<WorkRequestContext>(conn, std::move(buf));
   }
 
-  fprintf(stderr, "POST --> (RECV WR #%lu) [addr %lx, len %u, qp_num %u]\n",
-          wr.wr_id, sge.addr, sge.length, conn.qp_->qp_num);
   int ret = ibv_post_recv(conn.qp_, &wr, &bad_wr);
   if (ret) die("ibv_post_recv");
 }
@@ -436,8 +421,6 @@ void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
 
   int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die("Connection::Send: ibv_post_send");
-  fprintf(stderr, "POST --> (SEND WR #%lu) [addr %lx, len %u, qp_num %u]\n",
-          wr.wr_id, sge.addr, sge.length, conn.qp_->qp_num);
 }
 
 void RdmaQueuePair::AsyncRead(OwnedMemoryBlock buf, size_t offset,
@@ -472,8 +455,6 @@ void RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
 
   int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die("Connection::PostRead: ibv_post_send");
-  fprintf(stderr, "POST --> (READ WR #%lu) [offset %lx, len %lu, qp_num %u]\n",
-          wr.wr_id, offset, length, conn.qp_->qp_num);
 }
 
 void RdmaManager::PollCompletionQueueBlocking() {

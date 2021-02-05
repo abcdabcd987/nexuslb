@@ -114,8 +114,6 @@ class ModelHandler {
   std::vector<uint32_t> BackendList();
 
  private:
-  std::shared_ptr<BackendSession> GetBackend();
-
   std::shared_ptr<BackendSession> GetBackendWeightedRoundRobin();
 
   std::shared_ptr<BackendSession> GetBackendDeficitRoundRobin();

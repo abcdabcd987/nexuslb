@@ -1,85 +1,28 @@
 #include "nexus/common/backend_pool.h"
 
 #include <glog/logging.h>
-#include <grpc++/grpc++.h>
 
 #include "nexus/common/util.h"
 
 namespace nexus {
 
 BackendSession::BackendSession(const BackendInfo& info,
-                               boost::asio::io_context& io_context,
-                               MessageHandler* handler)
-    : Connection(io_context, handler),
-      io_context_(io_context),
-      node_id_(info.node_id()),
+                               ario::RdmaQueuePair* conn,
+                               RdmaSender rdma_sender)
+    : node_id_(info.node_id()),
       ip_(info.ip()),
       server_port_(info.server_port()),
       rpc_port_(info.rpc_port()),
-      running_(false),
-      utilization_(-1.) {
-  std::stringstream rpc_addr;
-  rpc_addr << ip_ << ":" << rpc_port_;
-  auto channel =
-      grpc::CreateChannel(rpc_addr.str(), grpc::InsecureChannelCredentials());
-  stub_ = BackendCtrl::NewStub(channel);
-}
+      conn_(conn),
+      rdma_sender_(rdma_sender),
+      running_(true) {}
 
 BackendSession::~BackendSession() { Stop(); }
 
-void BackendSession::Start() {
-  // Connect to backend server
-  DoConnect();
-}
-
 void BackendSession::Stop() {
   if (running_) {
-    LOG(INFO) << "Disconnect to backend " << node_id_;
-    running_ = false;
-    Connection::Stop();
+    conn_->Shutdown();
   }
-}
-
-void BackendSession::DoConnect() {
-  boost::asio::ip::tcp::resolver::iterator endpoint;
-  boost::asio::ip::tcp::resolver resolver(io_context_);
-  endpoint = resolver.resolve({ip_, server_port_});
-  boost::asio::async_connect(socket_, endpoint,
-                             [this](boost::system::error_code ec,
-                                    boost::asio::ip::tcp::resolver::iterator) {
-                               if (ec) {
-                                 handler_->HandleError(shared_from_this(), ec);
-                               } else {
-                                 boost::asio::ip::tcp::no_delay option(true);
-                                 socket_.set_option(option);
-                                 running_ = true;
-                                 LOG(INFO)
-                                     << "Connected to backend " << node_id_;
-                                 handler_->HandleConnected(shared_from_this());
-                                 DoReadHeader();
-                               }
-                             });
-}
-
-double BackendSession::GetUtilization() {
-  std::lock_guard<std::mutex> lock(util_mu_);
-  if (utilization_ >= 0 && Clock::now() <= expire_) {
-    return utilization_;
-  }
-  UtilizationRequest request;
-  UtilizationReply reply;
-  request.set_node_id(node_id_);
-  grpc::ClientContext ctx;
-  grpc::Status status = stub_->CurrentUtilization(&ctx, request, &reply);
-  if (!status.ok()) {
-    LOG(ERROR) << status.error_code() << ": " << status.error_message();
-    utilization_ = -1.;
-    return -1.;
-  }
-  utilization_ = reply.utilization();
-  expire_ = Clock::now() + std::chrono::milliseconds(reply.valid_ms());
-  // LOG(INFO) << "Backup " << node_id_ << " utilization " << utilization_;
-  return utilization_;
 }
 
 std::shared_ptr<BackendSession> BackendPool::GetBackend(uint32_t backend_id) {
@@ -93,7 +36,6 @@ std::shared_ptr<BackendSession> BackendPool::GetBackend(uint32_t backend_id) {
 
 void BackendPool::AddBackend(std::shared_ptr<BackendSession> backend) {
   std::lock_guard<std::mutex> lock(mu_);
-  backend->Start();
   backends_.emplace(backend->node_id(), backend);
 }
 

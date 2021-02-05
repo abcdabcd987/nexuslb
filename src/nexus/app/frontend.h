@@ -23,7 +23,6 @@
 #include "nexus/common/rdma_sender.h"
 #include "nexus/common/server_base.h"
 #include "nexus/common/spinlock.h"
-#include "nexus/proto/control.grpc.pb.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -152,6 +151,10 @@ class Frontend : public ServerBase, public MessageHandler {
    * \brief Map from model session ID to model handler.
    */
   std::unordered_map<std::string, std::shared_ptr<ModelHandler> > model_pool_;
+
+  // for UpdateBackendList
+  std::mutex connecting_backends_mutex_;
+  std::unordered_map<std::string, BackendInfo> connecting_backends_;
 
   std::thread daemon_thread_;
   /*! \brief Mutex for connection_pool_ and user_sessions_ */

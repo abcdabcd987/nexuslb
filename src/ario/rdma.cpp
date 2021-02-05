@@ -102,7 +102,8 @@ void RdmaManager::TcpAccept() {
 void RdmaManager::ConnectTcp(const std::string &host, uint16_t port) {
   fprintf(stderr, "Connecting TCP to host %s port %u\n", host.c_str(), port);
   tcp_socket_.Connect(executor_, host, port);
-  fprintf(stderr, "TCP socket connected\n");
+  fprintf(stderr, "TCP socket connected to %s:%d\n",
+          tcp_socket_.peer_ip().c_str(), tcp_socket_.peer_port());
   AddConnection(std::move(tcp_socket_));
 }
 

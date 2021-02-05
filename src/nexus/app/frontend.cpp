@@ -5,6 +5,7 @@
 #include <boost/asio.hpp>
 #include <limits>
 #include <mutex>
+#include <string>
 
 #include "nexus/common/config.h"
 #include "nexus/common/model_def.h"
@@ -94,7 +95,34 @@ void Frontend::Stop() {
 Frontend::RdmaHandler::RdmaHandler(Frontend& outer) : outer_(outer) {}
 
 void Frontend::RdmaHandler::OnConnected(ario::RdmaQueuePair* conn) {
-  outer_.promise_dispatcher_conn_.set_value(conn);
+  if (!outer_.dispatcher_conn_) {
+    outer_.promise_dispatcher_conn_.set_value(conn);
+    return;
+  }
+
+  // from Backend
+  auto key = conn->peer_ip() + ':' + std::to_string(conn->peer_tcp_port());
+  BackendInfo backend_info;
+  {
+    std::lock_guard<std::mutex> lock(outer_.connecting_backends_mutex_);
+    auto iter = outer_.connecting_backends_.find(key);
+    if (iter == outer_.connecting_backends_.end()) {
+      LOG(FATAL) << "Cannot find BackendInfo for " << key;
+    }
+    backend_info = std::move(iter->second);
+    outer_.connecting_backends_.erase(iter);
+  }
+  auto backend =
+      std::make_shared<BackendSession>(backend_info, conn, outer_.rdma_sender_);
+  outer_.backend_pool_.AddBackend(backend);
+
+  // Send TellNodeIdMessage
+  ControlMessage msg;
+  msg.mutable_tell_node_id()->set_node_id(backend_info.node_id());
+  outer_.rdma_sender_.SendMessage(conn, msg);
+
+  LOG(INFO) << "Connected to backend_id=" << backend_info.node_id() << " at "
+            << key;
 }
 
 void Frontend::RdmaHandler::OnRemoteMemoryRegionReceived(
@@ -189,18 +217,6 @@ void Frontend::HandleAccept() {
 }
 
 void Frontend::HandleConnected(std::shared_ptr<Connection> conn) {
-  if (auto backend_conn = std::dynamic_pointer_cast<BackendSession>(conn)) {
-    VLOG(1) << "HandleConnected: TellNodeIdMessage to backend_id="
-            << backend_conn->node_id();
-    TellNodeIdMessage msg;
-    msg.set_node_id(node_id_);
-    auto message = std::make_shared<Message>(MessageType::kConnFrontBack,
-                                             msg.ByteSizeLong());
-    message->EncodeBody(msg);
-    conn->Write(message);
-    VLOG(1) << "Finished HandleConnected: TellNodeIdMessage to backend_id="
-            << backend_conn->node_id();
-  }
 }
 
 void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
@@ -383,16 +399,16 @@ void Frontend::Unregister() {
 
 void Frontend::UpdateBackendList(const BackendListUpdates& request) {
   // TODO: remove this rpc when we remove TellNodeIdMessage.
-  VLOG(1) << "UpdateBackendList: backends_size()=" << request.backends_size();
-  for (auto backend_info : request.backends()) {
-    uint32_t backend_id = backend_info.node_id();
-    VLOG(1) << "UpdateBackendList: adding backend_id=" << backend_id;
-    // Establish connection to the backend and send frontend_id.
-    auto conn =
-        std::make_shared<BackendSession>(backend_info, io_context_, this);
-    backend_pool_.AddBackend(conn);
+  for (const auto& backend_info : request.backends()) {
+    auto key = backend_info.ip() + ':' + backend_info.server_port();
+    {
+      std::lock_guard<std::mutex> lock(connecting_backends_mutex_);
+      connecting_backends_[key] = backend_info;
+    }
+    LOG(INFO) << "Connecting to backend_id=" << backend_info.node_id() << " at "
+              << key;
+    rdma_.ConnectTcp(backend_info.ip(), std::stoi(backend_info.server_port()));
   }
-  VLOG(1) << "UpdateBackendList: done";
 }
 
 void Frontend::HandleDispatcherReply(const DispatchReply& request) {

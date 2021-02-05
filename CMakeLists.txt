@@ -7,7 +7,6 @@ set(LIBTF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libtensorflow_cc)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/boost)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/gflags)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/glog)
-list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/grpc)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/gtest)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/opencv)
 list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/yaml-cpp)
@@ -27,7 +26,6 @@ set(CUDA_PATH "/usr/local/cuda" CACHE STRING "Path to the Cuda toolkit")
 set(BOOST_ROOT /usr/local/boost)
 find_package(Boost 1.69.0 REQUIRED COMPONENTS system filesystem)
 find_package(Protobuf REQUIRED)
-find_package(gRPC REQUIRED)
 find_package(glog REQUIRED)
 find_package(gflags REQUIRED COMPONENTS shared)
 find_package(GTest REQUIRED)
@@ -55,16 +53,13 @@ target_link_libraries(ario PRIVATE ibverbs)
 set_target_properties(ario PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 
-###### protobuf & gRPC ######
+###### protobuf ######
 set(GENERATED_SRC_DIR ${CMAKE_CURRENT_BINARY_DIR}/gen)
 file(MAKE_DIRECTORY ${GENERATED_SRC_DIR}/src/nexus/proto)
 protobuf_generate_cpp(PROTO_NNQUERY_CC PROTO_NNQUERY_H
         ${GENERATED_SRC_DIR}/src/nexus/proto
         src/nexus/proto/nnquery.proto)
 protobuf_generate_cpp(PROTO_CONTROL_CC PROTO_CONTROL_H
-        ${GENERATED_SRC_DIR}/src/nexus/proto
-        src/nexus/proto/control.proto)
-grpc_generate_cpp(GRPC_CONTROL_CC GRPC_CONTROL_H
         ${GENERATED_SRC_DIR}/src/nexus/proto
         src/nexus/proto/control.proto)
 set(GENERATED_PY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/python/nexus/proto)
@@ -89,8 +84,6 @@ add_library(common OBJECT
         ${PROTO_NNQUERY_H}
         ${PROTO_CONTROL_CC}
         ${PROTO_CONTROL_H}
-        ${GRPC_CONTROL_CC}
-        ${GRPC_CONTROL_H}
         src/nexus/common/backend_pool.cpp
         src/nexus/common/buffer.cpp
         src/nexus/common/connection.cpp
@@ -111,7 +104,7 @@ target_include_directories(common PUBLIC
 target_compile_features(common PUBLIC cxx_std_17)
 target_link_libraries(common PUBLIC ario)
 target_link_libraries(common PUBLIC
-        yaml-cpp gflags glog::glog gRPC::grpc++ GTest::GTest protobuf::libprotobuf
+        yaml-cpp gflags glog::glog GTest::GTest protobuf::libprotobuf
         ${OpenCV_LIBS} Boost::filesystem Boost::system)
 set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

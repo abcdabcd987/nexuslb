@@ -1,23 +1,27 @@
 #ifndef NEXUS_COMMON_BACKEND_POOL_H_
 #define NEXUS_COMMON_BACKEND_POOL_H_
 
-#include <functional>
-#include <sstream>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <mutex>
+#include <string>
 #include <unordered_map>
 
+#include "ario/ario.h"
 #include "nexus/common/connection.h"
+#include "nexus/common/rdma_sender.h"
 #include "nexus/common/time_util.h"
-#include "nexus/proto/control.grpc.pb.h"
+#include "nexus/proto/control.pb.h"
 
 namespace nexus {
 
 class BackendPool;
 
-class BackendSession : public Connection {
+class BackendSession {
  public:
-  explicit BackendSession(const BackendInfo& info,
-                          boost::asio::io_context& io_context,
-                          MessageHandler* handler);
+  explicit BackendSession(const BackendInfo& info, ario::RdmaQueuePair* conn,
+                          RdmaSender rdma_sender);
 
   ~BackendSession();
 
@@ -29,25 +33,16 @@ class BackendSession : public Connection {
 
   inline std::string rpc_port() const { return rpc_port_; }
 
-  virtual void Start();
-
   virtual void Stop();
 
-  double GetUtilization();
-
  protected:
-  /*! \brief Asynchronously connect to backend server. */
-  void DoConnect();
-
-  /*! \brief Boost io service */
-  boost::asio::io_context& io_context_;
   uint32_t node_id_;
   std::string ip_;
   std::string server_port_;
   std::string rpc_port_;
+  ario::RdmaQueuePair* conn_;
+  RdmaSender rdma_sender_;
   std::atomic_bool running_;
-  std::unique_ptr<BackendCtrl::Stub> stub_;
-  double utilization_;
   TimePoint expire_;
   std::mutex util_mu_;
 };

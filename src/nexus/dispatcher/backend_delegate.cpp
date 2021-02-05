@@ -1,9 +1,6 @@
 #include "nexus/dispatcher/backend_delegate.h"
 
 #include <glog/logging.h>
-#include <grpc++/grpc++.h>
-
-#include <sstream>
 
 namespace nexus {
 namespace dispatcher {

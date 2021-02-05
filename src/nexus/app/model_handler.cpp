@@ -277,41 +277,6 @@ std::vector<uint32_t> ModelHandler::BackendList() {
   return ret;
 }
 
-std::shared_ptr<BackendSession> ModelHandler::GetBackend() {
-  std::lock_guard<std::mutex> lock(route_mu_);
-  switch (lb_policy_) {
-    case LB_WeightedRR: {
-      return GetBackendWeightedRoundRobin();
-    }
-    case LB_DeficitRR: {
-      auto backend = GetBackendDeficitRoundRobin();
-      if (backend != nullptr) {
-        return backend;
-      }
-      return GetBackendWeightedRoundRobin();
-    }
-    case LB_Query: {
-      auto candidate1 = GetBackendWeightedRoundRobin();
-      if (candidate1 == nullptr) {
-        return nullptr;
-      }
-      auto candidate2 = GetBackendWeightedRoundRobin();
-      if (candidate1 == candidate2) {
-        return candidate1;
-      }
-      if (candidate1->GetUtilization() <= candidate2->GetUtilization()) {
-        return candidate1;
-      }
-      return candidate2;
-    }
-    case LB_Dispatcher: {
-      LOG(FATAL) << "Unreachable.";
-    }
-    default:
-      return nullptr;
-  }
-}
-
 std::shared_ptr<BackendSession> ModelHandler::GetBackendWeightedRoundRobin() {
   std::uniform_real_distribution<float> dis(0, total_throughput_);
   float select = dis(rand_gen_);

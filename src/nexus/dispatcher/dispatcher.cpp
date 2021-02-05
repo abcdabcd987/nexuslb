@@ -47,7 +47,7 @@ Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
       rdma_(rdma_dev_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
       scheduler_(DispatcherAccessor(*this)) {
-  CHECK(!pin_cpus_.empty()) << "Currently CPU pinning is not supported.";
+  CHECK(pin_cpus_.empty()) << "Currently CPU pinning is not supported.";
 }
 
 Dispatcher::~Dispatcher() {
@@ -118,6 +118,7 @@ void Dispatcher::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
   }
   switch (req.message_case()) {
     case ControlMessage::MessageCase::kRegisterRequest: {
+      // Dispatcher <- Frontend/Backend
       ControlMessage resp;
       outer_.HandleRegister(conn, req.register_request(),
                             resp.mutable_register_reply());
@@ -125,27 +126,56 @@ void Dispatcher::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
       break;
     }
     case ControlMessage::MessageCase::kUnregisterRequest: {
+      // Dispatcher <- Frontend/Backend
       ControlMessage resp;
       outer_.HandleUnregister(req.unregister_request(),
                               resp.mutable_unregister_reply());
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
+    case ControlMessage::MessageCase::kInformAlive: {
+      // Dispatcher <- Frontend/Backend
+      outer_.HandleInformAlive(req.inform_alive());
+      break;
+    }
     case ControlMessage::MessageCase::kAddModel: {
+      // Dispatcher <- Frontend
       ControlMessage resp;
       outer_.HandleLoadModel(req.add_model(), resp.mutable_add_model_reply());
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
-    case ControlMessage::MessageCase::kInformAlive: {
-      outer_.HandleInformAlive(req.inform_alive());
-      break;
-    }
     case ControlMessage::MessageCase::kDispatch: {
+      // Dispatcher <- Frontend
       ControlMessage resp;
       outer_.HandleDispatch(req.mutable_dispatch(),
                             resp.mutable_dispatch_reply(), dispatcher_recv_ns);
       outer_.rdma_sender_.SendMessage(conn, resp);
+      break;
+    }
+    case ControlMessage::MessageCase::kLoadModelReply: {
+      // Dispatcher <- Backend
+      auto status = req.load_model_reply().status();
+      if (status != CtrlStatus::CTRL_OK) {
+        LOG(ERROR) << "LoadModelReply error: " << CtrlStatus_Name(status);
+      }
+      break;
+    }
+    case ControlMessage::MessageCase::kEnqueueQueryReply: {
+      // Dispatcher <- Backend
+      auto status = req.enqueue_query_reply().status();
+      if (status != CtrlStatus::CTRL_OK) {
+        LOG(ERROR) << "EnqueueQueryReply error: " << CtrlStatus_Name(status);
+      }
+      break;
+    }
+    case ControlMessage::MessageCase::kEnqueueBatchplanReply: {
+      // Dispatcher <- Backend
+      auto status = req.enqueue_batchplan_reply().status();
+      if (status != CtrlStatus::CTRL_OK) {
+        LOG(ERROR) << "EnqueueBatchplanReply error: "
+                   << CtrlStatus_Name(status);
+      }
       break;
     }
     default:
@@ -228,7 +258,7 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
     }
     case NodeType::BACKEND_NODE: {
       auto backend = std::make_shared<BackendDelegate>(
-          request.node_id(), conn->peer_ip(), conn->peer_tcp_port(),
+          request.node_id(), conn->peer_ip(), request.port(),
           request.gpu_device_name(), request.gpu_uuid(),
           request.gpu_available_memory(), beacon_interval_sec_, conn,
           rdma_sender_);
@@ -369,7 +399,7 @@ void Dispatcher::HandleInformAlive(const KeepAliveRequest& request) {
     case NodeType::FRONTEND_NODE: {
       auto it = frontends_.find(node_id);
       if (it == frontends_.end()) {
-        LOG(ERROR) << "InformAlive: Server not registered. node_id="
+        LOG(ERROR) << "InformAlive: Frontend not registered. node_id="
                    << node_id.t;
       } else {
         it->second->Tick();
@@ -380,7 +410,7 @@ void Dispatcher::HandleInformAlive(const KeepAliveRequest& request) {
     case NodeType::BACKEND_NODE: {
       auto it = backends_.find(node_id);
       if (it == backends_.end()) {
-        LOG(ERROR) << "InformAlive: Server not registered. node_id="
+        LOG(ERROR) << "InformAlive: Backend not registered. node_id="
                    << node_id.t;
       } else {
         it->second->Tick();
@@ -388,7 +418,8 @@ void Dispatcher::HandleInformAlive(const KeepAliveRequest& request) {
       break;
     }
     default: {
-      LOG(ERROR) << "InformAlive: Unknown node type: " << request.node_type();
+      LOG(ERROR) << "InformAlive: Unknown node type: " << request.node_type()
+                 << " node_id=" << request.node_id();
     }
   }
 }

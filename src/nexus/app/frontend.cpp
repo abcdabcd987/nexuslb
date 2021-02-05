@@ -19,6 +19,7 @@ namespace app {
 Frontend::Frontend(std::string rdma_dev, uint16_t rdma_tcp_server_port,
                    std::string nexus_server_port, std::string sch_addr)
     : ServerBase(nexus_server_port),
+      rdma_tcp_server_port_(rdma_tcp_server_port),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
       large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
@@ -35,7 +36,7 @@ Frontend::Frontend(std::string rdma_dev, uint16_t rdma_tcp_server_port,
     sch_port = SCHEDULER_DEFAULT_PORT;
   } else {
     sch_port = std::stoi(sch_addr.substr(sch_colon_idx + 1));
-    sch_addr.resize(sch_colon_idx - 1);
+    sch_addr.resize(sch_colon_idx);
   }
 
   rdma_.ConnectTcp(sch_addr, sch_port);
@@ -118,7 +119,7 @@ void Frontend::RdmaHandler::OnConnected(ario::RdmaQueuePair* conn) {
 
   // Send TellNodeIdMessage
   ControlMessage msg;
-  msg.mutable_tell_node_id()->set_node_id(backend_info.node_id());
+  msg.mutable_tell_node_id()->set_node_id(outer_.node_id_);
   outer_.rdma_sender_.SendMessage(conn, msg);
 
   LOG(INFO) << "Connected to backend_id=" << backend_info.node_id() << " at "
@@ -168,7 +169,7 @@ void Frontend::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
     }
     case ControlMessage::MessageCase::kAddModelReply: {
       // from Dispatcher
-      outer_.promise_load_model_reply_.set_value(
+      outer_.promise_add_model_reply_.set_value(
           std::move(*msg.mutable_add_model_reply()));
       break;
     }
@@ -216,8 +217,7 @@ void Frontend::HandleAccept() {
   conn->Start();
 }
 
-void Frontend::HandleConnected(std::shared_ptr<Connection> conn) {
-}
+void Frontend::HandleConnected(std::shared_ptr<Connection> conn) {}
 
 void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
                              std::shared_ptr<Message> message) {
@@ -332,9 +332,9 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req) {
 std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req,
                                                   LoadBalancePolicy lb_policy) {
   ControlMessage request;
-  request.mutable_add_model()->Swap(&req);
+  request.mutable_add_model()->CopyFrom(req);
   rdma_sender_.SendMessage(dispatcher_conn_, request);
-  auto reply = std::move(promise_load_model_reply_.get_future().get());
+  auto reply = std::move(promise_add_model_reply_.get_future().get());
   if (reply.status() != CTRL_OK) {
     LOG(ERROR) << "Load model error: " << CtrlStatus_Name(reply.status());
     return nullptr;
@@ -370,7 +370,7 @@ void Frontend::Register() {
   auto& request = *msg.mutable_register_request();
   request.set_node_type(FRONTEND_NODE);
   request.set_node_id(node_id_);
-  request.set_server_port(port());
+  request.set_port(rdma_tcp_server_port_);
 
   rdma_sender_.SendMessage(dispatcher_conn_, msg);
   auto reply = std::move(promise_register_reply_.get_future().get());
@@ -400,14 +400,14 @@ void Frontend::Unregister() {
 void Frontend::UpdateBackendList(const BackendListUpdates& request) {
   // TODO: remove this rpc when we remove TellNodeIdMessage.
   for (const auto& backend_info : request.backends()) {
-    auto key = backend_info.ip() + ':' + backend_info.server_port();
+    auto key = backend_info.ip() + ':' + std::to_string(backend_info.port());
     {
       std::lock_guard<std::mutex> lock(connecting_backends_mutex_);
       connecting_backends_[key] = backend_info;
     }
     LOG(INFO) << "Connecting to backend_id=" << backend_info.node_id() << " at "
               << key;
-    rdma_.ConnectTcp(backend_info.ip(), std::stoi(backend_info.server_port()));
+    rdma_.ConnectTcp(backend_info.ip(), backend_info.port());
   }
 }
 

@@ -110,6 +110,8 @@ class Frontend : public ServerBase, public MessageHandler {
   };
 
  private:
+  uint16_t rdma_tcp_server_port_;
+
   RdmaHandler rdma_handler_;
   ario::MemoryBlockAllocator small_buffers_;
   ario::MemoryBlockAllocator large_buffers_;
@@ -122,7 +124,7 @@ class Frontend : public ServerBase, public MessageHandler {
   std::promise<ario::RdmaQueuePair*> promise_dispatcher_conn_;
   std::promise<RegisterReply> promise_register_reply_;
   std::promise<RpcReply> promise_unregister_reply_;
-  std::promise<LoadModelReply> promise_load_model_reply_;
+  std::promise<LoadModelReply> promise_add_model_reply_;
 
   /*! \brief Indicator whether backend is running */
   std::atomic_bool running_;

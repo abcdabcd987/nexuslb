@@ -11,8 +11,7 @@ BackendSession::BackendSession(const BackendInfo& info,
                                RdmaSender rdma_sender)
     : node_id_(info.node_id()),
       ip_(info.ip()),
-      server_port_(info.server_port()),
-      rpc_port_(info.rpc_port()),
+      port_(info.port()),
       conn_(conn),
       rdma_sender_(rdma_sender),
       running_(true) {}

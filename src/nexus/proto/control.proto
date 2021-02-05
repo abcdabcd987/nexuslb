@@ -128,8 +128,7 @@ message RpcReply {
 message RegisterRequest {
   NodeType node_type = 1;
   uint32 node_id = 2;
-  string server_port = 3; // Deprecated
-  string rpc_port = 4; // Deprecated
+  uint32 port = 3;
   string gpu_device_name = 10;
   string gpu_uuid = 12;
   uint64 gpu_available_memory = 11;
@@ -155,8 +154,6 @@ message CheckAliveRequest {
 message BackendInfo {
   uint32 node_id = 1;
   string ip = 2;
-  string server_port = 3; // Deprecated
-  string rpc_port = 4; // Deprecated
   uint32 port = 5;
 }
 

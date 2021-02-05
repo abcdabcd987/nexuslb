@@ -22,7 +22,6 @@
 #include "nexus/common/block_queue.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/rdma_sender.h"
-#include "nexus/common/server_base.h"
 #include "nexus/common/spinlock.h"
 #include "nexus/common/typedef.h"
 #include "nexus/proto/control.pb.h"
@@ -34,7 +33,7 @@ namespace backend {
  * \brief Backend server runs on top of a GPU, handles queries from frontends,
  *   and executes model instances on GPU.
  */
-class BackendServer : public ServerBase {
+class BackendServer {
  public:
   using ModelTable = std::unordered_map<std::string, ModelExecutorPtr>;
 
@@ -56,11 +55,9 @@ class BackendServer : public ServerBase {
   /*! \brief Get GPU device ID */
   int gpu_id() const { return gpu_id_; }
   /*! \brief Starts the backend server */
-  void Run() final;
+  void Run();
   /*! \brief Stops the backend server */
-  void Stop() final;
-  /*! \brief Accepts a new connection */
-  void HandleAccept() final;
+  void Stop();
 
   void LoadModelEnqueue(const BackendLoadModelCommand& req);
   void LoadModel(const BackendLoadModelCommand& req);

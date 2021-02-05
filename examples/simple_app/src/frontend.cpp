@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
 
   CHECK_GT(FLAGS_framework.length(), 0) << "Missing framework";
   CHECK_GT(FLAGS_model.length(), 0) << "Missing model";
-  LOG(INFO) << "RDMA device " << FLAGS_rdma_dev << "RDMA TCP port "
+  LOG(INFO) << "RDMA device " << FLAGS_rdma_dev << ", RDMA TCP port "
             << FLAGS_rdma_port << ", Nexus port " << FLAGS_nexus_port;
   // Create the frontend server
   SimpleApp app(FLAGS_rdma_dev, FLAGS_rdma_port, FLAGS_nexus_port,

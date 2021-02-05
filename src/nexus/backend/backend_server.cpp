@@ -29,12 +29,12 @@ namespace backend {
 BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
                              std::string sch_addr, int gpu_id,
                              size_t num_workers, std::vector<int> cores)
-    : ServerBase(std::to_string(port)),
-      gpu_id_(gpu_id),
+    : gpu_id_(gpu_id),
       rdma_dev_(std::move(rdma_dev)),
+      rdma_port_(port),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
-      rdma_(rdma_dev_, nullptr, &small_buffers_),
+      rdma_(rdma_dev_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
       running_(false),
       rand_gen_(rd_()) {
@@ -63,7 +63,7 @@ BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
     sch_port = SCHEDULER_DEFAULT_PORT;
   } else {
     sch_port = std::stoi(sch_addr.substr(sch_colon_idx + 1));
-    sch_addr.resize(sch_colon_idx - 1);
+    sch_addr.resize(sch_colon_idx);
   }
   rdma_.ConnectTcp(sch_addr, sch_port);
   rdma_ev_thread_ = std::thread(&ario::RdmaManager::RunEventLoop, &rdma_);
@@ -124,9 +124,10 @@ void BackendServer::Run() {
   model_table_thread_ = std::thread(&BackendServer::ModelTableDaemon, this);
   daemon_thread_ = std::thread(&BackendServer::Daemon, this);
   LOG(INFO) << "Backend server (id: " << node_id_ << ") is listening on "
-            << address();
-  // Start the IO service
-  io_context_.run();
+            << "port " << rdma_port_;
+
+  // Block forever
+  rdma_ev_thread_.join();
 }
 
 void BackendServer::Stop() {
@@ -134,7 +135,6 @@ void BackendServer::Stop() {
   // Unregister backend server
   Unregister();
   // Stop accept new connections
-  ServerBase::Stop();
   rdma_.StopEventLoop();
   // Stop all frontend connections
   for (auto conn : all_connections_) {
@@ -284,10 +284,6 @@ void BackendServer::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
   }
   outer_.all_connections_.erase(conn);
   conn->Shutdown();
-}
-
-void BackendServer::HandleAccept() {
-  LOG(ERROR) << "Deprecated: BackendServer::HandleAccept";
 }
 
 void BackendServer::HandleFetchImageReply(FetchImageReply reply) {
@@ -540,7 +536,7 @@ void BackendServer::Register() {
   auto& request = *msg.mutable_register_request();
   request.set_node_type(BACKEND_NODE);
   request.set_node_id(node_id_);
-  request.set_server_port(port());
+  request.set_port(rdma_port_);
   request.set_gpu_device_name(gpu_name_);
   request.set_gpu_uuid(gpu_uuid_);
   request.set_gpu_available_memory(gpu_memory_);
@@ -573,7 +569,7 @@ void BackendServer::Unregister() {
 void BackendServer::KeepAlive() {
   ControlMessage resp;
   auto* reply = resp.mutable_inform_alive();
-  reply->set_node_type(FRONTEND_NODE);
+  reply->set_node_type(NodeType::BACKEND_NODE);
   reply->set_node_id(node_id_);
   rdma_sender_.SendMessage(dispatcher_conn_, resp);
 }

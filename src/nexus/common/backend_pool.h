@@ -25,21 +25,18 @@ class BackendSession {
 
   ~BackendSession();
 
-  inline uint32_t node_id() const { return node_id_; }
+  uint32_t node_id() const { return node_id_; }
 
-  inline std::string ip() const { return ip_; }
+  const std::string& ip() const { return ip_; }
 
-  inline std::string server_port() const { return server_port_; }
-
-  inline std::string rpc_port() const { return rpc_port_; }
+  uint16_t port() const { return port_; }
 
   virtual void Stop();
 
  protected:
   uint32_t node_id_;
   std::string ip_;
-  std::string server_port_;
-  std::string rpc_port_;
+  uint16_t port_;
   ario::RdmaQueuePair* conn_;
   RdmaSender rdma_sender_;
   std::atomic_bool running_;

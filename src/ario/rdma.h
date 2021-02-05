@@ -122,7 +122,7 @@ class RdmaManager {
 
   std::mutex mr_mutex_;
   std::unordered_map<void *, ibv_mr *> mr_ /* GUARDED_BY(mr_mutex_) */;
-  ibv_mr *exposed_mr_;
+  ibv_mr *exposed_mr_ = nullptr;
 
   PollerType poller_type_;
   std::atomic<bool> poller_stop_{false};

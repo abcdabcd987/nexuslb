@@ -124,7 +124,6 @@ RdmaQueuePair::RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp)
   BuildQueuePair();
   TransitQueuePairToInit();
   SendConnInfo();
-  RecvConnInfo();
 }
 
 RdmaQueuePair::~RdmaQueuePair() {
@@ -211,12 +210,13 @@ void RdmaQueuePair::SendConnInfo() {
 
   fprintf(stderr, "Sending ConnInfo\n");
   ConstBuffer buf(msg.get(), sizeof(*msg));
-  tcp_.AsyncWrite(buf, [msg = std::move(msg)](int err, size_t) {
+  tcp_.AsyncWrite(buf, [this, msg = std::move(msg)](int err, size_t) {
     if (err) {
       fprintf(stderr, "SendConnInfo: AsyncWrite err = %d\n", err);
       die("SendConnInfo AsyncWrite callback");
     }
     fprintf(stderr, "ConnInfo sent\n");
+    RecvConnInfo();
   });
 }
 

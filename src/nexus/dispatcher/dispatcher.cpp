@@ -99,6 +99,7 @@ void Dispatcher::RdmaHandler::OnRemoteMemoryRegionReceived(
 }
 
 void Dispatcher::RdmaHandler::OnRdmaReadComplete(ario::RdmaQueuePair* conn,
+                                                 ario::WorkRequestID wrid,
                                                  ario::OwnedMemoryBlock buf) {
   // Do nothing.
 }
@@ -148,7 +149,7 @@ void Dispatcher::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
     case ControlMessage::MessageCase::kDispatch: {
       // Dispatcher <- Frontend
       ControlMessage resp;
-      outer_.HandleDispatch(req.mutable_dispatch(),
+      outer_.HandleDispatch(std::move(*req.mutable_dispatch()),
                             resp.mutable_dispatch_reply(), dispatcher_recv_ns);
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
@@ -193,29 +194,27 @@ void Dispatcher::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
   LOG(ERROR) << "TODO: Dispatcher::RdmaHandler::OnError";
 }
 
-void Dispatcher::HandleDispatch(DispatchRequest* request, DispatchReply* reply,
+void Dispatcher::HandleDispatch(DispatchRequest&& request, DispatchReply* reply,
                                 long dispatcher_recv_ns) {
-  *reply->mutable_model_session() = request->model_session();
-  reply->set_query_id(request->query_id());
-  QueryProto query_without_input;
-  query_without_input.Swap(request->mutable_query_without_input());
-  query_without_input.mutable_clock()->set_dispatcher_recv_ns(
-      dispatcher_recv_ns);
+  *reply->mutable_model_session() = request.model_session();
+  reply->set_query_id(request.query_id());
+  auto* query_without_input = request.mutable_query_without_input();
+  auto* clock = query_without_input->mutable_clock();
+  clock->set_dispatcher_recv_ns(dispatcher_recv_ns);
 
   // Update punch clock
   auto dispatcher_sched_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           Clock::now().time_since_epoch())
           .count();
-  query_without_input.mutable_clock()->set_dispatcher_sched_ns(
-      dispatcher_sched_ns);
+  clock->set_dispatcher_sched_ns(dispatcher_sched_ns);
 
   // Assign GlobalId
   auto global_id = next_global_id_.fetch_add(1);
-  query_without_input.set_global_id(global_id);
+  query_without_input->set_global_id(global_id);
 
   // Enqueue query
-  auto status = scheduler_.EnqueueQuery(std::move(query_without_input));
+  auto status = scheduler_.EnqueueQuery(std::move(request));
   reply->set_status(status);
 }
 

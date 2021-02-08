@@ -132,6 +132,7 @@ void Frontend::RdmaHandler::OnRemoteMemoryRegionReceived(
 }
 
 void Frontend::RdmaHandler::OnRdmaReadComplete(ario::RdmaQueuePair* conn,
+                                               ario::WorkRequestID wrid,
                                                ario::OwnedMemoryBlock buf) {
   // Do nothing
 }
@@ -181,15 +182,6 @@ void Frontend::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
     case ControlMessage::MessageCase::kDispatchReply: {
       // from Dispatcher
       outer_.HandleDispatcherReply(msg.dispatch_reply());
-      break;
-    }
-    case ControlMessage::MessageCase::kFetchImageRequest: {
-      // from Backend
-      // TODO: replace with READ
-      ControlMessage resp;
-      outer_.FetchImage(msg.fetch_image_request(),
-                        resp.mutable_fetch_image_reply());
-      outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
     case ControlMessage::ControlMessage::kQueryResult: {
@@ -266,29 +258,6 @@ void Frontend::HandleQueryResult(const QueryResultProto& result) {
   itr->second->HandleBackendReply(result);
 }
 
-void Frontend::FetchImage(const FetchImageRequest& request,
-                          FetchImageReply* reply) {
-  auto iter = model_pool_.find(request.model_session_id());
-  if (iter == model_pool_.end()) {
-    LOG(ERROR) << "Cannot find model handler for "
-               << request.model_session_id();
-    return;
-  }
-  auto qid = request.query_id();
-  VLOG(1) << "kFetchImageRequest: model_session=" << request.model_session_id()
-          << ", query_id=" << qid;
-  reply->set_global_id(request.global_id());
-  bool ok = iter->second->FetchImage(QueryId(qid), reply->mutable_input());
-  if (ok) {
-    reply->set_status(CtrlStatus::CTRL_OK);
-  } else {
-    reply->set_status(CtrlStatus::CTRL_IMAGE_NOT_FOUND);
-    LOG(ERROR) << "FetchImage not found. model_session_id="
-               << request.model_session_id()
-               << ", global_id=" << request.global_id();
-  }
-}
-
 void Frontend::HandleError(std::shared_ptr<Connection> conn,
                            boost::system::error_code ec) {
   if (auto backend_conn = std::dynamic_pointer_cast<BackendSession>(conn)) {
@@ -340,9 +309,9 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req,
     return nullptr;
   }
   auto model_session_id = ModelSessionToString(req.model_session());
-  auto model_handler =
-      std::make_shared<ModelHandler>(model_session_id, backend_pool_, lb_policy,
-                                     node_id_, dispatcher_conn_, rdma_sender_);
+  auto model_handler = std::make_shared<ModelHandler>(
+      model_session_id, backend_pool_, lb_policy, node_id_, dispatcher_conn_,
+      rdma_sender_, &large_buffers_);
   // Only happens at Setup stage, so no concurrent modification to model_pool_
   model_pool_.emplace(model_handler->model_session_id(), model_handler);
   // UpdateBackendPoolAndModelRoute(reply.model_route());

@@ -337,7 +337,7 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
   }
   VLOG(1) << "Executing BatchPlan: plan_id=" << plan->proto().plan_id()
           << ", model_session=" << plan->proto().model_session_id()
-          << ", batch_size=" << plan->proto().queries_without_input_size()
+          << ", batch_size=" << plan->proto().queries_size()
           << ", exec_time_offset=" << offset_us << "us";
   model->ExecuteBatchPlan(plan);
   auto finish_time = Clock::now();

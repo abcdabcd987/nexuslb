@@ -30,15 +30,11 @@ void Task::SetConnection(ario::RdmaQueuePair* conn) { connection = conn; }
 
 void Task::SetPlanId(PlanId plan_id) { this->plan_id = plan_id; }
 
-void Task::DecodeQuery(std::shared_ptr<Message> message) {
-  QueryProto decoded_query;
-  msg_type = message->type();
-  message->DecodeBody(&decoded_query);
-  SetQuery(std::move(decoded_query));
-}
-
-void Task::SetQuery(QueryProto decoded_query) {
+void Task::SetQuery(QueryProto decoded_query, uint64_t rdma_read_offset,
+                    uint64_t rdma_read_length) {
   query = std::move(decoded_query);
+  this->rdma_read_offset = rdma_read_offset;
+  this->rdma_read_length = rdma_read_length;
   ModelSession sess;
   ParseModelSession(query.model_session_id(), &sess);
   uint32_t budget = sess.latency_sla();

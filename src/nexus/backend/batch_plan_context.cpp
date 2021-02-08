@@ -9,8 +9,8 @@ namespace backend {
 
 BatchPlanContext::BatchPlanContext(BatchPlanProto proto)
     : proto_(std::move(proto)), plan_id_(proto_.plan_id()) {
-  for (const auto& query : proto_.queries_without_input()) {
-    auto global_id = GlobalId(query.global_id());
+  for (const auto& query : proto_.queries()) {
+    auto global_id = GlobalId(query.query_without_input().global_id());
     auto pair = global_ids_.insert(global_id);
     if (!pair.second) {
       LOG(ERROR) << "Duplicated query in BatchPlan. global_id=" << global_id.t

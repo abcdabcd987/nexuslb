@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "ario/ario.h"
 #include "nexus/app/model_handler.h"
 #include "nexus/app/user_session.h"
 #include "nexus/common/block_queue.h"
@@ -108,11 +109,15 @@ class RequestContext : public DeadlineItem,
 
   const TimePoint& frontend_recv_time() const { return frontend_recv_time_; }
 
+  uint64_t rdma_read_offset() const { return rdma_read_offset_; }
+  uint64_t rdma_read_length() const { return rdma_read_length_; }
+
   void SetState(RequestState state);
 
   void SetExecBlocks(std::vector<ExecBlock*> blocks);
 
-  void SetBackendQueryProto(QueryProto query_proto);
+  void SetBackendQueryProto(QueryProto query_proto,
+                            ario::OwnedMemoryBlock&& exposed_memory_block);
 
   ExecBlock* NextReadyBlock();
 
@@ -143,6 +148,10 @@ class RequestContext : public DeadlineItem,
   QueryProto backend_query_proto_;
   bool has_backend_query_sent_ = false;
   TimePoint frontend_recv_time_;
+
+  ario::OwnedMemoryBlock exposed_memory_block_;
+  uint64_t rdma_read_offset_ = 0;
+  uint64_t rdma_read_length_ = 0;
 
   std::deque<ExecBlock*> ready_blocks_;
   std::unordered_map<int, ExecBlock*> pending_blocks_;

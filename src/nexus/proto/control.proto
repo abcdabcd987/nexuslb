@@ -70,11 +70,9 @@ message ControlMessage {
 
     // Frontend <- Backend
     QueryResultProto query_result = 28;
-    FetchImageRequest fetch_image_request = 1001; // TODO: replace with READ
 
     // Backend <- Frontend
     TellNodeIdMessage tell_node_id = 29;
-    FetchImageReply fetch_image_reply = 1002; // TODO: replace with READ
   }
 }
 
@@ -252,6 +250,8 @@ message DispatchRequest {
   ModelSession model_session = 1;
   uint64 query_id = 2;
   QueryProto query_without_input = 4;
+  uint64 rdma_read_offset = 5;
+  uint64 rdma_read_length = 6;
 }
 
 message DispatchReply {
@@ -269,26 +269,16 @@ message TellNodeIdMessage {
   uint32 node_id = 1;
 }
 
-message FetchImageRequest {
-  string model_session_id = 1;
-  uint64 query_id = 2;
-  uint64 global_id = 3;
-}
-
-message FetchImageReply {
-  CtrlStatus status = 3;
-  uint64 global_id = 1;
-  ValueProto input = 2;
-}
-
 message EnqueueQueryCommand {
   QueryProto query_without_input = 1;
+  uint64 rdma_read_offset = 2;
+  uint64 rdma_read_length = 3;
 }
 
 message BatchPlanProto {
   uint64 plan_id = 1;
   string model_session_id = 2;
-  repeated QueryProto queries_without_input = 3;
+  repeated EnqueueQueryCommand queries = 3;
   uint64 exec_time_ns = 4;
   uint64 deadline_ns = 5;
   uint64 expected_finish_time_ns = 6;

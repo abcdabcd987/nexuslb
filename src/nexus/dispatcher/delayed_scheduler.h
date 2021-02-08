@@ -28,9 +28,9 @@ class DispatcherAccessor;
 namespace delayed {
 
 struct QueryContext {
-  QueryContext(QueryProto query_without_input, TimePoint deadline);
+  QueryContext(DispatchRequest request, TimePoint deadline);
 
-  QueryProto proto;
+  DispatchRequest request;
   GlobalId global_id;
   TimePoint deadline;
 };
@@ -113,8 +113,7 @@ class DelayedScheduler {
   void Stop();
   void AddModelSession(ModelSession model_session) /* EXCLUDES(mutex_) */;
   void AddBackend(NodeId backend_id) /* EXCLUDES(mutex_) */;
-  CtrlStatus EnqueueQuery(
-      QueryProto query_without_input) /* EXCLUDES(mutex_) */;
+  CtrlStatus EnqueueQuery(DispatchRequest&& request) /* EXCLUDES(mutex_) */;
 
  private:
   PlanId NextPlanId() /* REQUIRES(mutex_) */;

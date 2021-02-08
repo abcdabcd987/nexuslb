@@ -90,14 +90,13 @@ class Frontend : public ServerBase, public MessageHandler {
   void UpdateBackendList(const BackendListUpdates& request);
   void HandleDispatcherReply(const DispatchReply& request);
   void HandleQueryResult(const QueryResultProto& result);
-  void FetchImage(const FetchImageRequest& request, FetchImageReply* reply);
 
   class RdmaHandler : public ario::RdmaEventHandler {
    public:
     void OnConnected(ario::RdmaQueuePair* conn) override;
     void OnRemoteMemoryRegionReceived(ario::RdmaQueuePair* conn, uint64_t addr,
                                       size_t size) override;
-    void OnRdmaReadComplete(ario::RdmaQueuePair* conn,
+    void OnRdmaReadComplete(ario::RdmaQueuePair* conn, ario::WorkRequestID wrid,
                             ario::OwnedMemoryBlock buf) override;
     void OnRecv(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) override;
     void OnSent(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) override;

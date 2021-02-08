@@ -94,8 +94,8 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
    * \brief Decode query from message.
    * \param message Message received from frontend
    */
-  void DecodeQuery(std::shared_ptr<Message> message);
-  void SetQuery(QueryProto decoded_query);
+  void SetQuery(QueryProto decoded_query, uint64_t rdma_read_offset,
+                uint64_t rdma_read_length);
   /*!
    * \brief Append preprocessed input array to task.
    * \param arr Input array
@@ -127,6 +127,8 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
   MessageType msg_type;
   /*! \brief Query to process */
   QueryProto query;
+  uint64_t rdma_read_offset = 0;
+  uint64_t rdma_read_length = 0;
   /*! \brief Query result */
   QueryResultProto result;
   /*! \brief Model instance to execute for the task */

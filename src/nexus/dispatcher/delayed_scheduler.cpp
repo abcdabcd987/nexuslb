@@ -34,9 +34,9 @@ constexpr uint32_t kDataPlaneLatencyUs = 5000;
 
 }  // namespace
 
-QueryContext::QueryContext(QueryProto query_without_input, TimePoint deadline)
-    : proto(std::move(query_without_input)),
-      global_id(proto.global_id()),
+QueryContext::QueryContext(DispatchRequest request, TimePoint deadline)
+    : request(std::move(request)),
+      global_id(this->request.query_without_input().global_id()),
       deadline(deadline) {}
 
 InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
@@ -153,14 +153,17 @@ void DelayedScheduler::AddBackend(NodeId backend_id) {
   }
 }
 
-CtrlStatus DelayedScheduler::EnqueueQuery(QueryProto query_without_input) {
-  ModelSession model_session;
-  ParseModelSession(query_without_input.model_session_id(), &model_session);
-  auto deadline = TimePoint(
-      std::chrono::nanoseconds(query_without_input.clock().frontend_recv_ns()) +
-      std::chrono::milliseconds(model_session.latency_sla()));
-  auto qctx =
-      std::make_shared<QueryContext>(std::move(query_without_input), deadline);
+CtrlStatus DelayedScheduler::EnqueueQuery(DispatchRequest&& request) {
+  std::shared_ptr<QueryContext> qctx;
+  {
+    const auto& q = request.query_without_input();
+    ModelSession model_session;
+    ParseModelSession(q.model_session_id(), &model_session);
+    auto deadline =
+        TimePoint(std::chrono::nanoseconds(q.clock().frontend_recv_ns()) +
+                  std::chrono::milliseconds(model_session.latency_sla()));
+    qctx = std::make_shared<QueryContext>(std::move(request), deadline);
+  }
 
   // Add to pending queries
   {
@@ -169,10 +172,12 @@ CtrlStatus DelayedScheduler::EnqueueQuery(QueryProto query_without_input) {
       LOG(ERROR) << "Query already exists. global_id=" << qctx->global_id.t;
       return CtrlStatus::CTRL_GLOBAL_ID_CONFLICT;
     }
-    auto miter = models_.find(qctx->proto.model_session_id());
+    const auto& model_session_id =
+        qctx->request.query_without_input().model_session_id();
+    auto miter = models_.find(model_session_id);
     if (miter == models_.end()) {
       LOG(ERROR) << "Cannot find model session. global_id=" << qctx->global_id.t
-                 << ", model_session=" << qctx->proto.model_session_id();
+                 << ", model_session=" << model_session_id;
       return CtrlStatus::MODEL_SESSION_NOT_LOADED;
     }
     queries_[qctx->global_id] = qctx;
@@ -286,18 +291,20 @@ void DelayedScheduler::WorkFullSchedule() {
   lock.unlock();
   DispatchReply dispatch_reply;
   for (auto& qctx : dropped) {
-    auto frontend_id = NodeId(qctx->proto.frontend_id());
+    auto frontend_id =
+        NodeId(qctx->request.query_without_input().frontend_id());
     auto frontend = dispatcher_.GetFrontend(frontend_id);
+    const auto& model_session_id =
+        qctx->request.query_without_input().model_session_id();
     if (!frontend) {
       LOG(ERROR) << "Cannot find frontend. frontend_id=" << frontend_id.t
                  << ", global_id=" << qctx->global_id.t
-                 << ", model_session=" << qctx->proto.model_session_id();
+                 << ", model_session=" << model_session_id;
       continue;
     }
     dispatch_reply.Clear();
-    ParseModelSession(qctx->proto.model_session_id(),
-                      dispatch_reply.mutable_model_session());
-    dispatch_reply.set_query_id(qctx->proto.query_id());
+    ParseModelSession(model_session_id, dispatch_reply.mutable_model_session());
+    dispatch_reply.set_query_id(qctx->request.query_without_input().query_id());
     dispatch_reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
     frontend->MarkQueryDroppedByDispatcher(std::move(dispatch_reply));
   }
@@ -506,6 +513,7 @@ void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
     return;
   }
   BatchPlanProto proto;
+  EnqueueQueryCommand query;
   proto.set_plan_id(plan.plan_id.t);
   proto.set_model_session_id(plan.model_session_id);
   proto.set_exec_time_ns(
@@ -516,15 +524,22 @@ void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
   proto.set_expected_finish_time_ns(
       duration_cast<nanoseconds>(plan.finish_time.time_since_epoch()).count());
   for (auto& qctx : queries) {
-    *proto.add_queries_without_input() = std::move(qctx->proto);
+    query.mutable_query_without_input()->Swap(
+        qctx->request.mutable_query_without_input());
+    query.set_rdma_read_offset(qctx->request.rdma_read_offset());
+    query.set_rdma_read_length(qctx->request.rdma_read_length());
+    qctx->request.Clear();
+    *proto.add_queries() = std::move(query);
   }
   // Update punch clock
   auto dispatcher_dispatch_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           Clock::now().time_since_epoch())
           .count();
-  for (auto& query : *proto.mutable_queries_without_input()) {
-    query.mutable_clock()->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
+  for (auto& query : *proto.mutable_queries()) {
+    query.mutable_query_without_input()
+        ->mutable_clock()
+        ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
   }
   // Send to backend
   VLOG(1) << "WorkFinalizePlan: send to backend.";

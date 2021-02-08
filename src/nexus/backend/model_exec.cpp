@@ -435,7 +435,7 @@ void ModelExecutor::RemoveTask(std::shared_ptr<Task> task) {
 
 void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   auto batch_task = GetBatchTaskByBatchPlan(plan);
-  int dequeue_cnt = plan->proto().queries_without_input_size();
+  int dequeue_cnt = plan->proto().queries_size();
   drop_counter_->Increase(dequeue_cnt - batch_task->batch_size());
   if (batch_task->batch_size() == 0) {
     std::lock_guard<std::mutex> lock(time_mu_);
@@ -494,11 +494,11 @@ std::shared_ptr<BatchTask> ModelExecutor::GetBatchTaskByBatchPlan(
       batch_task->AppendInput(input, task);
     }
   }
-  if (batch_task->batch_size() != plan->proto().queries_without_input_size()) {
+  if (batch_task->batch_size() != plan->proto().queries_size()) {
     LOG(WARNING) << "Actual batch size differs from BatchPlan. plan_id="
                  << plan->proto().plan_id()
                  << ", actual=" << batch_task->batch_size()
-                 << ", expected=" << plan->proto().queries_without_input_size();
+                 << ", expected=" << plan->proto().queries_size();
   }
   return batch_task;
 }

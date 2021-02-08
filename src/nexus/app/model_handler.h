@@ -85,7 +85,8 @@ class ModelHandler {
  public:
   ModelHandler(const std::string& model_session_id, BackendPool& pool,
                LoadBalancePolicy lb_policy, NodeId frontend_id,
-               ario::RdmaQueuePair* dispatcher_conn, RdmaSender rdma_sender);
+               ario::RdmaQueuePair* dispatcher_conn, RdmaSender rdma_sender,
+               ario::MemoryBlockAllocator* input_memory_allocator);
 
   ~ModelHandler();
 
@@ -127,6 +128,7 @@ class ModelHandler {
 
   ario::RdmaQueuePair* dispatcher_conn_;
   RdmaSender rdma_sender_;
+  ario::MemoryBlockAllocator* input_memory_allocator_;
 
   std::vector<uint32_t> backends_;
   /*!

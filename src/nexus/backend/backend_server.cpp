@@ -10,7 +10,6 @@
 #include <string>
 #include <unordered_set>
 
-#include "ario/rdma.h"
 #include "nexus/backend/gpu_executor.h"
 #include "nexus/backend/share_prefix_model.h"
 #include "nexus/backend/tf_share_model.h"
@@ -20,6 +19,7 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/sleep_profile.h"
 #include "nexus/proto/control.pb.h"
+#include "nexus/proto/nnquery.pb.h"
 
 DEFINE_int32(occupancy_valid, 10, "Backup backend occupancy valid time in ms");
 
@@ -34,6 +34,7 @@ BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
       rdma_port_(port),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
+      large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
       rdma_(rdma_dev_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
       running_(false),
@@ -54,6 +55,7 @@ BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
   gpu_memory_ = 0;
 #endif
 
+  rdma_.RegisterLocalMemory(&large_buffers_);
   rdma_.ListenTcp(port);
 
   // Init scheduler client
@@ -180,9 +182,9 @@ void BackendServer::RdmaHandler::OnRemoteMemoryRegionReceived(
 }
 
 void BackendServer::RdmaHandler::OnRdmaReadComplete(
-    ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) {
-  LOG(FATAL)
-      << "NotImplemented: BackendServer::RdmaHandler::OnRdmaReadComplete";
+    ario::RdmaQueuePair* conn, ario::WorkRequestID wrid,
+    ario::OwnedMemoryBlock buf) {
+  outer_.HandleFetchImageReply(wrid, std::move(buf));
 }
 
 void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
@@ -223,9 +225,10 @@ void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
     }
     case ControlMessage::MessageCase::kEnqueueQuery: {
       // from Dispatcher
-      const auto& msg = req.enqueue_query();
+      auto& msg = *req.mutable_enqueue_query();
       auto task = std::make_shared<Task>(nullptr);
-      task->SetQuery(msg.query_without_input());
+      task->SetQuery(std::move(*msg.mutable_query_without_input()),
+                     msg.rdma_read_offset(), msg.rdma_read_length());
       bool ok = outer_.EnqueueQuery(task);
 
       ControlMessage resp;
@@ -237,7 +240,7 @@ void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
     case ControlMessage::MessageCase::kEnqueueBatchplan: {
       // from Dispatcher
       ControlMessage resp;
-      outer_.HandleEnqueueBatchPlan(req.enqueue_batchplan(),
+      outer_.HandleEnqueueBatchPlan(std::move(*req.mutable_enqueue_batchplan()),
                                     resp.mutable_enqueue_batchplan_reply());
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
@@ -249,13 +252,6 @@ void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
       VLOG(1) << "kConnFrontBack: frontend_id=" << node_id.t;
       outer_.node_connections_[node_id] = conn;
       outer_.map_connection_nodeid_[conn] = node_id;
-      break;
-    }
-    case ControlMessage::MessageCase::kFetchImageReply: {
-      // from Frontend
-      // TODO: replace with READ
-      auto* msg = req.mutable_fetch_image_reply();
-      outer_.HandleFetchImageReply(std::move(*msg));
       break;
     }
     default:
@@ -286,35 +282,39 @@ void BackendServer::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
   conn->Shutdown();
 }
 
-void BackendServer::HandleFetchImageReply(FetchImageReply reply) {
+void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
+                                          ario::OwnedMemoryBlock buf) {
   auto backend_got_image_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           Clock::now().time_since_epoch())
           .count();
-  auto global_id = GlobalId(reply.global_id());
-  VLOG(1) << "HandleFetchImageReply: global_id=" << global_id.t;
   std::shared_ptr<Task> task;
   {
     std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
-    auto iter = tasks_pending_fetch_image_.find(global_id);
+    auto iter = tasks_pending_fetch_image_.find(wrid);
     if (iter == tasks_pending_fetch_image_.end()) {
       LOG(ERROR) << "Cannot find Task pending FetchImage. "
-                 << "global_id=" << global_id.t;
+                 << "wrid=" << wrid.DebugString();
       return;
     }
     task = iter->second;
     tasks_pending_fetch_image_.erase(iter);
   }
-  task->query.mutable_clock()->set_backend_got_image_ns(backend_got_image_ns);
-  if (reply.status() != CtrlStatus::CTRL_OK) {
-    LOG(ERROR) << "FetchImageReply not ok. status="
-               << CtrlStatus_Name(reply.status())
-               << ", global_id=" << global_id.t;
-    task->result.set_status(reply.status());
-    // TODO: SendReply
+  auto global_id = task->query.global_id();
+  VLOG(1) << "HandleFetchImageReply: global_id=" << global_id
+          << ", wrid=" << wrid.DebugString();
+
+  // TODO: avoid deserialization
+  auto* input = task->query.mutable_input();
+  auto view = buf.AsMessageView();
+  bool ok = input->ParseFromArray(view.bytes(), view.bytes_length());
+  if (!ok) {
+    LOG(ERROR) << "Failed to deserialize input image. global_id=" << global_id
+               << ", wrid=" << wrid.DebugString();
     return;
   }
-  task->query.mutable_input()->Swap(reply.mutable_input());
+
+  task->query.mutable_clock()->set_backend_got_image_ns(backend_got_image_ns);
   task->stage = Stage::kPreprocess;
   task_queue_.push(std::move(task));
 }
@@ -382,45 +382,34 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
     frontend_conn = iter->second;
   }
   task->SetConnection(frontend_conn);
-  auto global_id = GlobalId(task->query.global_id());
-  {
-    std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
-    if (tasks_pending_fetch_image_.count(global_id)) {
-      LOG(ERROR) << "GlobalId of the incoming request is not unique. Skip. "
-                 << "global_id=" << global_id.t;
-      task->result.set_status(CtrlStatus::CTRL_GLOBAL_ID_CONFLICT);
-      // TODO: SendReply
-      return false;
-    }
-    tasks_pending_fetch_image_[global_id] = task;
-  }
 
-  // Send FetchImage rpc
+  // RDMA READ input image from Frontend
   auto backend_fetch_image_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           Clock::now().time_since_epoch())
           .count();
   task->query.mutable_clock()->set_backend_fetch_image_ns(
       backend_fetch_image_ns);
-  ControlMessage request;
-  auto* req = request.mutable_fetch_image_request();
-  *req->mutable_model_session_id() = task->query.model_session_id();
-  req->set_query_id(task->query.query_id());
-  req->set_global_id(global_id.t);
-  VLOG(1) << "Send FetchImageRequest: global_id=" << global_id.t;
-
-  rdma_sender_.SendMessage(frontend_conn, request);
+  auto global_id = task->query.global_id();
+  VLOG(1) << "RDMA READ input image from Frontend: global_id=" << global_id;
+  auto wrid =
+      frontend_conn->AsyncRead(large_buffers_.Allocate(),
+                               task->rdma_read_offset, task->rdma_read_length);
+  {
+    std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
+    tasks_pending_fetch_image_[wrid] = task;
+  }
   return true;
 }
 
-void BackendServer::HandleEnqueueBatchPlan(const BatchPlanProto& req,
+void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,
                                            RpcReply* reply) {
   auto backend_recv_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                              Clock::now().time_since_epoch())
                              .count();
 
   // Add batchplan
-  auto plan = std::make_shared<BatchPlanContext>(req);
+  auto plan = std::make_shared<BatchPlanContext>(std::move(req));
   {
     std::lock_guard<std::mutex> lock(mu_pending_plans_);
     if (pending_plans_.count(plan->plan_id())) {
@@ -433,14 +422,15 @@ void BackendServer::HandleEnqueueBatchPlan(const BatchPlanProto& req,
 
   // Enqueue queries
   reply->set_status(CtrlStatus::CTRL_OK);
-  for (const auto& query : plan->proto().queries_without_input()) {
+  for (const auto& query : plan->proto().queries()) {
     auto task = std::make_shared<Task>(nullptr);
-    task->SetQuery(query);
+    task->SetQuery(query.query_without_input(), query.rdma_read_offset(),
+                   query.rdma_read_length());
     task->SetPlanId(plan->plan_id());
     task->query.mutable_clock()->set_backend_recv_ns(backend_recv_ns);
     bool ok = EnqueueQuery(task);
     if (!ok) {
-      plan->MarkQueryDropped(GlobalId(query.global_id()));
+      plan->MarkQueryDropped(GlobalId(query.query_without_input().global_id()));
       reply->set_status(CtrlStatus(task->result.status()));
     }
   }

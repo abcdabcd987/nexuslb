@@ -61,7 +61,7 @@ class BackendServer {
 
   void LoadModelEnqueue(const BackendLoadModelCommand& req);
   void LoadModel(const BackendLoadModelCommand& req);
-  void HandleEnqueueBatchPlan(const BatchPlanProto& req, RpcReply* reply);
+  void HandleEnqueueBatchPlan(BatchPlanProto&& req, RpcReply* reply);
   void MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task);
 
   /*!
@@ -92,14 +92,15 @@ class BackendServer {
   void KeepAlive();
 
   bool EnqueueQuery(std::shared_ptr<Task> task);
-  void HandleFetchImageReply(FetchImageReply reply);
+  void HandleFetchImageReply(ario::WorkRequestID wrid,
+                             ario::OwnedMemoryBlock buf);
 
   class RdmaHandler : public ario::RdmaEventHandler {
    public:
     void OnConnected(ario::RdmaQueuePair* conn) override;
     void OnRemoteMemoryRegionReceived(ario::RdmaQueuePair* conn, uint64_t addr,
                                       size_t size) override;
-    void OnRdmaReadComplete(ario::RdmaQueuePair* conn,
+    void OnRdmaReadComplete(ario::RdmaQueuePair* conn, ario::WorkRequestID wrid,
                             ario::OwnedMemoryBlock buf) override;
     void OnRecv(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) override;
     void OnSent(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) override;
@@ -122,6 +123,7 @@ class BackendServer {
 
   RdmaHandler rdma_handler_;
   ario::MemoryBlockAllocator small_buffers_;
+  ario::MemoryBlockAllocator large_buffers_;
   ario::RdmaManager rdma_;
   RdmaSender rdma_sender_;
   std::thread rdma_ev_thread_;
@@ -170,7 +172,7 @@ class BackendServer {
 
   // Tasks pending FetchImageReply
   std::mutex mu_tasks_pending_fetch_image_;
-  std::unordered_map<GlobalId, std::shared_ptr<Task>>
+  std::unordered_map<ario::WorkRequestID, std::shared_ptr<Task>>
       tasks_pending_fetch_image_;
 
   // Batch plans waiting for image and not added to gpu_executor_ yet.

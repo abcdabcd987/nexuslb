@@ -44,7 +44,7 @@ class Dispatcher {
     void OnConnected(ario::RdmaQueuePair* conn) override;
     void OnRemoteMemoryRegionReceived(ario::RdmaQueuePair* conn, uint64_t addr,
                                       size_t size) override;
-    void OnRdmaReadComplete(ario::RdmaQueuePair* conn,
+    void OnRdmaReadComplete(ario::RdmaQueuePair* conn, ario::WorkRequestID wrid,
                             ario::OwnedMemoryBlock buf) override;
     void OnRecv(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) override;
     void OnSent(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf) override;
@@ -56,7 +56,7 @@ class Dispatcher {
     Dispatcher& outer_;
   };
 
-  void HandleDispatch(DispatchRequest* request, DispatchReply* reply,
+  void HandleDispatch(DispatchRequest&& request, DispatchReply* reply,
                       long dispatcher_recv_ns);
   void HandleRegister(ario::RdmaQueuePair* conn, const RegisterRequest& request,
                       RegisterReply* reply);

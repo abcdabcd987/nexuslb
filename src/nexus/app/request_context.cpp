@@ -60,8 +60,18 @@ void RequestContext::SetExecBlocks(std::vector<ExecBlock*> blocks) {
   state_.store(kRunning);
 }
 
-void RequestContext::SetBackendQueryProto(QueryProto query_proto) {
+void RequestContext::SetBackendQueryProto(
+    QueryProto query_proto, ario::OwnedMemoryBlock&& exposed_memory_block) {
   backend_query_proto_ = std::move(query_proto);
+  exposed_memory_block_ = std::move(exposed_memory_block);
+  const auto& input = backend_query_proto_.input();
+  // TODO: avoid the serialization
+  bool ok = input.SerializeToArray(exposed_memory_block_.data(),
+                                   exposed_memory_block_.size());
+  CHECK(ok) << "Failed to copy the input image to exposed_memory_block_";
+  rdma_read_offset_ =
+      exposed_memory_block_.data() - exposed_memory_block_.allocator()->data();
+  rdma_read_length_ = input.ByteSizeLong();
 }
 
 ExecBlock* RequestContext::NextReadyBlock() {

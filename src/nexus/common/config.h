@@ -10,8 +10,7 @@
 #define BEACON_INTERVAL_SEC 2
 #define EPOCH_INTERVAL_SEC 10
 
-// constexpr int kSmallBufferBlockBits = __builtin_ctzl(4 << 10);
-constexpr int kSmallBufferBlockBits = __builtin_ctzl(512 << 10);
+constexpr int kSmallBufferBlockBits = __builtin_ctzl(4 << 10);
 constexpr int kSmallBufferPoolBits = kSmallBufferBlockBits + 12;
 constexpr int kLargeBufferBlockBits = __builtin_ctzl(512 << 10);
 constexpr int kLargeBufferPoolBits = kLargeBufferBlockBits + 12;

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -47,6 +48,25 @@ struct RdmaManagerMessage {
 
 #pragma pack(pop)
 
+class WorkRequestID {
+ public:
+  friend class std::hash<WorkRequestID>;
+  friend bool operator==(WorkRequestID lhs, WorkRequestID rhs) {
+    return lhs.wrid_ == rhs.wrid_;
+  }
+  friend bool operator!=(WorkRequestID lhs, WorkRequestID rhs) {
+    return lhs.wrid_ != rhs.wrid_;
+  }
+  std::string DebugString() const {
+    return "ario::WorkRequestID(" + std::to_string(wrid_) + ")";
+  }
+
+ private:
+  friend class RdmaManager;
+  explicit WorkRequestID(uint64_t wrid) : wrid_(wrid) {}
+  uint64_t wrid_;
+};
+
 class RdmaQueuePair;
 
 enum class RdmaError {
@@ -58,7 +78,7 @@ class RdmaEventHandler {
   virtual void OnConnected(RdmaQueuePair *conn) = 0;
   virtual void OnRemoteMemoryRegionReceived(RdmaQueuePair *conn, uint64_t addr,
                                             size_t size) = 0;
-  virtual void OnRdmaReadComplete(RdmaQueuePair *conn,
+  virtual void OnRdmaReadComplete(RdmaQueuePair *conn, WorkRequestID wrid,
                                   OwnedMemoryBlock buf) = 0;
   virtual void OnRecv(RdmaQueuePair *conn, OwnedMemoryBlock buf) = 0;
   virtual void OnSent(RdmaQueuePair *conn, OwnedMemoryBlock buf) = 0;
@@ -104,8 +124,8 @@ class RdmaManager {
   void TcpAccept();
 
   void AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf);
-  void AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf, size_t offset,
-                 size_t length);
+  WorkRequestID AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
+                          size_t offset, size_t length);
   void PostReceive(RdmaQueuePair &conn);
 
   std::string dev_name_;
@@ -156,9 +176,9 @@ class RdmaManagerAccessor {
     m_->AsyncSend(conn, std::move(buf));
   }
 
-  void AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf, size_t offset,
-                 size_t length) {
-    m_->AsyncRead(conn, std::move(buf), offset, length);
+  WorkRequestID AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
+                          size_t offset, size_t length) {
+    return m_->AsyncRead(conn, std::move(buf), offset, length);
   }
 
   void PostReceive(RdmaQueuePair &conn) { m_->PostReceive(conn); }
@@ -173,7 +193,7 @@ class RdmaQueuePair {
  public:
   ~RdmaQueuePair();
   void AsyncSend(OwnedMemoryBlock buf);
-  void AsyncRead(OwnedMemoryBlock buf, size_t offset, size_t length);
+  WorkRequestID AsyncRead(OwnedMemoryBlock buf, size_t offset, size_t length);
   void Shutdown();
 
   uint64_t tag() const { return tag_; }
@@ -207,3 +227,12 @@ class RdmaQueuePair {
 };
 
 }  // namespace ario
+
+namespace std {
+template <>
+struct hash<ario::WorkRequestID> {
+  std::size_t operator()(ario::WorkRequestID w) const noexcept {
+    return std::hash<uint64_t>{}(w.wrid_);
+  }
+};
+}  // namespace std

@@ -1,11 +1,10 @@
-#include "ario/ario.h"
-
 #include <unistd.h>
 
 #include <condition_variable>
 #include <random>
 
 #include "ario/memory.h"
+#include "ario/rdma.h"
 #include "ario/utils.h"
 
 using namespace ario;
@@ -45,7 +44,8 @@ class TestServerHandler : public TestHandler {
     fprintf(stderr, "New RDMA connection.\n");
   }
 
-  void OnRdmaReadComplete(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {}
+  void OnRdmaReadComplete(RdmaQueuePair *conn, WorkRequestID wrid,
+                          OwnedMemoryBlock buf) override {}
 };
 
 class TestClientHandler : public TestHandler {
@@ -64,7 +64,8 @@ class TestClientHandler : public TestHandler {
     cv_.notify_all();
   }
 
-  void OnRdmaReadComplete(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {
+  void OnRdmaReadComplete(RdmaQueuePair *conn, WorkRequestID wrid,
+                          OwnedMemoryBlock buf) override {
     if (data_.has_value())
       die("TestHandler::OnRdmaReadComplete: data_.has_value()");
     data_ = std::move(buf);

@@ -423,13 +423,13 @@ void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
   if (ret) die("Connection::Send: ibv_post_send");
 }
 
-void RdmaQueuePair::AsyncRead(OwnedMemoryBlock buf, size_t offset,
-                              size_t length) {
-  manager_.AsyncRead(*this, std::move(buf), offset, length);
+WorkRequestID RdmaQueuePair::AsyncRead(OwnedMemoryBlock buf, size_t offset,
+                                       size_t length) {
+  return manager_.AsyncRead(*this, std::move(buf), offset, length);
 }
 
-void RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
-                            size_t offset, size_t length) {
+WorkRequestID RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
+                                     size_t offset, size_t length) {
   ibv_send_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
@@ -455,6 +455,7 @@ void RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
 
   int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die("Connection::PostRead: ibv_post_send");
+  return WorkRequestID(wr.wr_id);
 }
 
 void RdmaManager::PollCompletionQueueBlocking() {
@@ -531,7 +532,8 @@ void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {
       return;
     }
     case IBV_WC_RDMA_READ: {
-      handler_->OnRdmaReadComplete(&wr_ctx->conn, std::move(wr_ctx->buf));
+      handler_->OnRdmaReadComplete(&wr_ctx->conn, WorkRequestID(wc->wr_id),
+                                   std::move(wr_ctx->buf));
       return;
     }
     // TODO: handle all opcode

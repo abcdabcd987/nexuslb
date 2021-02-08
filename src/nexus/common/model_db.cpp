@@ -190,9 +190,6 @@ std::pair<uint32_t, float> ModelProfile::GetMaxThroughput(
 ModelProfile ModelProfile::FromSleepProfile(const SleepProfile& profile) {
   constexpr float kStdFactor = 0.01;
   ModelProfile p;
-  p.profile_id_ = "SleepProfile";
-  p.gpu_device_name_ = SleepProfile::kGpuDeviceName;
-  p.gpu_uuid_ = "";
   for (uint32_t i = 1; i < 500; ++i) {
     float f = profile.forward_us(i);
     p.forward_lats_[i] = ProfileEntry{f, f * kStdFactor, 0, 0, 1};
@@ -252,7 +249,7 @@ const YAML::Node* ModelDatabase::GetModelInfo(const std::string& framework,
 const ModelProfile* ModelDatabase::GetModelProfile(
     const std::string& gpu_device, const std::string& gpu_uuid,
     const std::string& profile_id) const {
-  if (gpu_device == SleepProfile::kGpuDeviceName) {
+  if (SleepProfile::MatchPrefix(profile_id)) {
     ModelSession model_session;
     ParseModelSession(profile_id, &model_session);
     auto iter = sleep_profiles_.find(model_session.framework());

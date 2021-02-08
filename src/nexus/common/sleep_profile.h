@@ -14,7 +14,6 @@ class SleepProfile {
   static bool MatchPrefix(const std::string& framework);
 
   static constexpr const char* kPrefix = "sleep#";
-  static constexpr const char* kGpuDeviceName = "Sleep";
 
   int slope_us() const { return slope_us_; }
   int intercept_us() const { return intercept_us_; }

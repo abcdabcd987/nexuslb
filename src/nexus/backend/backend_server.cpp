@@ -44,14 +44,10 @@ BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
   gpu_name_ = gpu->device_name();
   gpu_uuid_ = gpu->uuid();
   gpu_memory_ = gpu->FreeMemory();
-#elif defined(USE_TENSORFLOW)
+#else
   auto* cpu = DeviceManager::Singleton().GetCPUDevice();
   gpu_name_ = cpu->name();
   gpu_uuid_ = "GenericCPU";
-  gpu_memory_ = 0;
-#else
-  gpu_name_ = SleepProfile::kGpuDeviceName;
-  gpu_uuid_ = "GenericFake";
   gpu_memory_ = 0;
 #endif
 

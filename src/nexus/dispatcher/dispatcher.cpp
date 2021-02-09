@@ -38,7 +38,8 @@ namespace nexus {
 namespace dispatcher {
 
 Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
-                       std::vector<int> pin_cpus)
+                       std::vector<int> pin_cpus,
+                       std::unique_ptr<Scheduler::Builder> scheduler_builder)
     : rdma_dev_(std::move(rdma_dev)),
       tcp_server_port_(port),
       pin_cpus_(std::move(pin_cpus)),
@@ -46,7 +47,7 @@ Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
       rdma_(rdma_dev_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
-      scheduler_(DispatcherAccessor(*this)) {
+      scheduler_(scheduler_builder->Build(DispatcherAccessor(*this))) {
   CHECK(pin_cpus_.empty()) << "Currently CPU pinning is not supported.";
 }
 
@@ -63,8 +64,7 @@ void Dispatcher::Run() {
   rdma_ev_thread_ = std::thread(&ario::RdmaManager::RunEventLoop, &rdma_);
 
   // Start a single threaded scheduler.
-  scheduler_threads_.emplace_back(&decltype(scheduler_)::RunAsWorker,
-                                  &scheduler_);
+  scheduler_threads_.emplace_back([this] { scheduler_->RunAsWorker(); });
 
   // Nothing to do here
   for (;;) {
@@ -78,7 +78,7 @@ void Dispatcher::Stop() {
 
   // Stop everything
   rdma_.StopEventLoop();
-  scheduler_.Stop();
+  scheduler_->Stop();
 
   // Join all threads.
   for (auto& thread : scheduler_threads_) {
@@ -214,7 +214,7 @@ void Dispatcher::HandleDispatch(DispatchRequest&& request, DispatchReply* reply,
   query_without_input->set_global_id(global_id);
 
   // Enqueue query
-  auto status = scheduler_.EnqueueQuery(std::move(request));
+  auto status = scheduler_->EnqueueQuery(std::move(request));
   reply->set_status(status);
 }
 
@@ -275,7 +275,7 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
       }
 
       // Add backend for the scheduler.
-      scheduler_.AddBackend(backend_id);
+      scheduler_->AddBackend(backend_id);
 
       // Load Models
       for (auto iter : sessions) {
@@ -367,7 +367,7 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
   }
 
   // Add model session for the scheduler
-  scheduler_.AddModelSession(request.model_session());
+  scheduler_->AddModelSession(request.model_session());
 
   // Ask backends to load the model
   auto profile_id = ModelSessionToProfileID(request.model_session());

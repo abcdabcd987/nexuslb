@@ -17,14 +17,12 @@
 #include "nexus/dispatcher/accessor.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/batch_size_estimator.h"
+#include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
 namespace dispatcher {
-
-class DispatcherAccessor;
-
 namespace delayed {
 
 struct QueryContext {
@@ -106,8 +104,16 @@ struct BackendContext {
   std::optional<BatchPlan> next_plan;
 };
 
-class DelayedScheduler {
+class DelayedScheduler : public Scheduler {
  public:
+  class Builder : public Scheduler::Builder {
+   public:
+    Builder() = default;
+
+   private:
+    std::unique_ptr<Scheduler> Build(DispatcherAccessor dispatcher) override;
+  };
+
   explicit DelayedScheduler(DispatcherAccessor dispatcher);
   void RunAsWorker();
   void Stop();
@@ -127,7 +133,6 @@ class DelayedScheduler {
   void WorkFinalizePlan(NodeId backend_id,
                         PlanId plan_id) /* EXCLUDES(mutex_) */;
 
-  DispatcherAccessor dispatcher_;
   BatchSizeEstimator bse_;
 
   boost::asio::io_context io_context_;

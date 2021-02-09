@@ -54,9 +54,18 @@ BackendContext::BackendContext(NodeId backend_id,
       send_time(std::chrono::nanoseconds(0)),
       send_timer(*io_context) {}
 
+RoundRobinScheduler::Builder::Builder(YAML::Node static_config)
+    : static_config_(std::move(static_config)) {}
+
+std::unique_ptr<Scheduler> RoundRobinScheduler::Builder::Build(
+    DispatcherAccessor dispatcher) {
+  return std::make_unique<RoundRobinScheduler>(dispatcher,
+                                               std::move(static_config_));
+}
+
 RoundRobinScheduler::RoundRobinScheduler(DispatcherAccessor dispatcher,
                                          YAML::Node static_config)
-    : dispatcher_(std::move(dispatcher)),
+    : Scheduler(dispatcher),
       static_config_(std::move(static_config)),
       io_context_work_guard_(io_context_.get_executor()) {
   CHECK(static_config_.IsMap())
@@ -112,7 +121,8 @@ void RoundRobinScheduler::AddModelSession(ModelSession model_session) {
     // TODO: GPU performance heterogeneity.
     if (!mctx->profile) {
       mctx->profile = profile;
-      auto budget = model_session.latency_sla() * (1 - 1 / num_backends);
+      // l(b) * (1+1/n) < SLO
+      auto budget = model_session.latency_sla() / (1 + 1 / num_backends);
       mctx->max_batch = profile->GetMaxBatchWithFullBudget(budget);
     }
 
@@ -239,9 +249,14 @@ RoundRobinScheduler::GatherBatch(ModelSessionContext* mctx,
     qiter = Q.erase(qiter);
   }
 
-  auto fwd_elapse = nanoseconds(
-      static_cast<long>(mctx->profile->GetForwardLatency(inputs.size()) * 1e3));
-  auto exec_elapse = fwd_elapse + proc_elapse;
+  nanoseconds exec_elapse;
+  if (!inputs.empty()) {
+    auto fwd_elapse = nanoseconds(static_cast<long>(
+        mctx->profile->GetForwardLatency(inputs.size()) * 1e3));
+    exec_elapse = fwd_elapse + proc_elapse;
+  } else {
+    exec_elapse = nanoseconds(0);
+  }
 
   return std::tie(dropped, inputs, exec_elapse);
 }
@@ -272,7 +287,7 @@ void RoundRobinScheduler::ReplyDroppedQueries(
 
 void RoundRobinScheduler::GatherAndSendPlan(NodeId backend_id) {
   using namespace std::chrono;
-  VLOG(1) << "GatherAndSendPlan: start. backend_id=" << backend_id.t;
+  auto now = Clock::now();
   std::unique_lock<std::mutex> lock(mutex_);
   if (!backends_.count(backend_id)) {
     LOG(ERROR) << "GatherAndSendPlan: Cannot find backend. backend_id="
@@ -281,12 +296,12 @@ void RoundRobinScheduler::GatherAndSendPlan(NodeId backend_id) {
   }
   auto* bctx = backends_.at(backend_id).get();
   auto* mctx = bctx->model;
-  auto now = Clock::now();
   if (duration_cast<microseconds>(now - bctx->send_time) > microseconds(100)) {
     LOG(WARNING) << "GatherAndSendPlan: Huge timer offset. bctx.send_time="
                  << bctx->send_time.time_since_epoch().count()
                  << ", now=" << now.time_since_epoch().count()
-                 << ", diff=" << (now - bctx->send_time).count();
+                 << ", diff=" << ((now - bctx->send_time).count() / 1e3)
+                 << "us";
   }
 
   // Gather dropped requests and the batch inputs
@@ -303,7 +318,7 @@ void RoundRobinScheduler::GatherAndSendPlan(NodeId backend_id) {
   }
 
   // Setup next timer
-  bctx->send_time += microseconds(mctx->model_session.latency_sla());
+  bctx->send_time += milliseconds(mctx->model_session.latency_sla());
   SetupBackendTimer(bctx);
 
   // Skip if nothing to run.

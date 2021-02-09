@@ -20,7 +20,7 @@
 #include "nexus/common/rdma_sender.h"
 #include "nexus/common/server_base.h"
 #include "nexus/common/typedef.h"
-#include "nexus/dispatcher/delayed_scheduler.h"
+#include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
 
 namespace nexus {
@@ -32,7 +32,8 @@ class ModelSessionContext;
 
 class Dispatcher {
  public:
-  Dispatcher(std::string rdma_dev, uint16_t port, std::vector<int> pin_cpus);
+  Dispatcher(std::string rdma_dev, uint16_t port, std::vector<int> pin_cpus,
+             std::unique_ptr<Scheduler::Builder> scheduler_builder);
   virtual ~Dispatcher();
 
   void Run();
@@ -96,7 +97,7 @@ class Dispatcher {
   // Maps model session ID to backend list of the model
   std::atomic<uint64_t> next_global_id_{1};
 
-  delayed::DelayedScheduler scheduler_;
+  std::unique_ptr<Scheduler> scheduler_;
   std::vector<std::thread> scheduler_threads_;
 };
 

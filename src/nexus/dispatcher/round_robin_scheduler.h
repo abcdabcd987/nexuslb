@@ -1,5 +1,5 @@
-#ifndef NEXUS_DISPATCHER_STATIC_SCHEDULER_H_
-#define NEXUS_DISPATCHER_STATIC_SCHEDULER_H_
+#ifndef NEXUS_DISPATCHER_ROUND_ROBIN_SCHEDULER_H_
+#define NEXUS_DISPATCHER_ROUND_ROBIN_SCHEDULER_H_
 
 #include <yaml-cpp/yaml.h>
 
@@ -18,14 +18,12 @@
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/accessor.h"
 #include "nexus/dispatcher/backend_delegate.h"
+#include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
 namespace dispatcher {
-
-class DispatcherAccessor;
-
 namespace rr {
 
 struct QueryContext {
@@ -72,14 +70,25 @@ struct BackendContext {
   boost::asio::basic_waitable_timer<Clock> send_timer;
 };
 
-class RoundRobinScheduler {
+class RoundRobinScheduler : public Scheduler {
  public:
+  class Builder : public Scheduler::Builder {
+   public:
+    explicit Builder(YAML::Node static_config);
+
+   private:
+    std::unique_ptr<Scheduler> Build(DispatcherAccessor dispatcher) override;
+    YAML::Node static_config_;
+  };
+
   RoundRobinScheduler(DispatcherAccessor dispatcher, YAML::Node static_config);
-  void RunAsWorker();
-  void Stop();
-  void AddModelSession(ModelSession model_session) /* EXCLUDES(mutex_) */;
-  void AddBackend(NodeId backend_id) /* EXCLUDES(mutex_) */;
-  CtrlStatus EnqueueQuery(DispatchRequest&& request) /* EXCLUDES(mutex_) */;
+  void RunAsWorker() override;
+  void Stop() override;
+  void AddModelSession(
+      ModelSession model_session) /* EXCLUDES(mutex_) */ override;
+  void AddBackend(NodeId backend_id) /* EXCLUDES(mutex_) */ override;
+  CtrlStatus EnqueueQuery(
+      DispatchRequest&& request) /* EXCLUDES(mutex_) */ override;
 
  private:
   using QueryList = std::vector<std::shared_ptr<QueryContext>>;
@@ -91,7 +100,6 @@ class RoundRobinScheduler {
                                dropped) /* REQUIRES(mutex_) */;
   void GatherAndSendPlan(NodeId backend_id) /* EXCLUDES(mutex_) */;
 
-  DispatcherAccessor dispatcher_;
   YAML::Node static_config_;
 
   boost::asio::io_context io_context_;

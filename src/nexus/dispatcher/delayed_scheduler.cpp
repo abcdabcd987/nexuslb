@@ -72,8 +72,13 @@ BackendContext::BackendContext(NodeId backend_id,
       delegate(std::move(delegate)),
       next_available_time(std::chrono::nanoseconds(0)) {}
 
+std::unique_ptr<Scheduler> DelayedScheduler::Builder::Build(
+    DispatcherAccessor dispatcher) {
+  return std::make_unique<DelayedScheduler>(dispatcher);
+}
+
 DelayedScheduler::DelayedScheduler(DispatcherAccessor dispatcher)
-    : dispatcher_(std::move(dispatcher)),
+    : Scheduler(dispatcher),
       bse_(1.0, 0.0),
       io_context_work_guard_(io_context_.get_executor()) {}
 

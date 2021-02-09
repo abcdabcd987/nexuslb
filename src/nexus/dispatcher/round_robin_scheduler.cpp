@@ -235,18 +235,27 @@ RoundRobinScheduler::GatherBatch(ModelSessionContext* mctx,
   uint32_t bs = std::min(static_cast<uint32_t>(Q.size()), mctx->max_batch);
   while (inputs.size() < bs && qiter != Q.end()) {
     auto& qctx = *qiter;
+    if (qctx->deadline < exec_time) {
+      // Drop only when it's too late.
+      dropped.push_back(qctx);
+      qiter = Q.erase(qiter);
+      continue;
+    }
+
     auto deadline = inputs.empty() ? qctx->deadline : inputs[0]->deadline;
     auto fwd_elapse = nanoseconds(
         static_cast<long>(mctx->profile->GetForwardLatency(bs) * 1e3));
     auto finish_time = exec_time + fwd_elapse + proc_elapse;
     if (deadline > finish_time) {
       inputs.push_back(qctx);
+      qiter = Q.erase(qiter);
     } else {
-      dropped.push_back(qctx);
+      // Don't drop yet.
+      // Just in case the request can be satisfy later.
       bs = std::min(static_cast<uint32_t>(inputs.size() + Q.size() - 1),
                     mctx->max_batch);
+      ++qiter;
     }
-    qiter = Q.erase(qiter);
   }
 
   nanoseconds exec_elapse;

@@ -212,15 +212,14 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
 
   if (reply.status() == CtrlStatus::CTRL_OK) {
     // Do nothing. Dispatcher will send the query to the backend.
-  } else if (reply.status() == CtrlStatus::TIMEOUT) {
-    // Do nothing either.
-    LOG(ERROR) << "Dispatcher timeout. query_id: " << reply.query_id();
   } else {
     // Mark the query failed.
-    LOG(WARNING) << "Dispatcher returns failure: "
-                 << CtrlStatus_Name(reply.status())
-                 << " query_id: " << reply.query_id()
-                 << " Fallback to deficit round robin.";
+    if (reply.status() == CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY) {
+      LOG(WARNING) << "Dispatcher returns failure: "
+                   << CtrlStatus_Name(reply.status())
+                   << " query_id: " << reply.query_id()
+                   << " model_session: " << model_session_id_;
+    }
     QueryResultProto result;
     result.set_query_id(reply.query_id());
     *result.mutable_model_session_id() = model_session_id_;

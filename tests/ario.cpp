@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <mutex>
 #include <random>
+#include <string>
 #include <unordered_map>
 
 #include "ario/memory.h"
@@ -18,7 +19,9 @@ constexpr size_t kRdmaBufBlockBits = __builtin_ctzl(4 << 20);
 
 struct RpcMessage {
   size_t seqnum;
-  char msg[1000];
+  int64_t read_offset;
+  size_t reply_msglen;
+  char msg[1];
 };
 
 class TestHandler : public RdmaEventHandler {
@@ -41,8 +44,24 @@ class TestHandler : public RdmaEventHandler {
       auto reply_view = reply_buf.AsMessageView();
       auto *reply = reinterpret_cast<RpcMessage *>(reply_view.bytes());
       reply->seqnum = req->seqnum;
-      snprintf(reply->msg, sizeof(reply->msg),
-               "THIS IS A REPLY FROM THE SERVER. SEQNUM=%lu", req->seqnum);
+      reply->read_offset = req->read_offset;
+      reply->reply_msglen = req->reply_msglen;
+      auto maxlen = reply_view.max_bytes_length() - sizeof(RpcMessage);
+
+      if (req->read_offset > 0) {
+        if (!exposed_memory_addr_) die("exposed_memory_addr_ not set");
+        if (req->reply_msglen > maxlen) die("req->reply_msglen > maxlen");
+        if (req->read_offset + req->reply_msglen > exposed_memory_size_)
+          die("req->read_offset + req->reply_msglen > exposed_memory_size_");
+        memcpy(&reply->msg, exposed_memory_addr_ + reply->read_offset,
+               req->reply_msglen);
+      } else {
+        snprintf(reply->msg, maxlen,
+                 "THIS IS A REPLY FROM THE SERVER. SEQNUM=%lu", req->seqnum);
+      }
+
+      reply_view.set_bytes_length(sizeof(RpcMessage) - sizeof(req->msg) +
+                                  req->reply_msglen);
       conn->AsyncSend(std::move(buf));
     }
   }
@@ -60,9 +79,16 @@ class TestHandler : public RdmaEventHandler {
     reply_allocator_ = reply_allocator;
   }
 
+  void SetExposedMemory(uint8_t *addr, size_t size) {
+    exposed_memory_addr_ = addr;
+    exposed_memory_size_ = size;
+  }
+
  private:
   bool print_message_ = true;
   MemoryBlockAllocator *reply_allocator_ = nullptr;
+  uint8_t *exposed_memory_addr_ = nullptr;
+  size_t exposed_memory_size_ = 0;
 };
 
 class TestServerHandler : public TestHandler {
@@ -134,12 +160,12 @@ void DieUsage(const char *program) {
   printf("  %s tcpclient <server_host> <server_port>\n", program);
   printf(
       "  %s server <dev_name> <listen_port> "
-      "<print|noprint> <reply|noreply>\n",
+      "print|noprint reply|noreply\n",
       program);
   printf("  %s client <dev_name> <server_host> <server_port>\n", program);
   printf(
-      "  %s benchsend <dev_name> <server_host> <server_port> <num_packets> "
-      "<logfilename>\n",
+      "  %s benchsend <dev_name> <server_host> <server_port> "
+      "<num_packets> <send_size> <recv_size> read|noread <logfilename>\n",
       program);
   printf(
       "  %s benchread <dev_name> <server_host> <server_port> "
@@ -310,6 +336,7 @@ void ServerMain(int argc, char **argv) {
 
   std::vector<uint8_t> memory_pool(100 << 20);
   FillMemoryPool(memory_pool);
+  test->SetExposedMemory(memory_pool.data(), memory_pool.size());
 
   RdmaManager manager(dev_name, test.get(), &buf);
   manager.ExposeMemory(memory_pool.data(), memory_pool.size());
@@ -366,7 +393,7 @@ void ClientMain(int argc, char **argv) {
   auto *req = reinterpret_cast<RpcMessage *>(send_view.bytes());
   req->seqnum = 2333;
   strcpy(req->msg, "THIS IS A MESSAGE FROM THE CLIENT.");
-  send_view.set_bytes_length(sizeof(*req));
+  send_view.set_bytes_length(100);
   conn->AsyncSend(std::move(send_buf));
   fprintf(stderr, "ClientMain: AsyncSend.\n");
 
@@ -403,9 +430,17 @@ class BenchHandler : public TestClientHandler {
     }
   }
 
-  void BenchSend(size_t num_packets, RdmaQueuePair *conn) {
+  void BenchSend(size_t num_packets, size_t send_size, size_t recv_size,
+                 bool read_remote) {
+    size_t min_msg_size = sizeof(RpcMessage) + sizeof(MessageView::length_type);
+    if (send_size < min_msg_size)
+      die("send_size < min_msg_size = " + std::to_string(min_msg_size));
+    if (recv_size < min_msg_size)
+      die("recv_size < min_msg_size = " + std::to_string(min_msg_size));
     num_packets_ = num_packets;
-    conn_ = conn;
+    send_size_ = send_size;
+    recv_size_ = recv_size;
+    read_remote_ = read_remote;
     cnt_sent_ = 0;
     cnt_send_ = 0;
     cnt_recv_ = 0;
@@ -413,6 +448,8 @@ class BenchHandler : public TestClientHandler {
     last_report_time_ = start_time_;
     rpc_send_time_.reset(new TimePoint[num_packets]);
     rpc_recv_time_.reset(new TimePoint[num_packets]);
+    distrib_ = std::uniform_int_distribution<size_t>(
+        0, remote_memory_size_ - recv_size_ - 1);
 
     SendMore();
     std::unique_lock<std::mutex> lock(mutex_);
@@ -481,9 +518,6 @@ class BenchHandler : public TestClientHandler {
       }
     }
 
-    if (f) {
-      fprintf(f, "%lu\n", sizeof(RpcMessage));
-    }
     std::vector<int64_t> rtt;
     rtt.reserve(num_packets_);
     for (size_t i = 0; i < num_packets_; ++i) {
@@ -496,18 +530,21 @@ class BenchHandler : public TestClientHandler {
     }
 
     printf("num_packets: %lu\n", num_packets_);
+    size_t packet_size;
     if (read_size_) {
+      packet_size = read_size_;
       printf("mode: READ\n");
       printf("remote_memory_size: %lu\n", remote_memory_size_);
       printf("read_size: %lu\n", read_size_);
     } else {
+      packet_size = send_size_ + recv_size_;
       printf("mode: SEND/RECV\n");
-      printf("msg_size: %lu\n", sizeof(RpcMessage));
+      printf("send_size: %lu\n", send_size_);
+      printf("recv_size: %lu\n", recv_size_);
     }
 
     double elapse_s = (finish_time_ - start_time_).count() / 1e9;
-    auto bandwidth_gbps =
-        sizeof(RpcMessage) * num_packets_ * 8 / 1e9 / elapse_s;
+    auto bandwidth_gbps = packet_size * num_packets_ * 8 / 1e9 / elapse_s;
     printf("avg bandwidth: %.3f Gbps\n", bandwidth_gbps);
     double pps = num_packets_ / elapse_s;
     printf("avg rate: %.3f kpps\n", pps / 1e3);
@@ -538,9 +575,15 @@ class BenchHandler : public TestClientHandler {
       auto send_view = send_buf.AsMessageView();
       auto *req = reinterpret_cast<RpcMessage *>(send_view.bytes());
       req->seqnum = cnt_send_;
-      snprintf(req->msg, sizeof(req->msg), "THIS IS REQUEST SEQNUM=%lu",
-               req->seqnum);
-      send_view.set_bytes_length(sizeof(*req));
+      req->reply_msglen = recv_size_ - (sizeof(RpcMessage) - sizeof(req->msg)) -
+                          sizeof(MessageView::length_type);
+      if (read_remote_) {
+        req->read_offset = distrib_(gen_);
+      } else {
+        auto maxlen = send_view.max_bytes_length() - sizeof(RpcMessage);
+        snprintf(req->msg, maxlen, "THIS IS REQUEST SEQNUM=%lu", req->seqnum);
+      }
+      send_view.set_bytes_length(send_size_ - sizeof(MessageView::length_type));
       auto now = Clock::now();
       conn_->AsyncSend(std::move(send_buf));
       rpc_send_time_[req->seqnum] = now;
@@ -594,6 +637,9 @@ class BenchHandler : public TestClientHandler {
   std::condition_variable cv_;
   RdmaQueuePair *conn_ = nullptr;
   size_t num_packets_ = 0;
+  size_t send_size_ = 0;
+  size_t recv_size_ = 0;
+  bool read_remote_ = false;
   size_t cnt_send_ = 0;
   size_t remote_memory_size_ = 0;
   size_t read_size_ = 0;
@@ -611,12 +657,24 @@ class BenchHandler : public TestClientHandler {
 };
 
 void BenchSendMain(int argc, char **argv) {
-  if (argc != 7) DieUsage(argv[0]);
+  if (argc != 10) DieUsage(argv[0]);
   std::string dev_name = argv[2];
   std::string server_host = argv[3];
   uint16_t server_port = std::stoi(argv[4]);
   size_t num_packets = std::stoul(argv[5]);
-  std::string logfilename = argv[6];
+  size_t send_size = std::stoul(argv[6]);
+  size_t recv_size = std::stoul(argv[7]);
+  std::string read_remote_opt = argv[8];
+  std::string logfilename = argv[9];
+
+  bool read_remote;
+  if (read_remote_opt == "read") {
+    read_remote = true;
+  } else if (read_remote_opt == "noread") {
+    read_remote = false;
+  } else {
+    DieUsage(argv[0]);
+  }
 
   auto handler = std::make_unique<BenchHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
@@ -625,13 +683,13 @@ void BenchSendMain(int argc, char **argv) {
   manager.ConnectTcp(server_host, server_port);
   std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
 
-  auto *conn = handler->WaitConnection();
-  fprintf(stderr, "BenchSendMain: connected.\n");
+  handler->WaitMemoryRegion();
+  fprintf(stderr, "BenchSendMain: got memory region.\n");
 
   fprintf(stderr, "sleep 1 second\n");
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   fprintf(stderr, "start bench\n");
-  handler->BenchSend(num_packets, conn);
+  handler->BenchSend(num_packets, send_size, recv_size, read_remote);
   handler->SaveAnalysis(logfilename.c_str());
 
   manager.StopEventLoop();

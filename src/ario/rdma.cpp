@@ -420,7 +420,7 @@ void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
   }
 
   int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
-  if (ret) die("Connection::Send: ibv_post_send");
+  if (ret) die_perror("Connection::Send: ibv_post_send");
 }
 
 WorkRequestID RdmaQueuePair::AsyncRead(OwnedMemoryBlock buf, size_t offset,
@@ -520,6 +520,7 @@ void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {
       die("wc->wr_id not in wr_ctx_");
     }
     wr_ctx = std::move(iter->second);
+    wr_ctx_.erase(iter);
   }
   if (wc->opcode & IBV_WC_RECV) {
     PostReceive(wr_ctx->conn);

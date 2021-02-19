@@ -26,7 +26,7 @@ std::pair<double, double> MergeMeanStd(double mean1, double std1, int n1,
 namespace fs = boost::filesystem;
 
 DEFINE_string(model_root, "", "Model root dicrectory");
-DEFINE_double(profile_multiplier, 1.15,
+DEFINE_double(profile_multiplier, 1.0,
               "Multiplier to forward latency in profile.");
 
 namespace nexus {

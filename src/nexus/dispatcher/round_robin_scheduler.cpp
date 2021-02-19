@@ -122,16 +122,20 @@ void RoundRobinScheduler::AddModelSession(ModelSession model_session) {
     if (!mctx->profile) {
       mctx->profile = profile;
       // l(b) * (1+1/n) < SLO
-      auto budget = model_session.latency_sla() / (1 + 1 / num_backends);
+      double budget =
+          mctx->model_session.latency_sla() / (1 + 1. / num_backends);
       mctx->max_batch = profile->GetMaxBatchWithFullBudget(budget);
+      LOG(INFO) << "Adding model session " << mctx->string_id
+                << ", budget: " << budget
+                << " ms, max_batch: " << mctx->max_batch;
     }
 
     bctx->model = mctx.get();
     mctx->backends[bctx->backend_id] = bctx.get();
 
     // Setup the staggered execution
-    auto offset_ns = static_cast<int64_t>(model_session.latency_sla() * 1e6 *
-                                          added_backends / num_backends);
+    auto offset_ns = static_cast<int64_t>(mctx->model_session.latency_sla() *
+                                          1e6 * added_backends / num_backends);
     bctx->send_time = now - std::chrono::nanoseconds(offset_ns);
     SetupBackendTimer(bctx.get());
 

@@ -343,8 +343,16 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
   auto finish_time = Clock::now();
   auto elapse_us =
       duration_cast<microseconds>(finish_time - start_time).count();
+  auto finish_time_ns =
+      duration_cast<nanoseconds>(finish_time.time_since_epoch()).count();
+  auto finish_time_offset_us =
+      (finish_time_ns - plan->proto().expected_finish_time_ns()) / 1000;
   VLOG(1) << "BatchPlan finished. plan_id=" << plan->proto().plan_id()
-          << ", elapse=" << elapse_us << "us";
+          << ", model_session=" << plan->proto().model_session_id()
+          << ", batch_size=" << plan->proto().queries_size()
+          << ", exec_time_offset=" << offset_us << "us"
+          << ", elapse=" << elapse_us << "us"
+          << ", finish_time_offset=" << finish_time_offset_us << "us";
   UpdateTimer();
 }
 

@@ -185,16 +185,16 @@ message QueryLatency {
 }
 
 message QueryPunchClock {
-  uint64 frontend_recv_ns = 1;
-  uint64 frontend_dispatch_ns = 2;
-  uint64 dispatcher_recv_ns = 3;
-  uint64 dispatcher_sched_ns = 4;
-  uint64 dispatcher_dispatch_ns = 5;
-  uint64 backend_recv_ns = 6;
-  uint64 backend_fetch_image_ns = 7;
-  uint64 backend_got_image_ns = 8;
-  uint64 backend_exec_ns = 9;
-  uint64 backend_finish_ns = 10;
-  uint64 backend_reply_ns = 11;
-  uint64 frontend_got_reply_ns = 12;
+  int64 frontend_recv_ns = 1;
+  int64 frontend_dispatch_ns = 2;
+  int64 dispatcher_recv_ns = 3;
+  int64 dispatcher_sched_ns = 4;
+  int64 dispatcher_dispatch_ns = 5;
+  int64 backend_recv_ns = 6;
+  int64 backend_fetch_image_ns = 7;
+  int64 backend_got_image_ns = 8;
+  int64 backend_exec_ns = 9;
+  int64 backend_finish_ns = 10;
+  int64 backend_reply_ns = 11;
+  int64 frontend_got_reply_ns = 12;
 }

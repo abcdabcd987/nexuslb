@@ -237,7 +237,9 @@ RoundRobinScheduler::GatherBatch(ModelSessionContext* mctx,
   auto& Q = mctx->queries;
   auto qiter = Q.begin();
   uint32_t bs = std::min(static_cast<uint32_t>(Q.size()), mctx->max_batch);
+  size_t cnt_remain = Q.size();
   while (inputs.size() < bs && qiter != Q.end()) {
+    --cnt_remain;
     auto& qctx = *qiter;
     if (qctx->deadline < exec_time) {
       // Drop only when it's too late.
@@ -256,7 +258,7 @@ RoundRobinScheduler::GatherBatch(ModelSessionContext* mctx,
     } else {
       // Don't drop yet.
       // Just in case the request can be satisfy later.
-      bs = std::min(static_cast<uint32_t>(inputs.size() + Q.size() - 1),
+      bs = std::min(static_cast<uint32_t>(inputs.size() + cnt_remain),
                     mctx->max_batch);
       ++qiter;
     }

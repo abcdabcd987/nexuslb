@@ -113,6 +113,7 @@ class GpuExecutorPlanFollower {
   boost::asio::executor_work_guard<boost::asio::io_context::executor_type>
       io_context_work_guard_;
 
+  std::atomic_flag is_executing_ = ATOMIC_FLAG_INIT;
   std::mutex mutex_;
   std::vector<std::shared_ptr<BatchPlanContext>>
       plans_ /* GUARDED_BY(mutex_) */;

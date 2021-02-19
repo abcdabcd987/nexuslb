@@ -339,6 +339,9 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
           << ", model_session=" << plan->proto().model_session_id()
           << ", batch_size=" << plan->proto().queries_size()
           << ", exec_time_offset=" << offset_us << "us";
+  bool is_executing = is_executing_.test_and_set();
+  CHECK(!is_executing)
+      << "BUG: the backend has not finished the previous batch.";
   model->ExecuteBatchPlan(plan);
   auto finish_time = Clock::now();
   auto elapse_us =
@@ -354,6 +357,7 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
           << ", elapse=" << elapse_us << "us"
           << ", finish_time_offset=" << finish_time_offset_us << "us";
   UpdateTimer();
+  is_executing_.clear();
 }
 
 }  // namespace backend

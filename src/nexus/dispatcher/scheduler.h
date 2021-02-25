@@ -21,7 +21,8 @@ class Scheduler {
 
    private:
     friend class Dispatcher;
-    virtual std::unique_ptr<Scheduler> Build(DispatcherAccessor dispatcher) = 0;
+    virtual std::unique_ptr<Scheduler> Build(
+        std::unique_ptr<DispatcherAccessor> dispatcher) = 0;
   };
 
   virtual ~Scheduler() = default;
@@ -32,8 +33,9 @@ class Scheduler {
   virtual CtrlStatus EnqueueQuery(DispatchRequest&& request) = 0;
 
  protected:
-  explicit Scheduler(DispatcherAccessor dispatcher) : dispatcher_(dispatcher) {}
-  DispatcherAccessor dispatcher_;
+  explicit Scheduler(std::unique_ptr<DispatcherAccessor> dispatcher)
+      : dispatcher_(std::move(dispatcher)) {}
+  std::unique_ptr<DispatcherAccessor> dispatcher_;
 };
 
 }  // namespace dispatcher

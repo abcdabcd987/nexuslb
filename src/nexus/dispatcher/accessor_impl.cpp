@@ -1,4 +1,4 @@
-#include "nexus/dispatcher/accessor.h"
+#include "nexus/dispatcher/accessor_impl.h"
 
 #include <mutex>
 
@@ -7,10 +7,10 @@
 namespace nexus {
 namespace dispatcher {
 
-DispatcherAccessor::DispatcherAccessor(Dispatcher& dispatcher)
+DispatcherAccessorImpl::DispatcherAccessorImpl(Dispatcher& dispatcher)
     : dispatcher_(dispatcher) {}
 
-std::shared_ptr<BackendDelegate> DispatcherAccessor::GetBackend(
+std::shared_ptr<BackendDelegate> DispatcherAccessorImpl::GetBackend(
     NodeId backend_id) {
   std::lock_guard<std::mutex> lock(dispatcher_.mutex_);
   auto iter = dispatcher_.backends_.find(backend_id);
@@ -21,7 +21,7 @@ std::shared_ptr<BackendDelegate> DispatcherAccessor::GetBackend(
   }
 }
 
-std::shared_ptr<FrontendDelegate> DispatcherAccessor::GetFrontend(
+std::shared_ptr<FrontendDelegate> DispatcherAccessorImpl::GetFrontend(
     NodeId frontend_id) {
   std::lock_guard<std::mutex> lock(dispatcher_.mutex_);
   auto iter = dispatcher_.frontends_.find(frontend_id);

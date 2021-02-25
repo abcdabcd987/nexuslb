@@ -77,11 +77,13 @@ class RoundRobinScheduler : public Scheduler {
     explicit Builder(YAML::Node static_config);
 
    private:
-    std::unique_ptr<Scheduler> Build(DispatcherAccessor dispatcher) override;
+    std::unique_ptr<Scheduler> Build(
+        std::unique_ptr<DispatcherAccessor> dispatcher) override;
     YAML::Node static_config_;
   };
 
-  RoundRobinScheduler(DispatcherAccessor dispatcher, YAML::Node static_config);
+  RoundRobinScheduler(std::unique_ptr<DispatcherAccessor> dispatcher,
+                      YAML::Node static_config);
   void RunAsWorker() override;
   void Stop() override;
   void AddModelSession(

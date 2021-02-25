@@ -111,10 +111,11 @@ class DelayedScheduler : public Scheduler {
     Builder() = default;
 
    private:
-    std::unique_ptr<Scheduler> Build(DispatcherAccessor dispatcher) override;
+    std::unique_ptr<Scheduler> Build(
+        std::unique_ptr<DispatcherAccessor> dispatcher) override;
   };
 
-  explicit DelayedScheduler(DispatcherAccessor dispatcher);
+  explicit DelayedScheduler(std::unique_ptr<DispatcherAccessor> dispatcher);
   void RunAsWorker();
   void Stop();
   void AddModelSession(ModelSession model_session) /* EXCLUDES(mutex_) */;

@@ -17,10 +17,10 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
-#include "nexus/dispatcher/accessor.h"
-#include "nexus/dispatcher/backend_delegate.h"
+#include "nexus/dispatcher/accessor_impl.h"
+#include "nexus/dispatcher/backend_delegate_impl.h"
 #include "nexus/dispatcher/delayed_scheduler.h"
-#include "nexus/dispatcher/frontend_delegate.h"
+#include "nexus/dispatcher/frontend_delegate_impl.h"
 #include "nexus/dispatcher/session_context.h"
 #include "nexus/proto/control.pb.h"
 
@@ -47,7 +47,9 @@ Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
       rdma_(rdma_dev_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
-      scheduler_(scheduler_builder->Build(DispatcherAccessor(*this))) {
+      scheduler_(
+          scheduler_builder->Build(std::unique_ptr<DispatcherAccessorImpl>(
+              new DispatcherAccessorImpl(*this)))) {
   CHECK(pin_cpus_.empty()) << "Currently CPU pinning is not supported.";
 }
 
@@ -224,7 +226,7 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
   LOG(INFO) << "Register server: " << request.DebugString();
   switch (request.node_type()) {
     case NodeType::FRONTEND_NODE: {
-      auto frontend = std::make_shared<FrontendDelegate>(
+      auto frontend = std::make_shared<FrontendDelegateImpl>(
           request.node_id(), conn->peer_ip(), conn->peer_tcp_port(),
           beacon_interval_sec_, conn, rdma_sender_);
       {
@@ -256,7 +258,7 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
       break;
     }
     case NodeType::BACKEND_NODE: {
-      auto backend = std::make_shared<BackendDelegate>(
+      auto backend = std::make_shared<BackendDelegateImpl>(
           request.node_id(), conn->peer_ip(), request.port(),
           request.gpu_device_name(), request.gpu_uuid(),
           request.gpu_available_memory(), beacon_interval_sec_, conn,

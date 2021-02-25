@@ -65,7 +65,7 @@ class Dispatcher {
   void HandleLoadModel(const LoadModelRequest& request, LoadModelReply* reply);
   void HandleInformAlive(const KeepAliveRequest& request);
 
-  friend class DispatcherAccessor;
+  friend class DispatcherAccessorImpl;
   std::string rdma_dev_;
   uint16_t tcp_server_port_;
   const std::vector<int> pin_cpus_;

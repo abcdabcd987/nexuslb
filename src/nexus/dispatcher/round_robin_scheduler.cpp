@@ -58,14 +58,14 @@ RoundRobinScheduler::Builder::Builder(YAML::Node static_config)
     : static_config_(std::move(static_config)) {}
 
 std::unique_ptr<Scheduler> RoundRobinScheduler::Builder::Build(
-    DispatcherAccessor dispatcher) {
-  return std::make_unique<RoundRobinScheduler>(dispatcher,
+    std::unique_ptr<DispatcherAccessor> dispatcher) {
+  return std::make_unique<RoundRobinScheduler>(std::move(dispatcher),
                                                std::move(static_config_));
 }
 
-RoundRobinScheduler::RoundRobinScheduler(DispatcherAccessor dispatcher,
-                                         YAML::Node static_config)
-    : Scheduler(dispatcher),
+RoundRobinScheduler::RoundRobinScheduler(
+    std::unique_ptr<DispatcherAccessor> dispatcher, YAML::Node static_config)
+    : Scheduler(std::move(dispatcher)),
       static_config_(std::move(static_config)),
       io_context_work_guard_(io_context_.get_executor()) {
   CHECK(static_config_.IsMap())
@@ -159,7 +159,7 @@ void RoundRobinScheduler::AddBackend(NodeId backend_id) {
   }
 
   // Add backend
-  auto delegate = dispatcher_.GetBackend(backend_id);
+  auto delegate = dispatcher_->GetBackend(backend_id);
   if (!delegate) {
     LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;
     return;
@@ -283,7 +283,7 @@ void RoundRobinScheduler::ReplyDroppedQueries(
   for (auto& qctx : dropped) {
     auto frontend_id =
         NodeId(qctx->request.query_without_input().frontend_id());
-    auto frontend = dispatcher_.GetFrontend(frontend_id);
+    auto frontend = dispatcher_->GetFrontend(frontend_id);
     const auto& model_session_id =
         qctx->request.query_without_input().model_session_id();
     if (!frontend) {
@@ -342,12 +342,7 @@ void RoundRobinScheduler::GatherAndSendPlan(NodeId backend_id) {
   }
 
   // Create a batch plan.
-  auto delegate = dispatcher_.GetBackend(backend_id);
   lock.unlock();
-  if (!delegate) {
-    LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;
-    return;
-  }
   EnqueueQueryCommand query;
   BatchPlanProto proto;
   proto.set_plan_id(NextPlanId());
@@ -380,7 +375,7 @@ void RoundRobinScheduler::GatherAndSendPlan(NodeId backend_id) {
   }
   // Send to backend
   VLOG(1) << "GatherAndSendPlan: send to backend.";
-  delegate->EnqueueBatchPlan(std::move(proto));
+  bctx->delegate->EnqueueBatchPlan(std::move(proto));
   VLOG(1) << "GatherAndSendPlan: done.";
 }
 

@@ -73,12 +73,13 @@ BackendContext::BackendContext(NodeId backend_id,
       next_available_time(std::chrono::nanoseconds(0)) {}
 
 std::unique_ptr<Scheduler> DelayedScheduler::Builder::Build(
-    DispatcherAccessor dispatcher) {
-  return std::make_unique<DelayedScheduler>(dispatcher);
+    std::unique_ptr<DispatcherAccessor> dispatcher) {
+  return std::make_unique<DelayedScheduler>(std::move(dispatcher));
 }
 
-DelayedScheduler::DelayedScheduler(DispatcherAccessor dispatcher)
-    : Scheduler(dispatcher),
+DelayedScheduler::DelayedScheduler(
+    std::unique_ptr<DispatcherAccessor> dispatcher)
+    : Scheduler(std::move(dispatcher)),
       bse_(1.0, 0.0),
       io_context_work_guard_(io_context_.get_executor()) {}
 
@@ -124,7 +125,7 @@ void DelayedScheduler::AddBackend(NodeId backend_id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Add backend
-  auto delegate = dispatcher_.GetBackend(backend_id);
+  auto delegate = dispatcher_->GetBackend(backend_id);
   if (!delegate) {
     LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;
     return;
@@ -298,7 +299,7 @@ void DelayedScheduler::WorkFullSchedule() {
   for (auto& qctx : dropped) {
     auto frontend_id =
         NodeId(qctx->request.query_without_input().frontend_id());
-    auto frontend = dispatcher_.GetFrontend(frontend_id);
+    auto frontend = dispatcher_->GetFrontend(frontend_id);
     const auto& model_session_id =
         qctx->request.query_without_input().model_session_id();
     if (!frontend) {
@@ -511,7 +512,7 @@ void DelayedScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
   }
 
   // Prepare to send to backend.
-  auto delegate = dispatcher_.GetBackend(backend_id);
+  auto delegate = dispatcher_->GetBackend(backend_id);
   lock.unlock();
   if (!delegate) {
     LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;

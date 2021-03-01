@@ -126,20 +126,21 @@ set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 
 ###### dispatcher ######
+add_library(dispatcher_obj
+    src/nexus/dispatcher/accessor_impl.cpp
+    src/nexus/dispatcher/backend_delegate_impl.cpp
+    src/nexus/dispatcher/batch_size_estimator.cpp
+    src/nexus/dispatcher/delayed_scheduler.cpp
+    src/nexus/dispatcher/dispatcher.cpp
+    src/nexus/dispatcher/frontend_delegate_impl.cpp
+    src/nexus/dispatcher/round_robin_scheduler.cpp
+    src/nexus/dispatcher/session_context.cpp
+)
+target_link_libraries(dispatcher_obj PUBLIC common)
+
 add_executable(dispatcher
-        src/nexus/dispatcher/accessor_impl.cpp
-        src/nexus/dispatcher/backend_delegate_impl.cpp
-        src/nexus/dispatcher/batch_size_estimator.cpp
-        src/nexus/dispatcher/delayed_scheduler.cpp
-        src/nexus/dispatcher/dispatcher.cpp
-        src/nexus/dispatcher/dispatcher_main.cpp
-        src/nexus/dispatcher/frontend_delegate_impl.cpp
-        src/nexus/dispatcher/round_robin_scheduler.cpp
-        src/nexus/dispatcher/session_context.cpp)
-target_include_directories(dispatcher PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${GENERATED_SRC_DIR}/src)
-target_link_libraries(dispatcher PRIVATE common)
+        src/nexus/dispatcher/dispatcher_main.cpp)
+target_link_libraries(dispatcher PRIVATE dispatcher_obj)
 
 
 
@@ -297,13 +298,15 @@ endif()
 
 
 ###### tools/bench_dispatcher ######
-if(USE_GPU)
-    add_executable(bench_dispatcher
-            tools/bench_dispatcher.cpp)
-    target_include_directories(bench_dispatcher PRIVATE
-            ${GENERATED_SRC_DIR}/src)
-    target_link_libraries(bench_dispatcher PRIVATE common)
-endif()
+add_executable(bench_dispatcher
+    tools/bench_dispatcher/bench_dispatcher_main.cpp
+    tools/bench_dispatcher/fake_accessor.cpp
+    tools/bench_dispatcher/fake_backend_delegate.cpp
+    tools/bench_dispatcher/fake_frontend_delegate.cpp
+)
+target_include_directories(bench_dispatcher PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(bench_dispatcher PUBLIC dispatcher_obj)
 
 
 

@@ -74,16 +74,17 @@ class RoundRobinScheduler : public Scheduler {
  public:
   class Builder : public Scheduler::Builder {
    public:
-    explicit Builder(YAML::Node static_config);
+    Builder(ModelDatabase* model_db, YAML::Node static_config);
 
    private:
     std::unique_ptr<Scheduler> Build(
         std::unique_ptr<DispatcherAccessor> dispatcher) override;
+    ModelDatabase* model_db_;
     YAML::Node static_config_;
   };
 
   RoundRobinScheduler(std::unique_ptr<DispatcherAccessor> dispatcher,
-                      YAML::Node static_config);
+                      ModelDatabase* model_db, YAML::Node static_config);
   void RunAsWorker() override;
   void Stop() override;
   void AddModelSession(
@@ -102,6 +103,7 @@ class RoundRobinScheduler : public Scheduler {
                                dropped) /* REQUIRES(mutex_) */;
   void GatherAndSendPlan(NodeId backend_id) /* EXCLUDES(mutex_) */;
 
+  ModelDatabase* model_db_;
   YAML::Node static_config_;
 
   boost::asio::io_context io_context_;

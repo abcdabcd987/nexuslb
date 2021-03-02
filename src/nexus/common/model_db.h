@@ -95,6 +95,7 @@ struct TFShareInfo {
 
 class ModelDatabase {
  public:
+  explicit ModelDatabase(const std::string& model_root);
   static ModelDatabase& Singleton();
 
   const YAML::Node* GetModelInfo(const std::string& model_id) const;
@@ -117,8 +118,6 @@ class ModelDatabase {
       const std::string& model_name) const;
 
  private:
-  ModelDatabase(const std::string& model_root);
-
   void LoadModelInfo(const std::string& db_file);
 
   void LoadModelProfiles(const std::string& profile_dir);

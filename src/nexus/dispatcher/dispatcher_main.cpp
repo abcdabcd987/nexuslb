@@ -1,10 +1,9 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include <yaml-cpp/node/node.h>
-#include <yaml-cpp/node/parse.h>
 #include <yaml-cpp/yaml.h>
 
 #include "nexus/common/config.h"
+#include "nexus/common/model_db.h"
 #include "nexus/common/util.h"
 #include "nexus/dispatcher/delayed_scheduler.h"
 #include "nexus/dispatcher/dispatcher.h"
@@ -77,8 +76,9 @@ int main(int argc, char** argv) {
     if (!config.IsMap()) {
       LOG(FATAL) << "YAML config for RoundRobinScheduler is empty";
     }
-    scheduler_builder =
-        std::make_unique<RoundRobinScheduler::Builder>(std::move(config));
+    auto& model_db = nexus::ModelDatabase::Singleton();
+    scheduler_builder = std::make_unique<RoundRobinScheduler::Builder>(
+        &model_db, std::move(config));
   } else {
     LOG(FATAL) << "Unknown scheduler \"" << FLAGS_scheduler << "\"";
   }

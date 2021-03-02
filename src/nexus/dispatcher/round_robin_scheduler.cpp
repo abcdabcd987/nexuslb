@@ -54,18 +54,21 @@ BackendContext::BackendContext(NodeId backend_id,
       send_time(std::chrono::nanoseconds(0)),
       send_timer(*io_context) {}
 
-RoundRobinScheduler::Builder::Builder(YAML::Node static_config)
-    : static_config_(std::move(static_config)) {}
+RoundRobinScheduler::Builder::Builder(ModelDatabase* model_db,
+                                      YAML::Node static_config)
+    : model_db_(model_db), static_config_(std::move(static_config)) {}
 
 std::unique_ptr<Scheduler> RoundRobinScheduler::Builder::Build(
     std::unique_ptr<DispatcherAccessor> dispatcher) {
-  return std::make_unique<RoundRobinScheduler>(std::move(dispatcher),
+  return std::make_unique<RoundRobinScheduler>(std::move(dispatcher), model_db_,
                                                std::move(static_config_));
 }
 
 RoundRobinScheduler::RoundRobinScheduler(
-    std::unique_ptr<DispatcherAccessor> dispatcher, YAML::Node static_config)
+    std::unique_ptr<DispatcherAccessor> dispatcher, ModelDatabase* model_db,
+    YAML::Node static_config)
     : Scheduler(std::move(dispatcher)),
+      model_db_(model_db),
       static_config_(std::move(static_config)),
       io_context_work_guard_(io_context_.get_executor()) {
   CHECK(static_config_.IsMap())
@@ -114,7 +117,7 @@ void RoundRobinScheduler::AddModelSession(ModelSession model_session) {
       continue;
     }
 
-    const auto* profile = ModelDatabase::Singleton().GetModelProfile(
+    const auto* profile = model_db_->GetModelProfile(
         bctx->delegate->gpu_device(), bctx->delegate->gpu_uuid(), profile_id);
     CHECK_NE(profile, nullptr);
     // Workaround: use the first backend's profile as model session profile.

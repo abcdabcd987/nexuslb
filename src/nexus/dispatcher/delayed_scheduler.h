@@ -109,8 +109,6 @@ class DelayedScheduler : public Scheduler {
   class Builder : public Scheduler::Builder {
    public:
     Builder() = default;
-
-   private:
     std::unique_ptr<Scheduler> Build(
         std::unique_ptr<DispatcherAccessor> dispatcher) override;
   };

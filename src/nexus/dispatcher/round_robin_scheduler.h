@@ -75,10 +75,10 @@ class RoundRobinScheduler : public Scheduler {
   class Builder : public Scheduler::Builder {
    public:
     Builder(ModelDatabase* model_db, YAML::Node static_config);
-
-   private:
     std::unique_ptr<Scheduler> Build(
         std::unique_ptr<DispatcherAccessor> dispatcher) override;
+
+   private:
     ModelDatabase* model_db_;
     YAML::Node static_config_;
   };

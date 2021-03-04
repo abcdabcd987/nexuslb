@@ -301,8 +301,6 @@ endif()
 add_executable(bench_dispatcher
     tools/bench_dispatcher/bench_dispatcher_main.cpp
     tools/bench_dispatcher/fake_accessor.cpp
-    tools/bench_dispatcher/fake_backend_delegate.cpp
-    tools/bench_dispatcher/fake_frontend_delegate.cpp
 )
 target_include_directories(bench_dispatcher PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/tools)

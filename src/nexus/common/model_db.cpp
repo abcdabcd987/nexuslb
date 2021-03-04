@@ -251,7 +251,7 @@ const ModelProfile* ModelDatabase::GetModelProfile(
     const std::string& profile_id) const {
   if (SleepProfile::MatchPrefix(profile_id)) {
     ModelSession model_session;
-    ParseModelSession(profile_id, &model_session);
+    ParseModelID(profile_id, &model_session);
     auto iter = sleep_profiles_.find(model_session.framework());
     if (iter != sleep_profiles_.end()) {
       return &iter->second;

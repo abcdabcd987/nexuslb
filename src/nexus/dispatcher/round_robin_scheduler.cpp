@@ -79,7 +79,12 @@ RoundRobinScheduler::RoundRobinScheduler(
 
 void RoundRobinScheduler::RunAsWorker() { io_context_.run(); }
 
-void RoundRobinScheduler::Stop() { io_context_work_guard_.reset(); }
+void RoundRobinScheduler::Stop() {
+  io_context_work_guard_.reset();
+  for (const auto& bctx : backends_) {
+    bctx.second->send_timer.cancel();
+  }
+}
 
 void RoundRobinScheduler::AddModelSession(ModelSession model_session) {
   std::lock_guard<std::mutex> lock(mutex_);

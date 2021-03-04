@@ -11,16 +11,11 @@
 namespace nexus {
 namespace dispatcher {
 
-class Dispatcher;
-
 class Scheduler {
  public:
   class Builder {
    public:
     virtual ~Builder() = default;
-
-   private:
-    friend class Dispatcher;
     virtual std::unique_ptr<Scheduler> Build(
         std::unique_ptr<DispatcherAccessor> dispatcher) = 0;
   };

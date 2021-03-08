@@ -344,13 +344,16 @@ void ServerMain(int argc, char **argv) {
   FillMemoryPool(memory_pool);
   test->SetExposedMemory(memory_pool.data(), memory_pool.size());
 
-  RdmaManager manager(dev_name, test.get(), &buf);
+  EpollExecutor executor;
+  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop, test.get(),
+                      &buf);
   manager.ExposeMemory(memory_pool.data(), memory_pool.size());
   manager.ListenTcp(listen_port);
-  // std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
-  manager.RunEventLoop();
-  manager.StopEventLoop();
-  // event_loop_thread.join();
+  executor.RunEventLoop();
+
+  // Unreachable
+  executor.StopEventLoop();
+  manager.Stop();
 }
 
 void ClientMain(int argc, char **argv) {
@@ -361,11 +364,13 @@ void ClientMain(int argc, char **argv) {
 
   auto test = std::make_unique<TestClientHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  RdmaManager manager(dev_name, test.get(), &buf);
+  EpollExecutor executor;
+  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop, test.get(),
+                      &buf);
   MemoryBlockAllocator read_buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
   manager.RegisterLocalMemory(&read_buf);
   manager.ConnectTcp(server_host, server_port);
-  std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
+  std::thread event_loop_thread(&EpollExecutor::RunEventLoop, &executor);
 
   auto *conn = test->WaitConnection();
   fprintf(stderr, "ClientMain: connected.\n");
@@ -403,7 +408,8 @@ void ClientMain(int argc, char **argv) {
   conn->AsyncSend(std::move(send_buf));
   fprintf(stderr, "ClientMain: AsyncSend.\n");
 
-  manager.StopEventLoop();
+  executor.StopEventLoop();
+  manager.Stop();
   fprintf(stderr, "ClientMain: Joining event loop.\n");
   event_loop_thread.join();
   fprintf(stderr, "ClientMain: event loop joined.\n");
@@ -683,10 +689,12 @@ void BenchSendMain(int argc, char **argv) {
 
   auto handler = std::make_unique<BenchHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  RdmaManager manager(dev_name, handler.get(), &buf);
+  EpollExecutor executor;
+  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop,
+                      handler.get(), &buf);
   handler->SetAllocator(buf);
   manager.ConnectTcp(server_host, server_port);
-  std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
+  std::thread event_loop_thread(&EpollExecutor::RunEventLoop, &executor);
 
   handler->WaitMemoryRegion();
   fprintf(stderr, "BenchSendMain: got memory region.\n");
@@ -697,7 +705,8 @@ void BenchSendMain(int argc, char **argv) {
   handler->BenchSend(max_flying, num_packets, read_size);
   handler->SaveAnalysis(logfilename.c_str());
 
-  manager.StopEventLoop();
+  executor.StopEventLoop();
+  manager.Stop();
   event_loop_thread.join();
 }
 
@@ -713,10 +722,12 @@ void BenchReadMain(int argc, char **argv) {
 
   auto handler = std::make_unique<BenchHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  RdmaManager manager(dev_name, handler.get(), &buf);
+  EpollExecutor executor;
+  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop,
+                      handler.get(), &buf);
   handler->SetAllocator(buf);
   manager.ConnectTcp(server_host, server_port);
-  std::thread event_loop_thread(&RdmaManager::RunEventLoop, &manager);
+  std::thread event_loop_thread(&EpollExecutor::RunEventLoop, &executor);
 
   handler->WaitMemoryRegion();
   fprintf(stderr, "BenchReadMain: got memory region.\n");
@@ -727,7 +738,8 @@ void BenchReadMain(int argc, char **argv) {
   handler->BenchRead(max_flying, num_packets, read_size);
   handler->SaveAnalysis(logfilename.c_str());
 
-  manager.StopEventLoop();
+  executor.StopEventLoop();
+  manager.Stop();
   event_loop_thread.join();
 }
 

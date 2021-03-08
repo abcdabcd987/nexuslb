@@ -88,6 +88,7 @@ class RdmaEventHandler {
 enum class PollerType {
   kBlocking,
   kSpinning,
+  kEventLoop,
 };
 
 struct WorkRequestContext {
@@ -100,24 +101,37 @@ struct WorkRequestContext {
 
 class RdmaManager {
  public:
-  RdmaManager(std::string dev_name, RdmaEventHandler *handler,
+  RdmaManager(std::string dev_name, EpollExecutor *executor,
+              PollerType poller_type, RdmaEventHandler *handler,
               MemoryBlockAllocator *recv_buf);
   ~RdmaManager();
+  void Stop();
   void RegisterLocalMemory(MemoryBlockAllocator *buf);
   void ExposeMemory(void *addr, size_t size);
   void ListenTcp(uint16_t port);
   void ConnectTcp(const std::string &addr, uint16_t port);
-  void RunEventLoop();
-  void StopEventLoop();
 
  private:
   friend class RdmaManagerAccessor;
+
+  class CompletionQueueEpollEventHandler : public EpollEventHandler {
+   public:
+    CompletionQueueEpollEventHandler(RdmaManager &outer);
+    void HandleEpollEvent(uint32_t epoll_events) override;
+
+   private:
+    RdmaManager &outer_;
+  };
+
   void CreateContext();
   void BuildProtectionDomain();
   void BuildCompletionQueue();
   void StartPoller();
+  void JoinPoller();
   void PollCompletionQueueBlocking();
   void PollCompletionQueueSpinning();
+  void PollCompletionQueueEventLoop();
+  void PollCompletionQueueWithChannelReady();
   void HandleWorkCompletion(ibv_wc *wc);
 
   void AddConnection(TcpSocket tcp);
@@ -130,8 +144,9 @@ class RdmaManager {
 
   std::string dev_name_;
   int dev_port_ = 0;
+  EpollExecutor *executor_;
+  PollerType poller_type_;
   RdmaEventHandler *handler_;
-
   MemoryBlockAllocator *recv_buf_;
 
   ibv_context *ctx_ = nullptr;
@@ -139,12 +154,12 @@ class RdmaManager {
   ibv_cq *cq_ = nullptr;
   ibv_comp_channel *comp_channel_ = nullptr;
   pollfd comp_channel_pollfd_;
+  std::unique_ptr<CompletionQueueEpollEventHandler> cq_epoll_handler_;
 
   std::mutex mr_mutex_;
   std::unordered_map<void *, ibv_mr *> mr_ /* GUARDED_BY(mr_mutex_) */;
   ibv_mr *exposed_mr_ = nullptr;
 
-  PollerType poller_type_;
   std::atomic<bool> poller_stop_{false};
   std::thread cq_poller_thread_;
 
@@ -155,7 +170,6 @@ class RdmaManager {
 
   std::vector<std::unique_ptr<RdmaQueuePair>> connections_;
 
-  EpollExecutor executor_;
   TcpAcceptor tcp_acceptor_;
   TcpSocket tcp_socket_;
 };

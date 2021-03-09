@@ -134,6 +134,7 @@ add_library(dispatcher_obj
     src/nexus/dispatcher/delayed_scheduler.cpp
     src/nexus/dispatcher/dispatcher.cpp
     src/nexus/dispatcher/frontend_delegate_impl.cpp
+    src/nexus/dispatcher/rank_scheduler.cpp
     src/nexus/dispatcher/round_robin_scheduler.cpp
     src/nexus/dispatcher/session_context.cpp
 )

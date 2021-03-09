@@ -44,6 +44,7 @@ add_library(ario
         src/ario/memory.cpp
         src/ario/rdma.cpp
         src/ario/tcp.cpp
+        src/ario/timer.cpp
         src/ario/utils.cpp)
 target_include_directories(ario PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)

@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <mutex>
 
 #include "ario/utils.h"
 
@@ -38,6 +39,11 @@ EpollExecutor::EpollExecutor() : epoll_fd_(epoll_create1(0)) {
   event.data.ptr = &interrupter_;
   int ret = epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, interrupter_.fd(), &event);
   if (ret < 0) die_perror("EPOLL_CTL_ADD interrupter");
+
+  event.events = EPOLLIN | EPOLLET;
+  event.data.ptr = &timer_;
+  ret = epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, timer_.fd(), &event);
+  if (ret < 0) die_perror("EPOLL_CTL_ADD timer");
 }
 
 EpollExecutor::~EpollExecutor() { close(epoll_fd_); }
@@ -53,6 +59,13 @@ void EpollExecutor::RunEventLoop() {
       auto *ptr = events[i].data.ptr;
       if (ptr == &interrupter_) {
         interrupter_.Reset();
+      } else if (ptr == &timer_) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        timer_.PopReadyTimerItems(post_queue_);
+        auto earliest = timer_.EarliestTimeout();
+        if (earliest.has_value()) {
+          timer_.SetTimerFd(earliest.value());
+        }
       } else {
         auto *handler = static_cast<EpollEventHandler *>(events[i].data.ptr);
         handler->HandleEpollEvent(events[i].events);
@@ -91,6 +104,16 @@ std::optional<std::function<void()>> EpollExecutor::PopPostQueue() {
     post_queue_.pop();
   }
   return ret;
+}
+
+void EpollExecutor::AddTimer(TimePoint timeout,
+                             std::function<void()> callback) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  timer_.AddEvent(timeout, std::move(callback));
+  auto earliest = timer_.EarliestTimeout().value();
+  if (earliest == timeout) {
+    timer_.SetTimerFd(earliest);
+  }
 }
 
 void EpollExecutorAddEpollWatch(EpollExecutor &executor, int fd,

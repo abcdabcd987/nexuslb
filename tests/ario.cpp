@@ -1,5 +1,6 @@
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "ario/epoll.h"
 #include "ario/memory.h"
 #include "ario/rdma.h"
 #include "ario/utils.h"
@@ -177,6 +179,7 @@ void DieUsage(const char *program) {
       "  %s benchread <dev_name> <server_host> <server_port> "
       "<max_flying> <num_packets> <read_size> <logfilename>\n",
       program);
+  printf("  %s benchtimer <duration> <count>\n", program);
   std::exit(1);
 }
 
@@ -743,6 +746,94 @@ void BenchReadMain(int argc, char **argv) {
   event_loop_thread.join();
 }
 
+class TimerBencher {
+ public:
+  TimerBencher(int duration_sec, int count)
+      : duration_sec_(duration_sec), count_(count) {}
+
+  void Bench() {
+    executor_thread_ = std::thread(&EpollExecutor::RunEventLoop, &executor_);
+
+    fprintf(stderr, "BenchTimerMain: warming up...\n");
+    EpollExecutor::TimePoint now = EpollExecutor::Clock::now();
+    constexpr int kWarmupCount = 1000;
+    for (int i = 0; i < kWarmupCount; ++i) {
+      auto timeout = now + std::chrono::milliseconds(i);
+      executor_.AddTimer(timeout, [this] { ++cnt_warmup_; });
+    }
+
+    timers_.reserve(count_);
+    offsets_.reserve(count_);
+    auto begin = now + std::chrono::seconds(3);
+    auto timeout_interval_ns = static_cast<int>(duration_sec_ * 1e9 / count_);
+    for (int i = 0; i < count_; ++i) {
+      auto timeout =
+          begin + std::chrono::nanoseconds((i + 1) * timeout_interval_ns);
+      timers_.push_back(timeout);
+      executor_.AddTimer(timeout, [this, i] {
+        ++cnt_bench_;
+        EpollExecutor::TimePoint now = EpollExecutor::Clock::now();
+        auto offset_ns = (now - timers_[i]).count();
+        offsets_.push_back(offset_ns);
+      });
+    }
+    while (cnt_warmup_ != kWarmupCount)
+      ;
+    now = EpollExecutor::Clock::now();
+    auto wait_ms = (begin - now).count() / 1e6;
+    if (wait_ms < 0) die("Too late");
+    fprintf(stderr, "BenchTimerMain: wait for %.0f ms before benching...\n",
+            wait_ms);
+
+    executor_.AddTimer(begin, [this, timeout_interval_ns] {
+      fprintf(stderr, "BenchTimerMain: benching... timeout_interval: %f us\n",
+              timeout_interval_ns / 1e3);
+    });
+    while (cnt_bench_ != count_)
+      ;
+
+    fprintf(stderr, "Stats:\n");
+    std::sort(offsets_.begin(), offsets_.end());
+    auto pp = [this](double p) {
+      auto idx = static_cast<size_t>(std::floor(count_ * p / 100.));
+      printf("p%-5.2f: %-6.0f us\n", p, offsets_[idx] / 1e3);
+    };
+    pp(0);
+    pp(10);
+    pp(25);
+    pp(50);
+    pp(90);
+    pp(95);
+    pp(99);
+    pp(99.9);
+    pp(99.99);
+
+    executor_.StopEventLoop();
+    executor_thread_.join();
+  }
+
+ private:
+  int duration_sec_;
+  int count_;
+
+  EpollExecutor executor_;
+  std::thread executor_thread_;
+
+  std::atomic<int> cnt_warmup_ = 0;
+  std::atomic<int> cnt_bench_ = 0;
+  std::vector<EpollExecutor::TimePoint> timers_;
+  std::vector<long> offsets_;
+};
+
+void BenchTimerMain(int argc, char **argv) {
+  if (argc != 4) DieUsage(argv[0]);
+  int duration_sec = std::stoi(argv[2]);
+  int count = std::stoi(argv[3]);
+
+  TimerBencher bencher(duration_sec, count);
+  bencher.Bench();
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) DieUsage(argv[0]);
   if (std::string("server") == argv[1]) {
@@ -753,6 +844,8 @@ int main(int argc, char **argv) {
     BenchSendMain(argc, argv);
   } else if (std::string("benchread") == argv[1]) {
     BenchReadMain(argc, argv);
+  } else if (std::string("benchtimer") == argv[1]) {
+    BenchTimerMain(argc, argv);
   } else if (std::string("tcpserver") == argv[1]) {
     TcpServerMain(argc, argv);
   } else if (std::string("tcpclient") == argv[1]) {

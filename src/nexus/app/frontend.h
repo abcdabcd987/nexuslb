@@ -111,6 +111,7 @@ class Frontend : public ServerBase, public MessageHandler {
  private:
   uint16_t rdma_tcp_server_port_;
 
+  ario::EpollExecutor executor_;
   RdmaHandler rdma_handler_;
   ario::MemoryBlockAllocator small_buffers_;
   ario::MemoryBlockAllocator large_buffers_;

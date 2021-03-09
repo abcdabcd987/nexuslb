@@ -23,7 +23,8 @@ Frontend::Frontend(std::string rdma_dev, uint16_t rdma_tcp_server_port,
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
       large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
-      rdma_(rdma_dev, &rdma_handler_, &small_buffers_),
+      rdma_(rdma_dev, &executor_, ario::PollerType::kBlocking, &rdma_handler_,
+            &small_buffers_),
       rdma_sender_(&small_buffers_),
       rd_(),
       rand_gen_(rd_()) {
@@ -40,7 +41,7 @@ Frontend::Frontend(std::string rdma_dev, uint16_t rdma_tcp_server_port,
   }
 
   rdma_.ConnectTcp(sch_addr, sch_port);
-  rdma_ev_thread_ = std::thread(&ario::RdmaManager::RunEventLoop, &rdma_);
+  rdma_ev_thread_ = std::thread(&ario::EpollExecutor::RunEventLoop, &executor_);
   dispatcher_conn_ = promise_dispatcher_conn_.get_future().get();
 
   // Init Node ID and register frontend to scheduler
@@ -72,7 +73,8 @@ void Frontend::Stop() {
   Unregister();
   // Stop all accept new connections
   ServerBase::Stop();
-  rdma_.StopEventLoop();
+  executor_.StopEventLoop();
+  rdma_.Stop();
   // Stop all frontend connections
   for (auto conn : connection_pool_) {
     conn->Stop();

@@ -35,7 +35,8 @@ BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
       large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
-      rdma_(rdma_dev_, &rdma_handler_, &small_buffers_),
+      rdma_(rdma_dev_, &executor_, ario::PollerType::kBlocking, &rdma_handler_,
+            &small_buffers_),
       rdma_sender_(&small_buffers_),
       running_(false),
       rand_gen_(rd_()) {
@@ -64,7 +65,7 @@ BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
     sch_addr.resize(sch_colon_idx);
   }
   rdma_.ConnectTcp(sch_addr, sch_port);
-  rdma_ev_thread_ = std::thread(&ario::RdmaManager::RunEventLoop, &rdma_);
+  rdma_ev_thread_ = std::thread(&ario::EpollExecutor::RunEventLoop, &executor_);
   dispatcher_conn_ = promise_dispatcher_conn_.get_future().get();
 
   // Init GPU executor
@@ -133,7 +134,8 @@ void BackendServer::Stop() {
   // Unregister backend server
   Unregister();
   // Stop accept new connections
-  rdma_.StopEventLoop();
+  executor_.StopEventLoop();
+  rdma_.Stop();
   // Stop all frontend connections
   for (auto conn : all_connections_) {
     conn->Shutdown();

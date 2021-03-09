@@ -1,8 +1,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#include "ario/epoll.h"
 #endif
-
-#include "nexus/dispatcher/dispatcher.h"
 
 #include <glog/logging.h>
 #include <pthread.h>
@@ -20,6 +19,7 @@
 #include "nexus/dispatcher/accessor_impl.h"
 #include "nexus/dispatcher/backend_delegate_impl.h"
 #include "nexus/dispatcher/delayed_scheduler.h"
+#include "nexus/dispatcher/dispatcher.h"
 #include "nexus/dispatcher/frontend_delegate_impl.h"
 #include "nexus/dispatcher/session_context.h"
 #include "nexus/proto/control.pb.h"
@@ -45,7 +45,8 @@ Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
       pin_cpus_(std::move(pin_cpus)),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
-      rdma_(rdma_dev_, &rdma_handler_, &small_buffers_),
+      rdma_(rdma_dev_, &executor_, ario::PollerType::kBlocking, &rdma_handler_,
+            &small_buffers_),
       rdma_sender_(&small_buffers_),
       scheduler_(
           scheduler_builder->Build(std::unique_ptr<DispatcherAccessorImpl>(
@@ -63,7 +64,7 @@ void Dispatcher::Run() {
   running_ = true;
 
   rdma_.ListenTcp(tcp_server_port_);
-  rdma_ev_thread_ = std::thread(&ario::RdmaManager::RunEventLoop, &rdma_);
+  rdma_ev_thread_ = std::thread(&ario::EpollExecutor::RunEventLoop, &executor_);
 
   // Start a single threaded scheduler.
   scheduler_threads_.emplace_back([this] { scheduler_->RunAsWorker(); });
@@ -79,7 +80,8 @@ void Dispatcher::Stop() {
   running_ = false;
 
   // Stop everything
-  rdma_.StopEventLoop();
+  executor_.StopEventLoop();
+  rdma_.Stop();
   scheduler_->Stop();
 
   // Join all threads.

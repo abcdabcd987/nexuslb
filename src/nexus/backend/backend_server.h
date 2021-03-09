@@ -121,6 +121,7 @@ class BackendServer {
   std::string gpu_uuid_;
   size_t gpu_memory_;
 
+  ario::EpollExecutor executor_;
   RdmaHandler rdma_handler_;
   ario::MemoryBlockAllocator small_buffers_;
   ario::MemoryBlockAllocator large_buffers_;

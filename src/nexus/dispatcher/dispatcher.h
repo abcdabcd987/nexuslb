@@ -70,6 +70,7 @@ class Dispatcher {
   uint16_t tcp_server_port_;
   const std::vector<int> pin_cpus_;
 
+  ario::EpollExecutor executor_;
   RdmaHandler rdma_handler_;
   ario::MemoryBlockAllocator small_buffers_;
   ario::RdmaManager rdma_;

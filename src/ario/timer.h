@@ -1,45 +1,56 @@
 #pragma once
-#include <chrono>
+#include <cstdint>
 #include <functional>
-#include <memory>
-#include <optional>
-#include <queue>
-#include <vector>
+#include <limits>
+#include <list>
+
+#include "ario/chrono.h"
 
 namespace ario {
 
-struct TimerEvent;
+class EpollExecutor;
 
-class Timer {
+// Design and implementation copied from Boost.Asio. See:
+// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/timer_queue.hpp#L47
+class TimerData {
  public:
-  using Clock = std::chrono::system_clock;
-  using TimePoint = std::chrono::time_point<Clock, std::chrono::nanoseconds>;
+  static constexpr size_t kInvalidHeapIndex =
+      std::numeric_limits<size_t>::max();
 
-  explicit Timer();
-  ~Timer();
-  Timer(const Timer& other) = delete;
-  Timer(Timer&& other) = delete;
-  Timer& operator=(const Timer& other) = delete;
-  Timer& operator=(Timer&& other) = delete;
+  TimerData();
+  TimerData(const TimerData& other) = delete;
+  TimerData& operator=(const TimerData& other) = delete;
+  TimerData(TimerData&& other) = delete;
+  TimerData& operator=(TimerData&& other) = delete;
 
-  int fd() const { return timer_fd_; }
-
-  void AddEvent(TimePoint timeout, std::function<void()> callback);
-  std::optional<TimePoint> EarliestTimeout() const;
-  void SetTimerFd(TimePoint timeout);
-  void PopReadyTimerItems(std::queue<std::function<void()>>& out);
-
- private:
-  friend bool HeapOrderByTimeoutASC(const TimerEvent& lhs,
-                                    const TimerEvent& rhs);
-
-  int timer_fd_ = -1;
-  std::vector<TimerEvent> heap_;
+  std::list<std::function<void()>> callbacks;
+  size_t heap_index;
 };
 
-struct TimerEvent {
-  Timer::TimePoint timeout;
-  std::function<void()> callback;
+// Design and implementation copied from Boost.Asio. See:
+// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/deadline_timer_service.hpp
+class Timer {
+ public:
+  Timer();
+  explicit Timer(EpollExecutor& executor);
+  Timer(EpollExecutor& executor, TimePoint timeout,
+        std::function<void()>&& callback);
+  ~Timer();
+  Timer(const Timer& other) = delete;
+  Timer& operator=(const Timer& other) = delete;
+  Timer(Timer&& other);
+  Timer& operator=(Timer&& other);
+
+  TimePoint timeout() const { return timeout_; }
+
+  size_t CancelAll();
+  size_t SetTimeout(TimePoint timeout);
+  void AsyncWait(std::function<void()>&& callback);
+
+ private:
+  EpollExecutor* executor_;
+  TimePoint timeout_;
+  TimerData data_;
 };
 
 }  // namespace ario

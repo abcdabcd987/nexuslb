@@ -6,10 +6,16 @@
 #include <optional>
 #include <queue>
 
-#include "ario/timer.h"
+#include "ario/chrono.h"
+#include "ario/timerfd.h"
 
 namespace ario {
 
+class Timer;
+
+// Design and implementation copied from Boost.Asio. See:
+// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/eventfd_select_interrupter.hpp
+// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/impl/eventfd_select_interrupter.ipp
 class Interrupter {
  public:
   Interrupter();
@@ -32,6 +38,10 @@ class EpollEventHandler {
   virtual void HandleEpollEvent(uint32_t epoll_events) = 0;
 };
 
+// Design and implementation copied from Boost.Asio. See:
+// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/epoll_reactor.hpp
+// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/impl/epoll_reactor.hpp
+// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/impl/epoll_reactor.ipp
 class EpollExecutor {
  public:
   EpollExecutor();
@@ -41,13 +51,13 @@ class EpollExecutor {
   EpollExecutor(EpollExecutor &&other) = delete;
   EpollExecutor &operator=(EpollExecutor &&other) = delete;
 
-  using Clock = Timer::Clock;
-  using TimePoint = Timer::TimePoint;
-
   void RunEventLoop();
   void StopEventLoop();
   void Post(std::function<void()> &&func);
-  void AddTimer(TimePoint timeout, std::function<void()> callback);
+  void ScheduleTimer(TimerData &data, TimePoint timeout,
+                     std::function<void()> &&callback);
+  size_t CancelTimer(TimerData &data);
+  void MoveTimer(TimerData &dst, TimerData &src);
 
  private:
   friend void EpollExecutorAddEpollWatch(EpollExecutor &executor, int fd,
@@ -59,7 +69,7 @@ class EpollExecutor {
   Interrupter interrupter_;
 
   std::mutex mutex_;
-  Timer timer_ /* GUARDED_BY(mutex_) */;
+  TimerFD timerfd_ /* GUARDED_BY(mutex_) */;
   std::queue<std::function<void()>> post_queue_ /* GUARDED_BY(mutex_) */;
 };
 

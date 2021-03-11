@@ -41,8 +41,8 @@ EpollExecutor::EpollExecutor() : epoll_fd_(epoll_create1(0)) {
   if (ret < 0) die_perror("EPOLL_CTL_ADD interrupter");
 
   event.events = EPOLLIN | EPOLLET;
-  event.data.ptr = &timer_;
-  ret = epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, timer_.fd(), &event);
+  event.data.ptr = &timerfd_;
+  ret = epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, timerfd_.fd(), &event);
   if (ret < 0) die_perror("EPOLL_CTL_ADD timer");
 }
 
@@ -59,12 +59,12 @@ void EpollExecutor::RunEventLoop() {
       auto *ptr = events[i].data.ptr;
       if (ptr == &interrupter_) {
         interrupter_.Reset();
-      } else if (ptr == &timer_) {
+      } else if (ptr == &timerfd_) {
         std::lock_guard<std::mutex> lock(mutex_);
-        timer_.PopReadyTimerItems(post_queue_);
-        auto earliest = timer_.EarliestTimeout();
+        timerfd_.PopReadyTimerItems(post_queue_);
+        auto earliest = timerfd_.EarliestTimeout();
         if (earliest.has_value()) {
-          timer_.SetTimerFd(earliest.value());
+          timerfd_.SetTimerFd(earliest.value());
         }
       } else {
         auto *handler = static_cast<EpollEventHandler *>(events[i].data.ptr);
@@ -106,13 +106,36 @@ std::optional<std::function<void()>> EpollExecutor::PopPostQueue() {
   return ret;
 }
 
-void EpollExecutor::AddTimer(TimePoint timeout,
-                             std::function<void()> callback) {
+void EpollExecutor::ScheduleTimer(TimerData &data, TimePoint timeout,
+                                  std::function<void()> &&callback) {
   std::lock_guard<std::mutex> lock(mutex_);
-  timer_.AddEvent(timeout, std::move(callback));
-  auto earliest = timer_.EarliestTimeout().value();
-  if (earliest == timeout) {
-    timer_.SetTimerFd(earliest);
+  bool earliest = timerfd_.EnqueueTimer(data, timeout, std::move(callback));
+  if (earliest) {
+    timerfd_.SetTimerFd(timeout);
+  }
+}
+
+size_t EpollExecutor::CancelTimer(TimerData &data) {
+  size_t cnt_cancelled;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cnt_cancelled = timerfd_.CancelTimer(data, post_queue_);
+  }
+  if (cnt_cancelled) {
+    interrupter_.Interrupt();
+  }
+  return cnt_cancelled;
+}
+
+void EpollExecutor::MoveTimer(TimerData &dst, TimerData &src) {
+  size_t cnt_cancelled;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cnt_cancelled = timerfd_.CancelTimer(dst, post_queue_);
+    timerfd_.MoveTimer(dst, src);
+  }
+  if (cnt_cancelled) {
+    interrupter_.Interrupt();
   }
 }
 

@@ -1,65 +1,59 @@
 #include "ario/timer.h"
 
-#include <sys/timerfd.h>
-#include <unistd.h>
-
-#include <algorithm>
-#include <chrono>
-#include <mutex>
-#include <vector>
+#include <utility>
 
 #include "ario/epoll.h"
-#include "ario/utils.h"
 
 namespace ario {
 
-bool HeapOrderByTimeoutASC(const TimerEvent& lhs, const TimerEvent& rhs) {
-  return lhs.timeout > rhs.timeout;
+TimerData::TimerData() : callbacks(), heap_index(kInvalidHeapIndex) {}
+
+Timer::Timer() : executor_(nullptr), timeout_(), data_() {}
+
+Timer::Timer(EpollExecutor& executor)
+    : executor_(&executor), timeout_(), data_() {}
+
+Timer::Timer(EpollExecutor& executor, TimePoint timeout,
+             std::function<void()>&& callback)
+    : executor_(&executor), timeout_(timeout), data_() {
+  AsyncWait(std::move(callback));
 }
 
-Timer::Timer() {
-  timer_fd_ = timerfd_create(CLOCK_REALTIME, TFD_NONBLOCK);
-  if (timer_fd_ < 0) die_perror("timerfd_create");
+Timer::~Timer() { CancelAll(); }
+
+Timer::Timer(Timer&& other)
+    : executor_(std::exchange(other.executor_, nullptr)),
+      timeout_(std::exchange(other.timeout_, {})),
+      data_() {
+  executor_->MoveTimer(data_, other.data_);
 }
 
-Timer::~Timer() { close(timer_fd_); }
-
-void Timer::AddEvent(TimePoint timeout, std::function<void()> callback) {
-  heap_.push_back({timeout, std::move(callback)});
-  std::push_heap(heap_.begin(), heap_.end(), HeapOrderByTimeoutASC);
-}
-
-std::optional<Timer::TimePoint> Timer::EarliestTimeout() const {
-  if (!heap_.empty()) {
-    return heap_.front().timeout;
+Timer& Timer::operator=(Timer&& other) {
+  if (this != &other) {
+    executor_->CancelTimer(data_);
+    executor_ = std::exchange(other.executor_, nullptr);
+    timeout_ = std::exchange(other.timeout_, {});
+    executor_->MoveTimer(data_, other.data_);
   }
-  return std::nullopt;
+  return *this;
 }
 
-void Timer::SetTimerFd(TimePoint timeout) {
-  auto seconds = std::chrono::time_point_cast<std::chrono::seconds>(timeout);
-  auto nanos =
-      timeout - std::chrono::time_point_cast<std::chrono::nanoseconds>(seconds);
-  itimerspec ts;
-  ts.it_interval.tv_sec = 0;
-  ts.it_interval.tv_nsec = 0;
-  ts.it_value.tv_sec = seconds.time_since_epoch().count();
-  ts.it_value.tv_nsec = nanos.count();
-
-  int ret = timerfd_settime(timer_fd_, TFD_TIMER_ABSTIME, &ts, nullptr);
-  if (ret < 0) die_perror("timerfd_settime");
+size_t Timer::CancelAll() {
+  if (executor_) {
+    return executor_->CancelTimer(data_);
+  }
+  return 0;
 }
 
-void Timer::PopReadyTimerItems(std::queue<std::function<void()>>& out) {
-  TimePoint now = Clock::now();
-  while (!heap_.empty()) {
-    auto& item = heap_.front();
-    if (heap_.front().timeout > now) {
-      break;
-    }
-    out.emplace(std::move(heap_.front().callback));
-    std::pop_heap(heap_.begin(), heap_.end(), HeapOrderByTimeoutASC);
-    heap_.pop_back();
+size_t Timer::SetTimeout(TimePoint timeout) {
+  size_t cnt_cancelled = CancelAll();
+  timeout_ = timeout;
+  return cnt_cancelled;
+}
+
+void Timer::AsyncWait(std::function<void()>&& callback) {
+  if (executor_) {
+    executor_->ScheduleTimer(data_, timeout_, std::move(callback));
   }
 }
 

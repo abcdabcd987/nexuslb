@@ -7,11 +7,13 @@
 #include <mutex>
 #include <random>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 #include "ario/epoll.h"
 #include "ario/memory.h"
 #include "ario/rdma.h"
+#include "ario/timer.h"
 #include "ario/utils.h"
 
 using namespace ario;
@@ -755,13 +757,16 @@ class TimerBencher {
     executor_thread_ = std::thread(&EpollExecutor::RunEventLoop, &executor_);
 
     fprintf(stderr, "BenchTimerMain: warming up...\n");
-    EpollExecutor::TimePoint now = EpollExecutor::Clock::now();
+    TimePoint now = Clock::now();
     constexpr int kWarmupCount = 1000;
+    std::vector<Timer> warmup_timers;
     for (int i = 0; i < kWarmupCount; ++i) {
       auto timeout = now + std::chrono::milliseconds(i);
-      executor_.AddTimer(timeout, [this] { ++cnt_warmup_; });
+      warmup_timers.emplace_back(executor_, timeout, [this] { ++cnt_warmup_; });
     }
 
+    std::vector<Timer> bench_timers;
+    bench_timers.reserve(count_);
     timers_.reserve(count_);
     offsets_.reserve(count_);
     auto begin = now + std::chrono::seconds(3);
@@ -770,22 +775,22 @@ class TimerBencher {
       auto timeout =
           begin + std::chrono::nanoseconds((i + 1) * timeout_interval_ns);
       timers_.push_back(timeout);
-      executor_.AddTimer(timeout, [this, i] {
+      bench_timers.emplace_back(executor_, timeout, [this, i] {
         ++cnt_bench_;
-        EpollExecutor::TimePoint now = EpollExecutor::Clock::now();
+        TimePoint now = Clock::now();
         auto offset_ns = (now - timers_[i]).count();
         offsets_.push_back(offset_ns);
       });
     }
     while (cnt_warmup_ != kWarmupCount)
       ;
-    now = EpollExecutor::Clock::now();
+    now = Clock::now();
     auto wait_ms = (begin - now).count() / 1e6;
     if (wait_ms < 0) die("Too late");
     fprintf(stderr, "BenchTimerMain: wait for %.0f ms before benching...\n",
             wait_ms);
 
-    executor_.AddTimer(begin, [this, timeout_interval_ns] {
+    Timer wait_timer(executor_, begin, [this, timeout_interval_ns] {
       fprintf(stderr, "BenchTimerMain: benching... timeout_interval: %f us\n",
               timeout_interval_ns / 1e3);
     });
@@ -821,7 +826,7 @@ class TimerBencher {
 
   std::atomic<int> cnt_warmup_ = 0;
   std::atomic<int> cnt_bench_ = 0;
-  std::vector<EpollExecutor::TimePoint> timers_;
+  std::vector<TimePoint> timers_;
   std::vector<long> offsets_;
 };
 

@@ -20,13 +20,13 @@ class ValueRankedSplayMap {
 
   ValueRankedSplayMap();
   ~ValueRankedSplayMap();
-  void Upsert(Key key, Value value);      // O(log(n))
-  void Remove(const Key& key);            // O(log(n))
+  void Upsert(Key key, Value value);      // amortized O(log(n))
+  void Remove(const Key& key);            // amortized O(log(n))
   size_t Size() const;                    // O(1)
   bool Contains(const Key& key) const;    // O(1)
-  const Value& GetByKey(const Key& key);  // O(1)
-  RefPair GetByRank(size_t rank);         // O(log(n))
-  size_t Rank(const Key& key);            // O(log(n))
+  const Value& GetByKey(const Key& key);  // amortized O(log(n))
+  RefPair GetByRank(size_t rank);         // amortized O(log(n))
+  size_t Rank(const Key& key);            // amortized O(log(n))
 
  private:
   struct Node {

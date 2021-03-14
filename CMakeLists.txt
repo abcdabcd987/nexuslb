@@ -106,7 +106,7 @@ target_include_directories(common PUBLIC
 target_compile_features(common PUBLIC cxx_std_17)
 target_link_libraries(common PUBLIC ario)
 target_link_libraries(common PUBLIC
-        yaml-cpp gflags glog::glog GTest::GTest protobuf::libprotobuf
+        yaml-cpp gflags glog::glog protobuf::libprotobuf
         ${OpenCV_LIBS} Boost::filesystem Boost::system)
 set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -311,12 +311,11 @@ target_link_libraries(bench_dispatcher PUBLIC dispatcher_obj)
 
 
 
-# FIXME ###### tests ######
-# add_executable(runtest
-#         tests/cpp/scheduler/backend_delegate_test.cpp
-#         tests/cpp/scheduler/scheduler_test.cpp
-#         tests/cpp/test_main.cpp)
-# target_link_libraries(runtest PRIVATE common backend_obj)
+###### tests ######
+add_executable(runtest
+        tests/cpp/test_main.cpp
+        tests/cpp/value_ranked_map_test.cpp)
+target_link_libraries(runtest PRIVATE common GTest::GTest)
 
 
 

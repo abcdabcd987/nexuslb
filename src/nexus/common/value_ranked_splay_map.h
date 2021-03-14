@@ -235,6 +235,7 @@ ValueRankedSplayMap<Key, Value, Compare>::GetNthNode(size_t n) {
       x = x->child[1];
     }
   }
+  SplayNode(x);
   return x;
 }
 

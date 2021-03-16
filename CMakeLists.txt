@@ -316,6 +316,7 @@ target_link_libraries(bench_dispatcher PUBLIC dispatcher_obj)
 
 ###### tests ######
 add_executable(runtest
+        tests/cpp/rps_meter_test.cpp
         tests/cpp/test_main.cpp
         tests/cpp/value_ranked_map_test.cpp)
 target_link_libraries(runtest PRIVATE common GTest::GTest)

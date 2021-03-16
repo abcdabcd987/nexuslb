@@ -47,7 +47,7 @@ InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
 ModelSessionContext::ModelSessionContext(ModelSession model_session)
     : model_session(std::move(model_session)),
       rps_meter(this->model_session.latency_sla() * 1e-3,
-                kRpsMeterHistoryLength) {
+                kRpsMeterHistoryLength, Clock::now()) {
   string_id = ModelSessionToString(this->model_session);
 }
 

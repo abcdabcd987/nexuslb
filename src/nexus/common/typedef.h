@@ -31,4 +31,12 @@ NS_STRONG_TYPEDEF(nexus, uint64_t, GlobalId)
 // PlanId is assigned by Dispatcher.
 NS_STRONG_TYPEDEF(nexus, uint64_t, PlanId)
 
+struct AvgStd {
+  AvgStd() : avg(0.0), std(0.0) {}
+  AvgStd(double avg, double std) : avg(avg), std(std) {}
+
+  double avg;
+  double std;
+};
+
 #endif

@@ -12,7 +12,9 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
+#include "ario/timer.h"
 #include "nexus/common/metric.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
@@ -27,17 +29,11 @@ namespace rank {
 
 namespace {
 
-constexpr uint32_t kCountIntervalSec = 1;
-constexpr uint32_t kAvgIntervalSec = 5;
+constexpr size_t kRpsMeterHistoryLength = 32;
 constexpr uint32_t kCtrlPlaneLatencyUs = 2000;
 constexpr uint32_t kDataPlaneLatencyUs = 5000;
 
 }  // namespace
-
-QueryContext::QueryContext(DispatchRequest request, TimePoint deadline)
-    : request(std::move(request)),
-      global_id(this->request.query_without_input().global_id()),
-      deadline(deadline) {}
 
 InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
                                  const ModelProfile& profile)
@@ -50,20 +46,18 @@ InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
 
 ModelSessionContext::ModelSessionContext(ModelSession model_session)
     : model_session(std::move(model_session)),
-      req_rate(kCountIntervalSec, kAvgIntervalSec) {
+      rps_meter(this->model_session.latency_sla() * 1e-3,
+                kRpsMeterHistoryLength) {
   string_id = ModelSessionToString(this->model_session);
-  req_counter =
-      MetricRegistry::Singleton().CreateIntervalCounter(kCountIntervalSec);
 }
 
-double ModelSessionContext::GetRequestRate() const {
-  for (auto nreq : req_counter->GetHistory()) {
-    if (req_rate.rate() < 0 && nreq == 0) {
-      continue;
-    }
-    req_rate.AddSample(nreq);
-  }
-  return req_rate.rate();
+std::chrono::nanoseconds ModelSessionContext::EstimateExecElapse(
+    uint32_t batch_size) {
+  double micros = 0;
+  micros += profile->GetPreprocessLatency();
+  micros += profile->GetPostprocessLatency();
+  micros += profile->GetForwardLatency(batch_size);
+  return std::chrono::nanoseconds(static_cast<long>(micros * 1e3));
 }
 
 BackendContext::BackendContext(NodeId backend_id,
@@ -72,22 +66,28 @@ BackendContext::BackendContext(NodeId backend_id,
       delegate(std::move(delegate)),
       next_available_time(std::chrono::nanoseconds(0)) {}
 
+RankScheduler::Builder::Builder(ario::EpollExecutor& executor)
+    : executor_(&executor) {}
+
 std::unique_ptr<Scheduler> RankScheduler::Builder::Build(
     std::unique_ptr<DispatcherAccessor> dispatcher) {
-  return std::make_unique<RankScheduler>(std::move(dispatcher));
+  return std::make_unique<RankScheduler>(std::move(dispatcher), *executor_);
 }
 
-RankScheduler::RankScheduler(std::unique_ptr<DispatcherAccessor> dispatcher)
-    : Scheduler(std::move(dispatcher)),
-      bse_(1.0, 0.0),
-      io_context_work_guard_(io_context_.get_executor()) {}
+RankScheduler::RankScheduler(std::unique_ptr<DispatcherAccessor> dispatcher,
+                             ario::EpollExecutor& executor)
+    : Scheduler(std::move(dispatcher)), executor_(&executor), bse_(1.0, 0.0) {}
 
-void RankScheduler::RunAsWorker() { io_context_.run(); }
+void RankScheduler::RunAsWorker() {
+  // TODO
+}
 
-void RankScheduler::Stop() { io_context_work_guard_.reset(); }
+void RankScheduler::Stop() {
+  // TODO
+}
 
 void RankScheduler::AddModelSession(ModelSession model_session) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  // std::lock_guard<std::mutex> lock(mutex_);
 
   // Add model session
   auto mctx = std::make_shared<ModelSessionContext>(std::move(model_session));
@@ -116,12 +116,15 @@ void RankScheduler::AddModelSession(ModelSession model_session) {
     // TODO: GPU performance heterogeneity.
     if (!mctx->profile) {
       mctx->profile = profile;
+      if (!mctx->target_batch_size) {
+        UpdateTargetBatchSize(mctx.get(), std::nullopt);
+      }
     }
   }
 }
 
 void RankScheduler::AddBackend(NodeId backend_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  // std::lock_guard<std::mutex> lock(mutex_);
 
   // Add backend
   auto delegate = dispatcher_->GetBackend(backend_id);
@@ -154,8 +157,151 @@ void RankScheduler::AddBackend(NodeId backend_id) {
     // TODO: GPU performance heterogeneity.
     if (!mctx->profile) {
       mctx->profile = profile;
+      if (!mctx->target_batch_size) {
+        UpdateTargetBatchSize(mctx.get(), std::nullopt);
+      }
     }
   }
+}
+
+void RankScheduler::UpdateTargetBatchSize(ModelSessionContext* mctx,
+                                          const std::optional<AvgStd>& rps) {
+  if (!mctx->profile) {
+    LOG(FATAL) << "ModelSession doesn't have a profile. model_session="
+               << mctx->string_id;
+  }
+  if (rps.has_value()) {
+    double time_budget_ms = mctx->model_session.latency_sla();
+    time_budget_ms -= kCtrlPlaneLatencyUs;
+    time_budget_ms -= kDataPlaneLatencyUs;
+    mctx->target_batch_size = bse_.Estimate(
+        *mctx->profile, time_budget_ms * 1e-3, rps->avg, rps->std);
+  } else {
+    double time_budget_ms = mctx->model_session.latency_sla() / 2.0;
+    mctx->target_batch_size =
+        mctx->profile->GetMaxBatchWithFullBudget(time_budget_ms);
+  }
+}
+
+void RankScheduler::UpdateCandidatePool(TimePoint now,
+                                        TimePoint earliest_exec_time,
+                                        ModelSessionContext* mctx) {
+  auto rps = mctx->rps_meter.Get(now);
+  UpdateTargetBatchSize(mctx, rps);
+  auto batch =
+      batch_policy_.Getbatch(earliest_exec_time, mctx->target_batch_size,
+                             mctx->queries, *mctx->profile);
+
+  mctx->queries.clear();
+  mctx->queries.insert(batch.inputs.begin(), batch.inputs.end());
+  mctx->queries.insert(batch.remains.begin(), batch.remains.end());
+
+  TimePoint latest_exec_time;
+  if (!batch.inputs.empty()) {
+    auto elapse = mctx->EstimateExecElapse(batch.inputs.size());
+    latest_exec_time = batch.inputs[0]->deadline - elapse;
+  } else {
+    latest_exec_time = TimePoint::max();
+  }
+  std::shared_ptr<ExecutionCandidate> candidate(new ExecutionCandidate{
+      mctx->string_id, latest_exec_time, std::move(batch.inputs),
+      std::move(batch.drops), std::move(batch.remains)});
+  candidate_pool_.Upsert(mctx->string_id, candidate);
+}
+
+void RankScheduler::UpdateActivePlans(TimePoint now,
+                                      TimePoint earliest_exec_time,
+                                      ModelSessionContext* mctx,
+                                      size_t num_idle_backends) {
+  size_t rank = candidate_pool_.Rank(mctx->string_id);
+  if (rank < num_idle_backends) {
+    const auto& candidate = candidate_pool_.GetByKey(mctx->string_id);
+    if (!candidate->inputs.empty()) {
+      RemoveActivePlan(mctx);
+      SetupActivePlan(now, earliest_exec_time, mctx, candidate);
+    }
+  }
+  if (candidate_pool_.Size() > num_idle_backends) {
+    auto bottom_pair = candidate_pool_.GetByRank(num_idle_backends);
+    auto bottom_mctx = models_.at(bottom_pair.key);
+    RemoveActivePlan(bottom_mctx.get());
+  }
+}
+
+std::shared_ptr<ExecutionCandidate> RankScheduler::PopCandidatePool(
+    TimePoint now, TimePoint earliest_exec_time, size_t rank) {
+  std::vector<std::shared_ptr<ExecutionCandidate>> candidates;
+  for (size_t i = rank; rank < candidate_pool_.Size(); ++i) {
+    auto pair = candidate_pool_.GetByRank(i);
+    candidates.push_back(pair.value);
+  }
+  std::shared_ptr<ExecutionCandidate> bottom_candidate;
+  for (auto& old_candidate : candidates) {
+    const auto& model_session_id = old_candidate->model_session_id;
+    auto& mctx = models_.at(model_session_id);
+    if (old_candidate->latest_exec_time < earliest_exec_time) {
+      UpdateCandidatePool(now, earliest_exec_time, mctx.get());
+    }
+    const auto& new_candidate = candidate_pool_.GetByKey(model_session_id);
+    if (!bottom_candidate ||
+        new_candidate->latest_exec_time < bottom_candidate->latest_exec_time) {
+      bottom_candidate = new_candidate;
+    }
+  }
+  return bottom_candidate;
+}
+
+void RankScheduler::SetupActivePlan(
+    TimePoint now, TimePoint earliest_exec_time, ModelSessionContext* mctx,
+    std::shared_ptr<ExecutionCandidate> candidate) {
+  // Build plan
+  auto plan = std::make_shared<ActivePlan>();
+  plan->plan_id = NextPlanId();
+  plan->deadline = candidate->inputs[0]->deadline;
+  uint32_t batch_size = candidate->inputs.size();
+  auto frontrun_elapse = mctx->EstimateExecElapse(batch_size + 1);
+  auto frontrun_exec_time = plan->deadline - frontrun_elapse;
+  auto send_time_calc = frontrun_exec_time -
+                        std::chrono::microseconds(kCtrlPlaneLatencyUs) -
+                        std::chrono::microseconds(kDataPlaneLatencyUs);
+  plan->send_time = std::max(now, send_time_calc);
+  auto exec_time_calc = plan->send_time +
+                        std::chrono::microseconds(kCtrlPlaneLatencyUs) +
+                        std::chrono::microseconds(kDataPlaneLatencyUs);
+  plan->exec_time = std::max(earliest_exec_time, exec_time_calc);
+  auto exec_elapse = mctx->EstimateExecElapse(batch_size);
+  plan->finish_time = plan->exec_time + exec_elapse;
+  plan->candidate = candidate;
+
+  // Update bookkeeping
+  mctx->active_plan = plan;
+  plans_[plan->plan_id] = plan;
+
+  // Setup timer
+  plan->send_timer = std::make_unique<ario::Timer>(
+      *executor_, plan->send_time,
+      [this, plan_id = plan->plan_id] { OnPlanTimer(plan_id); });
+}
+
+void RankScheduler::RemoveActivePlan(ModelSessionContext* mctx) {
+  auto plan = mctx->active_plan;
+  if (plan) {
+    plans_.erase(plan->plan_id);
+    plan->send_timer->CancelAll();
+    mctx->active_plan = nullptr;
+  }
+}
+
+std::vector<std::shared_ptr<BackendContext>> RankScheduler::GetIdleBackends(
+    TimePoint earliest_exec_time) {
+  // TODO: Use Splay
+  std::vector<std::shared_ptr<BackendContext>> ret;
+  for (auto& pair : backends_) {
+    if (pair.second->next_available_time <= earliest_exec_time) {
+      ret.push_back(pair.second);
+    }
+  }
+  return ret;
 }
 
 CtrlStatus RankScheduler::EnqueueQuery(DispatchRequest&& request) {
@@ -169,133 +315,165 @@ CtrlStatus RankScheduler::EnqueueQuery(DispatchRequest&& request) {
                   std::chrono::milliseconds(model_session.latency_sla()));
     qctx = std::make_shared<QueryContext>(std::move(request), deadline);
   }
+  const auto& query = qctx->request.query_without_input();
+  auto now =
+      TimePoint(std::chrono::nanoseconds(query.clock().dispatcher_recv_ns()));
 
   // Add to pending queries
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (queries_.count(qctx->global_id)) {
-      LOG(ERROR) << "Query already exists. global_id=" << qctx->global_id.t;
-      return CtrlStatus::CTRL_GLOBAL_ID_CONFLICT;
-    }
-    const auto& model_session_id =
-        qctx->request.query_without_input().model_session_id();
-    auto miter = models_.find(model_session_id);
-    if (miter == models_.end()) {
-      LOG(ERROR) << "Cannot find model session. global_id=" << qctx->global_id.t
-                 << ", model_session=" << model_session_id;
-      return CtrlStatus::MODEL_SESSION_NOT_LOADED;
-    }
-    queries_[qctx->global_id] = qctx;
-    auto& mctx = miter->second;
-    mctx->queries.insert(qctx);
+  if (queries_.count(qctx->global_id)) {
+    LOG(ERROR) << "Query already exists. global_id=" << qctx->global_id.t;
+    return CtrlStatus::CTRL_GLOBAL_ID_CONFLICT;
   }
+  const auto& model_session_id = query.model_session_id();
+  auto miter = models_.find(model_session_id);
+  if (miter == models_.end()) {
+    LOG(ERROR) << "Cannot find model session. global_id=" << qctx->global_id.t
+               << ", model_session=" << model_session_id;
+    return CtrlStatus::MODEL_SESSION_NOT_LOADED;
+  }
+  queries_[qctx->global_id] = qctx;
+  auto& mctx = miter->second;
+  mctx->queries.insert(qctx);
+  mctx->rps_meter.Hit(now);
 
-  // Trigger full schedule on the worker thread.
-  boost::asio::post(io_context_, [this] { WorkFullSchedule(); });
+  // Update schedule
+  auto earliest_exec_time = now +
+                            std::chrono::microseconds(kDataPlaneLatencyUs) +
+                            std::chrono::microseconds(kCtrlPlaneLatencyUs);
+  auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
+  UpdateCandidatePool(now, earliest_exec_time, mctx.get());
+  UpdateActivePlans(now, earliest_exec_time, mctx.get(), num_idle_backends);
+
   VLOG(1) << "EnqueueQuery success. global_id=" << qctx->global_id.t;
   return CtrlStatus::CTRL_OK;
 }
 
 PlanId RankScheduler::NextPlanId() { return PlanId(next_plan_id_.t++); }
 
-void RankScheduler::WorkFullSchedule() {
-  std::unique_lock<std::mutex> lock(mutex_);
-  VLOG(1) << "WorkFullSchedule: start";
-
-  // Drop timeout queries. Replies will be sent later.
-  auto dropped = DropTimeoutQueries();
-  if (!dropped.empty()) {
-    VLOG(1) << "WorkFullSchedule: will drop " << dropped.size() << " queries.";
+void RankScheduler::OnBackendAvailableSoon(NodeId backend_id) {
+  TimePoint now = Clock::now();
+  auto& bctx = backends_.at(backend_id);
+  auto schedule_time = bctx->next_available_time -
+                       std::chrono::microseconds(kDataPlaneLatencyUs) -
+                       std::chrono::microseconds(kCtrlPlaneLatencyUs);
+  auto timer_delay = now - schedule_time;
+  if (timer_delay > std::chrono::microseconds(100)) {
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(timer_delay)
+                  .count();
+    LOG(WARNING) << "OnBackendAvailableSoon: timer_delay: " << us << " us";
   }
 
-  // Copies all remaining queries
-  std::unordered_map<std::string, std::set<GlobalId>> remains;
-  for (auto& pair : models_) {
-    remains.try_emplace(pair.first);
-    auto& global_ids = remains[pair.first];
-    for (auto& qctx : pair.second->queries) {
-      global_ids.insert(qctx->global_id);
+  auto earliest_exec_time = bctx->next_available_time;
+  auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
+  CHECK_GT(num_idle_backends, 0);
+  auto rank = num_idle_backends - 1;
+  auto candidate = PopCandidatePool(now, earliest_exec_time, rank);
+  if (candidate) {
+    auto& mctx = models_.at(candidate->model_session_id);
+    CHECK_EQ(mctx->active_plan, nullptr);
+    UpdateActivePlans(now, earliest_exec_time, mctx.get(), num_idle_backends);
+  }
+}
+
+void RankScheduler::OnPlanTimer(PlanId plan_id) {
+  using namespace std::chrono;
+  VLOG(1) << "OnPlanTimer: start. plan_id=" << plan_id.t;
+  TimePoint now = Clock::now();
+  std::shared_ptr<ActivePlan> plan;
+  {
+    auto iter = plans_.find(plan_id);
+    if (iter == plans_.end()) {
+      // Cancelled plan. Do nothing.
+      VLOG(1) << "OnPlanTimer: return early. Plan cancelled. plan_id="
+              << plan_id.t;
+      return;
     }
+    plan = iter->second;
+    plans_.erase(iter);
+  }
+  auto timer_delay = now - plan->send_time;
+  if (timer_delay > microseconds(100)) {
+    auto us = duration_cast<microseconds>(timer_delay).count();
+    LOG(WARNING) << "OnPlanTimer: huge timer delay: " << us << " us";
+  }
+  auto& mctx = models_.at(plan->candidate->model_session_id);
+
+  // Assign backend
+  auto idle_backends = GetIdleBackends(plan->exec_time);
+  CHECK_GT(idle_backends.size(), 0);
+  auto bctx = idle_backends[0];
+  auto backend_id = bctx->backend_id;
+
+  // Setup next schedule when this batch is almost done
+  bctx->next_available_time = plan->finish_time;
+  bctx->schedule_time = bctx->next_available_time -
+                        microseconds(kDataPlaneLatencyUs) -
+                        microseconds(kCtrlPlaneLatencyUs);
+  bctx->schedule_timer.SetTimeout(bctx->schedule_time);
+  bctx->schedule_timer.AsyncWait(
+      [this, backend_id] { OnBackendAvailableSoon(backend_id); });
+
+  // Remove pending queries.
+  for (auto& qctx : plan->candidate->inputs) {
+    mctx->queries.erase(qctx);
+    queries_.erase(qctx->global_id);
+  }
+  for (auto& qctx : plan->candidate->drops) {
+    mctx->queries.erase(qctx);
+    queries_.erase(qctx->global_id);
   }
 
-  // Sort backends by next_available_time
-  std::vector<std::shared_ptr<BackendContext>> backends;
-  for (auto& pair : backends_) {
-    backends.push_back(pair.second);
+  // Update candidate pool
+  auto earliest_exec_time = plan->exec_time;
+  auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
+  UpdateCandidatePool(now, earliest_exec_time, mctx.get());
+  UpdateActivePlans(now, earliest_exec_time, mctx.get(), num_idle_backends);
+
+  // Prepare to send to backend.
+  auto delegate = dispatcher_->GetBackend(backend_id);
+  // TODO: send without holding lock
+  // lock.unlock();
+  if (!delegate) {
+    LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;
+    return;
   }
-  std::sort(backends.begin(), backends.end(),
-            [](const auto& lhs, const auto& rhs) {
-              return lhs->next_available_time < rhs->next_available_time;
-            });
-
-  // Schedule each backend
-  for (auto& bctx : backends) {
-    // Try all model sessions to schedule on this backend
-    std::optional<BatchPlan> best_plan;
-    for (auto& pair : remains) {
-      auto& remain_queries = pair.second;
-      if (remain_queries.empty()) {
-        continue;
-      }
-      auto candidate = TryScheduleModelSessionOnBackend(
-          bctx, models_[pair.first], remain_queries);
-
-      // Update the best plan.
-      // Pick the one that has the earliest exec_time. The intuition is to give
-      // model sessions that have plenty of time left some time to accumulate
-      // more requests, thus avoiding running them with a small batch size.
-      if (!candidate) {
-        continue;
-      }
-      if (!best_plan || candidate->exec_time < best_plan->exec_time) {
-        best_plan = std::move(candidate);
-      }
-    }
-
-    // Use the best plan as the backend's next plan.
-    if (!best_plan) {
-      // Deprecate previously scheduled plan.
-      // The timer will be cancelled by the destructor.
-      bctx->next_plan = std::nullopt;
-      VLOG(1) << "WorkFullSchedule: Backend " << bctx->backend_id.t
-              << " assigned no BatchPlan.";
-    } else {
-      bctx->next_plan = std::move(best_plan);
-      auto& plan = *bctx->next_plan;
-      plan.plan_id = NextPlanId();
-      VLOG(1) << "WorkFullSchedule: Backend " << bctx->backend_id.t
-              << " assigned a BatchPlan. plan_id=" << plan.plan_id
-              << ", model_session=" << plan.model_session_id
-              << ", batch_size=" << plan.actual_batch_size
-              << ", send_time=" << plan.send_time.time_since_epoch().count()
-              << ", exec_time=" << plan.exec_time.time_since_epoch().count()
-              << ", finish_time="
-              << plan.finish_time.time_since_epoch().count();
-
-      // Remove scheduled queries so that the next backend won't see them.
-      auto& remain_queries = remains[plan.model_session_id];
-      for (auto global_id : plan.global_ids) {
-        remain_queries.erase(global_id);
-      }
-
-      // Setup timer to finalize and send out batch plans.
-      plan.send_timer =
-          std::make_unique<boost::asio::basic_waitable_timer<Clock>>(
-              io_context_, plan.send_time);
-      auto backend_id = plan.backend_id;
-      auto plan_id = plan.plan_id;
-      plan.send_timer->async_wait(
-          [backend_id, plan_id, this](const boost::system::error_code& ec) {
-            if (ec) return;
-            WorkFinalizePlan(backend_id, plan_id);
-          });
-    }
+  BatchPlanProto proto;
+  EnqueueQueryCommand query;
+  proto.set_plan_id(plan->plan_id.t);
+  proto.set_model_session_id(plan->candidate->model_session_id);
+  proto.set_exec_time_ns(
+      duration_cast<nanoseconds>(plan->exec_time.time_since_epoch()).count());
+  proto.set_deadline_ns(
+      duration_cast<nanoseconds>(plan->deadline.time_since_epoch()).count());
+  proto.set_expected_finish_time_ns(
+      duration_cast<nanoseconds>(plan->finish_time.time_since_epoch()).count());
+  for (auto& qctx : plan->candidate->inputs) {
+    query.mutable_query_without_input()->Swap(
+        qctx->request.mutable_query_without_input());
+    query.set_rdma_read_offset(qctx->request.rdma_read_offset());
+    query.set_rdma_read_length(qctx->request.rdma_read_length());
+    qctx->request.Clear();
+    *proto.add_queries() = std::move(query);
   }
+  // Update punch clock
+  auto dispatcher_dispatch_ns =
+      duration_cast<nanoseconds>(Clock::now().time_since_epoch()).count();
+  for (auto& query : *proto.mutable_queries()) {
+    query.mutable_query_without_input()
+        ->mutable_clock()
+        ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
+  }
+  // Send to backend
+  VLOG(1) << "WorkFinalizePlan: send to backend.";
+  delegate->EnqueueBatchPlan(std::move(proto));
+  SendDroppedQueries(plan->candidate->drops);
+  VLOG(1) << "WorkFinalizePlan: done.";
+}
 
-  // Send replies about dropped queries
-  lock.unlock();
+void RankScheduler::SendDroppedQueries(
+    const std::vector<std::shared_ptr<QueryContext>>& drops) {
   DispatchReply dispatch_reply;
-  for (auto& qctx : dropped) {
+  for (auto& qctx : drops) {
     auto frontend_id =
         NodeId(qctx->request.query_without_input().frontend_id());
     auto frontend = dispatcher_->GetFrontend(frontend_id);
@@ -313,242 +491,6 @@ void RankScheduler::WorkFullSchedule() {
     dispatch_reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
     frontend->MarkQueryDroppedByDispatcher(std::move(dispatch_reply));
   }
-  VLOG(1) << "WorkFullSchedule: done";
-}
-
-std::vector<std::shared_ptr<QueryContext>> RankScheduler::DropTimeoutQueries() {
-  auto now = Clock::now();
-  std::vector<std::shared_ptr<QueryContext>> dropped;
-  for (auto& pair : models_) {
-    auto& mctx = pair.second;
-    auto& queries = mctx->queries;
-    for (auto iter = queries.begin(); iter != queries.end();) {
-      auto& qctx = *iter;
-      if (qctx->deadline > now) {
-        break;
-      }
-      dropped.push_back(qctx);
-      queries_.erase(qctx->global_id);
-      iter = queries.erase(iter);
-    }
-  }
-  return dropped;
-}
-
-std::optional<BatchPlan> RankScheduler::TryScheduleModelSessionOnBackend(
-    std::shared_ptr<const BackendContext> bctx,
-    std::shared_ptr<const ModelSessionContext> mctx,
-    const std::set<GlobalId>& query_ids) {
-  using namespace std::chrono;
-  auto now = Clock::now();
-  double rps = mctx->GetRequestRate();
-  double time_budget = mctx->model_session.latency_sla() * 1e-3;
-  if (!mctx->profile) {
-    LOG(ERROR) << "ModelSession doesn't have a profile. model_session="
-               << mctx->string_id;
-    return std::nullopt;
-  }
-  uint32_t reserved_batch_size =
-      bse_.Estimate(*mctx->profile, time_budget, rps, 0.0);
-  auto proc_elapse = nanoseconds(0);
-  // TODO: WithNStd
-  proc_elapse += nanoseconds(
-      static_cast<long>(mctx->profile->GetPreprocessLatency() * 1e3));
-  proc_elapse += nanoseconds(
-      static_cast<long>(mctx->profile->GetPostprocessLatency() * 1e3));
-  auto plan_recv_time = now + microseconds(kCtrlPlaneLatencyUs) +
-                        microseconds(kDataPlaneLatencyUs);
-  auto eexec_time = std::max(bctx->next_available_time, plan_recv_time);
-
-  // Sliding window policy
-  std::vector<std::shared_ptr<QueryContext>> inputs;
-  auto qiter = query_ids.begin();
-  size_t qremain = query_ids.size();
-  uint32_t bs = std::min(static_cast<uint32_t>(qremain), reserved_batch_size);
-  while (inputs.size() < bs && qiter != query_ids.end()) {
-    --qremain;
-    auto& qctx = queries_.at(*qiter);
-    auto deadline = inputs.empty() ? qctx->deadline : inputs[0]->deadline;
-    auto fwd_elapse = nanoseconds(
-        static_cast<long>(mctx->profile->GetForwardLatency(bs) * 1e3));
-    auto finish_time = eexec_time + fwd_elapse + proc_elapse;
-    if (deadline > finish_time) {
-      inputs.push_back(qctx);
-    } else {
-      // Not actually dropping the query. Skipping instead.
-      // Just in case another backend can pick it up.
-      bs = std::min(static_cast<uint32_t>(inputs.size() + qremain),
-                    reserved_batch_size);
-    }
-    ++qiter;
-  }
-
-  // See if there is any free lunch.
-  while (qiter != query_ids.end()) {
-    --qremain;
-    auto& qctx = queries_.at(*qiter);
-    auto deadline = inputs.empty() ? qctx->deadline : inputs[0]->deadline;
-    bs = inputs.size() + 1;
-    auto fwd_elapse = nanoseconds(
-        static_cast<long>(mctx->profile->GetForwardLatency(bs) * 1e3));
-    auto finish_time = eexec_time + fwd_elapse + proc_elapse;
-    if (deadline > finish_time) {
-      inputs.push_back(qctx);
-    } else {
-      break;
-    }
-    ++qiter;
-  }
-
-  // If there is no inputs for the new batch, consider other model sessions.
-  if (inputs.empty()) {
-    return std::nullopt;
-  }
-
-  // Build the new BatchPlan.
-  //
-  // Heuristic: Calculate exec_time using batch size + 1.
-  //
-  //                                                             deadline
-  //     ABCDEF      X   [exec_time = deadline - f(batch_size)   ]
-  //     ABCDEF   [exec_time = deadline - f(batch_size + 1)      ]
-  //
-  // Effectively, this heuristic makes the batch start earlier.
-  //
-  // Suppose there is no additional requests coming in between the gap. It won't
-  // hurt to move the batch earlier. In fact, it'll make the batch finish
-  // earlier.
-  //
-  // Suppose there is a request X in between. With the heuristic, X will be left
-  // for the future batch. Without the heuristic, notice that the batch won't
-  // fit X in unless it drops the head of queue. Hence, it won't gain anything
-  // for adding X. What's worse, dropping the head of queue prolongs the
-  // deadline, which might further prolong the exec_time and potentially
-  // dropping more heads of queue.
-  //
-  // Therefore, this heuristic is very safe and effective.
-  // The only caveat is that the analysis above assumes X won't move the batch's
-  // deadline ahead. Shall the X arrived at the dispatcher out of order and has
-  // a deadline earlier than A's, the analysis doesn't hold. However, it is
-  // worth pointing out that such long a delay is less common, almost unlikely.
-  auto fwd1_elapse = nanoseconds(static_cast<long>(
-      mctx->profile->GetForwardLatency(inputs.size() + 1) * 1e3));
-  auto exec1_elapse = fwd1_elapse + proc_elapse;
-  auto earliest_deadline = inputs[0]->deadline;
-  auto exec_time = std::max(eexec_time, earliest_deadline - exec1_elapse);
-  auto fwd_elapse = nanoseconds(
-      static_cast<long>(mctx->profile->GetForwardLatency(inputs.size()) * 1e3));
-  auto exec_elapse = fwd_elapse + proc_elapse;
-  auto finish_time = exec_time + fwd_elapse + proc_elapse;
-  auto send_time = exec_time - microseconds(kCtrlPlaneLatencyUs) -
-                   microseconds(kDataPlaneLatencyUs);
-  LOG_IF(ERROR, send_time < now)
-      << "send_time < now. send_time=" << send_time.time_since_epoch().count()
-      << ", now=" << now.time_since_epoch().count();
-
-  BatchPlan plan;
-  plan.plan_id.t = 0;
-  plan.backend_id = bctx->backend_id;
-  plan.model_session_id = mctx->string_id;
-  plan.send_time = send_time;
-  plan.exec_time = exec_time;
-  plan.finish_time = finish_time;
-  plan.earliest_deadline = earliest_deadline;
-  plan.actual_batch_size = inputs.size();
-  plan.reserved_batch_size = reserved_batch_size;
-  plan.exec_elapse = exec_elapse;
-  for (const auto& qctx : inputs) {
-    plan.global_ids.push_back(qctx->global_id);
-  }
-  return plan;
-}
-
-void RankScheduler::WorkFinalizePlan(NodeId backend_id, PlanId plan_id) {
-  using namespace std::chrono;
-  VLOG(1) << "WorkFinalizePlan: start. backend_id=" << backend_id.t
-          << ", plan_id=" << plan_id.t;
-  std::unique_lock<std::mutex> lock(mutex_);
-  if (!backends_.count(backend_id)) {
-    LOG(ERROR) << "WorkFinalizePlan: Cannot find backend. plan_id=" << plan_id.t
-               << ", backend_id=" << backend_id.t;
-    return;
-  }
-  auto& bctx = backends_.at(backend_id);
-  if (!bctx->next_plan || bctx->next_plan->plan_id != plan_id) {
-    // Skip if this is a deprecated plan.
-    return;
-  }
-  auto plan = std::move(*bctx->next_plan);
-  if (!models_.count(plan.model_session_id)) {
-    LOG(ERROR) << "WorkFinalizePlan: Cannot find model session. plan_id="
-               << plan_id.t << ", backend_id=" << backend_id.t
-               << ", model_session_id=" << plan.model_session_id;
-    return;
-  }
-  auto& mctx = models_.at(plan.model_session_id);
-  auto now = Clock::now();
-  if (duration_cast<microseconds>(now - plan.send_time) > microseconds(100)) {
-    LOG(WARNING) << "WorkFinalizePlan: Huge timer offset. plan.send_time="
-                 << plan.send_time.time_since_epoch().count()
-                 << ", now=" << now.time_since_epoch().count();
-  }
-
-  // Update backend context
-  CHECK(bctx->next_available_time <= plan.exec_time);
-  bctx->next_available_time = plan.finish_time;
-  bctx->next_plan.reset();
-
-  // Remove pending queries.
-  std::vector<std::shared_ptr<QueryContext>> queries;
-  queries.reserve(plan.global_ids.size());
-  for (auto global_id : plan.global_ids) {
-    auto iter = queries_.find(global_id);
-    CHECK(iter != queries_.end());
-    queries.push_back(iter->second);
-    mctx->queries.erase(iter->second);
-    queries_.erase(iter);
-  }
-
-  // Prepare to send to backend.
-  auto delegate = dispatcher_->GetBackend(backend_id);
-  lock.unlock();
-  if (!delegate) {
-    LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;
-    return;
-  }
-  BatchPlanProto proto;
-  EnqueueQueryCommand query;
-  proto.set_plan_id(plan.plan_id.t);
-  proto.set_model_session_id(plan.model_session_id);
-  proto.set_exec_time_ns(
-      duration_cast<nanoseconds>(plan.exec_time.time_since_epoch()).count());
-  proto.set_deadline_ns(
-      duration_cast<nanoseconds>(plan.earliest_deadline.time_since_epoch())
-          .count());
-  proto.set_expected_finish_time_ns(
-      duration_cast<nanoseconds>(plan.finish_time.time_since_epoch()).count());
-  for (auto& qctx : queries) {
-    query.mutable_query_without_input()->Swap(
-        qctx->request.mutable_query_without_input());
-    query.set_rdma_read_offset(qctx->request.rdma_read_offset());
-    query.set_rdma_read_length(qctx->request.rdma_read_length());
-    qctx->request.Clear();
-    *proto.add_queries() = std::move(query);
-  }
-  // Update punch clock
-  auto dispatcher_dispatch_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          Clock::now().time_since_epoch())
-          .count();
-  for (auto& query : *proto.mutable_queries()) {
-    query.mutable_query_without_input()
-        ->mutable_clock()
-        ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
-  }
-  // Send to backend
-  VLOG(1) << "WorkFinalizePlan: send to backend.";
-  delegate->EnqueueBatchPlan(std::move(proto));
-  VLOG(1) << "WorkFinalizePlan: done.";
 }
 
 }  // namespace rank

@@ -1,22 +1,28 @@
 #ifndef NEXUS_DISPATCHER_RANK_SCHEDULER_H_
 #define NEXUS_DISPATCHER_RANK_SCHEDULER_H_
 
-#include <boost/asio.hpp>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "ario/epoll.h"
+#include "ario/timer.h"
 #include "nexus/common/metric.h"
 #include "nexus/common/model_db.h"
+#include "nexus/common/rps_meter.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
+#include "nexus/common/value_ranked_splay_map.h"
 #include "nexus/dispatcher/accessor.h"
 #include "nexus/dispatcher/backend_delegate.h"
+#include "nexus/dispatcher/batch_policy.h"
 #include "nexus/dispatcher/batch_size_estimator.h"
+#include "nexus/dispatcher/query_context.h"
 #include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
@@ -25,46 +31,30 @@ namespace nexus {
 namespace dispatcher {
 namespace rank {
 
-struct QueryContext {
-  QueryContext(DispatchRequest request, TimePoint deadline);
-
-  DispatchRequest request;
-  GlobalId global_id;
-  TimePoint deadline;
-};
-
-struct OrderQueryContextByDeadlineASC {
-  bool operator()(const std::shared_ptr<QueryContext>& lhs,
-                  const std::shared_ptr<QueryContext>& rhs) const {
-    return lhs->deadline < rhs->deadline ||
-           (lhs->deadline == rhs->deadline &&
-            lhs->global_id.t < rhs->global_id.t);
-  }
-};
-
-using SortedQueryList =
-    std::set<std::shared_ptr<QueryContext>, OrderQueryContextByDeadlineASC>;
-
-struct BatchPlan {
-  PlanId plan_id;
-  NodeId backend_id;
+struct ExecutionCandidate {
   std::string model_session_id;
+  TimePoint latest_exec_time;
+  std::vector<std::shared_ptr<QueryContext>> inputs;
+  std::vector<std::shared_ptr<QueryContext>> drops;
+  std::vector<std::shared_ptr<QueryContext>> remains;
 
+  struct OrderByLatestExecTimeASC {
+    bool operator()(const std::shared_ptr<ExecutionCandidate>& lhs,
+                    const std::shared_ptr<ExecutionCandidate>& rhs) const {
+      return lhs->latest_exec_time < rhs->latest_exec_time;
+    }
+  };
+};
+
+struct ActivePlan {
+  PlanId plan_id;
   TimePoint send_time;
   TimePoint exec_time;
   TimePoint finish_time;
-  TimePoint earliest_deadline;
+  TimePoint deadline;
+  std::shared_ptr<ExecutionCandidate> candidate;
 
-  uint32_t actual_batch_size;
-  uint32_t reserved_batch_size;
-  std::chrono::nanoseconds exec_elapse;
-
-  // List of queries in this batch. Ordered by deadline ASC.
-  // len(queries) == actual_batch_size.
-  // earliest_deadline == pending_queries[query_ids[0]].deadline
-  std::vector<GlobalId> global_ids;
-
-  std::unique_ptr<boost::asio::basic_waitable_timer<Clock>> send_timer;
+  std::unique_ptr<ario::Timer> send_timer;
 };
 
 struct InstanceContext {
@@ -79,19 +69,18 @@ struct InstanceContext {
 
 struct ModelSessionContext {
   explicit ModelSessionContext(ModelSession model_session);
-  double GetRequestRate() const;
+  std::chrono::nanoseconds EstimateExecElapse(uint32_t batch_size);
 
   ModelSession model_session;
   std::string string_id;
   std::unordered_map<NodeId, std::shared_ptr<InstanceContext>> instances;
   SortedQueryList queries;
-
-  // TODO: replace the metric library used.
-  std::shared_ptr<IntervalCounter> req_counter;
-  mutable EWMA req_rate;
+  RpsMeter rps_meter;
+  std::shared_ptr<ActivePlan> active_plan;
 
   // TODO: GPU performance heterogeneity
   const ModelProfile* profile = nullptr;
+  uint32_t target_batch_size = 0;
 };
 
 struct BackendContext {
@@ -100,52 +89,67 @@ struct BackendContext {
   NodeId backend_id;
   std::shared_ptr<BackendDelegate> delegate;
   std::unordered_map<std::string, std::shared_ptr<InstanceContext>> instances;
+  TimePoint schedule_time;
   TimePoint next_available_time;
-  std::optional<BatchPlan> next_plan;
+
+  ario::Timer schedule_timer;
 };
 
 class RankScheduler : public Scheduler {
  public:
   class Builder : public Scheduler::Builder {
    public:
-    Builder() = default;
+    explicit Builder(ario::EpollExecutor& executor);
     std::unique_ptr<Scheduler> Build(
         std::unique_ptr<DispatcherAccessor> dispatcher) override;
+
+   private:
+    ario::EpollExecutor* executor_;
   };
 
-  explicit RankScheduler(std::unique_ptr<DispatcherAccessor> dispatcher);
+  RankScheduler(std::unique_ptr<DispatcherAccessor> dispatcher,
+                ario::EpollExecutor& executor);
   void RunAsWorker();
   void Stop();
-  void AddModelSession(ModelSession model_session) /* EXCLUDES(mutex_) */;
-  void AddBackend(NodeId backend_id) /* EXCLUDES(mutex_) */;
-  CtrlStatus EnqueueQuery(DispatchRequest&& request) /* EXCLUDES(mutex_) */;
+  void AddModelSession(ModelSession model_session);
+  void AddBackend(NodeId backend_id);
+  CtrlStatus EnqueueQuery(DispatchRequest&& request);
 
  private:
-  PlanId NextPlanId() /* REQUIRES(mutex_) */;
-  void WorkFullSchedule() /* EXCLUDES(mutex_) */;
-  std::vector<std::shared_ptr<QueryContext>>
-  DropTimeoutQueries() /* REQUIRES(mutex_) */;
-  std::optional<BatchPlan> TryScheduleModelSessionOnBackend(
-      std::shared_ptr<const BackendContext> bctx,
-      std::shared_ptr<const ModelSessionContext> mctx,
-      const std::set<GlobalId>& query_ids) /* REQUIRES(mutex_) */;
-  void WorkFinalizePlan(NodeId backend_id,
-                        PlanId plan_id) /* EXCLUDES(mutex_) */;
+  PlanId NextPlanId();
+  void UpdateTargetBatchSize(ModelSessionContext* mctx,
+                             const std::optional<AvgStd>& rps);
+  void UpdateCandidatePool(TimePoint now, TimePoint earliest_exec_time,
+                           ModelSessionContext* mctx);
+  void UpdateActivePlans(TimePoint now, TimePoint earliest_exec_time,
+                         ModelSessionContext* mctx, size_t num_idle_backends);
+  std::shared_ptr<ExecutionCandidate> PopCandidatePool(
+      TimePoint now, TimePoint earliest_exec_time, size_t rank);
+  void SetupActivePlan(TimePoint now, TimePoint earliest_exec_time,
+                       ModelSessionContext* mctx,
+                       std::shared_ptr<ExecutionCandidate> candidate);
+  void RemoveActivePlan(ModelSessionContext* mctx);
+  std::vector<std::shared_ptr<BackendContext>> GetIdleBackends(
+      TimePoint earliest_exec_time);
+  void SendDroppedQueries(
+      const std::vector<std::shared_ptr<QueryContext>>& drops);
+  void OnBackendAvailableSoon(NodeId backend_id);
+  void OnPlanTimer(PlanId plan_id);
+
+  ario::EpollExecutor* executor_;
 
   BatchSizeEstimator bse_;
+  BatchPolicyBySlidingWindowWithFreeLunch batch_policy_;
+  ValueRankedSplayMap<std::string, std::shared_ptr<ExecutionCandidate>,
+                      ExecutionCandidate::OrderByLatestExecTimeASC>
+      candidate_pool_;
 
-  boost::asio::io_context io_context_;
-  boost::asio::executor_work_guard<boost::asio::io_context::executor_type>
-      io_context_work_guard_;
-
-  std::mutex mutex_;
-  PlanId next_plan_id_{1} /* GUARDED_BY(mutex_) */;
-  std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
-      models_ /* GUARDED_BY(mutex_) */;
-  std::unordered_map<NodeId, std::shared_ptr<BackendContext>>
-      backends_ /* GUARDED_BY(mutex_) */;
-  std::unordered_map<GlobalId, std::shared_ptr<QueryContext>>
-      queries_ /* GUARDED_BY(mutex_) */;
+  // std::mutex mutex_;
+  PlanId next_plan_id_{1};
+  std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>> models_;
+  std::unordered_map<NodeId, std::shared_ptr<BackendContext>> backends_;
+  std::unordered_map<GlobalId, std::shared_ptr<QueryContext>> queries_;
+  std::unordered_map<PlanId, std::shared_ptr<ActivePlan>> plans_;
 };
 
 }  // namespace rank

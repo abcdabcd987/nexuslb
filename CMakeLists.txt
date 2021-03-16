@@ -96,6 +96,7 @@ add_library(common OBJECT
         src/nexus/common/metric.cpp
         src/nexus/common/model_db.cpp
         src/nexus/common/rdma_sender.cpp
+        src/nexus/common/rps_meter.cpp
         src/nexus/common/server_base.cpp
         src/nexus/common/sleep_profile.cpp
         src/nexus/common/time_util.cpp
@@ -131,10 +132,12 @@ set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(dispatcher_obj
     src/nexus/dispatcher/accessor_impl.cpp
     src/nexus/dispatcher/backend_delegate_impl.cpp
+    src/nexus/dispatcher/batch_policy.cpp
     src/nexus/dispatcher/batch_size_estimator.cpp
     src/nexus/dispatcher/delayed_scheduler.cpp
     src/nexus/dispatcher/dispatcher.cpp
     src/nexus/dispatcher/frontend_delegate_impl.cpp
+    src/nexus/dispatcher/query_context.cpp
     src/nexus/dispatcher/rank_scheduler.cpp
     src/nexus/dispatcher/round_robin_scheduler.cpp
     src/nexus/dispatcher/session_context.cpp

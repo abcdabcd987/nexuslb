@@ -14,7 +14,7 @@ Timer::Timer(EpollExecutor& executor)
     : executor_(&executor), timeout_(), data_() {}
 
 Timer::Timer(EpollExecutor& executor, TimePoint timeout,
-             std::function<void()>&& callback)
+             std::function<void(ErrorCode)>&& callback)
     : executor_(&executor), timeout_(timeout), data_() {
   AsyncWait(std::move(callback));
 }
@@ -51,7 +51,7 @@ size_t Timer::SetTimeout(TimePoint timeout) {
   return cnt_cancelled;
 }
 
-void Timer::AsyncWait(std::function<void()>&& callback) {
+void Timer::AsyncWait(std::function<void(ErrorCode)>&& callback) {
   if (executor_) {
     executor_->ScheduleTimer(data_, timeout_, std::move(callback));
   }

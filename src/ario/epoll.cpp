@@ -5,8 +5,10 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <memory>
 #include <mutex>
 
+#include "ario/error.h"
 #include "ario/utils.h"
 
 namespace ario {
@@ -61,7 +63,7 @@ void EpollExecutor::RunEventLoop() {
         interrupter_.Reset();
       } else if (ptr == &timerfd_) {
         std::lock_guard<std::mutex> lock(mutex_);
-        timerfd_.PopReadyTimerItems(post_queue_);
+        timerfd_.PopReadyTimerItems(callback_queue_);
         auto earliest = timerfd_.EarliestTimeout();
         if (earliest.has_value()) {
           timerfd_.SetTimerFd(earliest.value());
@@ -72,13 +74,15 @@ void EpollExecutor::RunEventLoop() {
       }
     }
 
-    for (std::optional<std::function<void()>> func;;) {
-      func = PopPostQueue();
-      if (func.has_value()) {
-        (*func)();
-      } else {
-        break;
+    for (std::unique_ptr<CallbackQueue::CallbackBind> bind;;) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (callback_queue_.IsEmpty()) {
+          break;
+        }
+        bind = std::move(callback_queue_.PopFront());
       }
+      bind->callback(bind->error);
     }
   }
 }
@@ -88,26 +92,17 @@ void EpollExecutor::StopEventLoop() {
   interrupter_.Interrupt();
 }
 
-void EpollExecutor::Post(std::function<void()> &&func) {
+void EpollExecutor::Post(std::function<void(ErrorCode)> &&func,
+                         ErrorCode error) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    post_queue_.emplace(std::move(func));
+    callback_queue_.PushBack(std::move(func), error);
   }
   interrupter_.Interrupt();
 }
 
-std::optional<std::function<void()>> EpollExecutor::PopPostQueue() {
-  std::optional<std::function<void()>> ret;
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!post_queue_.empty()) {
-    ret.emplace(std::move(post_queue_.front()));
-    post_queue_.pop();
-  }
-  return ret;
-}
-
 void EpollExecutor::ScheduleTimer(TimerData &data, TimePoint timeout,
-                                  std::function<void()> &&callback) {
+                                  std::function<void(ErrorCode)> &&callback) {
   std::lock_guard<std::mutex> lock(mutex_);
   bool earliest = timerfd_.EnqueueTimer(data, timeout, std::move(callback));
   if (earliest) {
@@ -119,7 +114,7 @@ size_t EpollExecutor::CancelTimer(TimerData &data) {
   size_t cnt_cancelled;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    cnt_cancelled = timerfd_.CancelTimer(data, post_queue_);
+    cnt_cancelled = timerfd_.CancelTimer(data, callback_queue_);
   }
   if (cnt_cancelled) {
     interrupter_.Interrupt();
@@ -131,7 +126,7 @@ void EpollExecutor::MoveTimer(TimerData &dst, TimerData &src) {
   size_t cnt_cancelled;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    cnt_cancelled = timerfd_.CancelTimer(dst, post_queue_);
+    cnt_cancelled = timerfd_.CancelTimer(dst, callback_queue_);
     timerfd_.MoveTimer(dst, src);
   }
   if (cnt_cancelled) {

@@ -5,7 +5,9 @@
 #include <queue>
 #include <vector>
 
+#include "ario/callback_queue.h"
 #include "ario/chrono.h"
+#include "ario/error.h"
 
 namespace ario {
 
@@ -25,12 +27,12 @@ class TimerFD {
   int fd() const { return timer_fd_; }
 
   bool EnqueueTimer(TimerData& data, TimePoint timeout,
-                    std::function<void()>&& callback);
-  size_t CancelTimer(TimerData& data, std::queue<std::function<void()>>& out);
+                    std::function<void(ErrorCode)>&& callback);
+  size_t CancelTimer(TimerData& data, CallbackQueue& out);
   void MoveTimer(TimerData& dst, TimerData& src);
   std::optional<TimePoint> EarliestTimeout() const;
   void SetTimerFd(TimePoint timeout);
-  size_t PopReadyTimerItems(std::queue<std::function<void()>>& out);
+  size_t PopReadyTimerItems(CallbackQueue& out);
 
  private:
   struct HeapElement {
@@ -38,7 +40,7 @@ class TimerFD {
     TimerData* data;
   };
 
-  size_t PopCallbacks(TimerData& data, std::queue<std::function<void()>>& out);
+  size_t PopCallbacks(TimerData& data, ErrorCode error, CallbackQueue& out);
   void HeapSwap(size_t lhs, size_t rhs);
   void HeapUp(size_t index);
   void HeapDown(size_t index);

@@ -6,7 +6,9 @@
 #include <optional>
 #include <queue>
 
+#include "ario/callback_queue.h"
 #include "ario/chrono.h"
+#include "ario/error.h"
 #include "ario/timerfd.h"
 
 namespace ario {
@@ -53,16 +55,15 @@ class EpollExecutor {
 
   void RunEventLoop();
   void StopEventLoop();
-  void Post(std::function<void()> &&func);
+  void Post(std::function<void(ErrorCode)> &&func, ErrorCode error);
   void ScheduleTimer(TimerData &data, TimePoint timeout,
-                     std::function<void()> &&callback);
+                     std::function<void(ErrorCode)> &&callback);
   size_t CancelTimer(TimerData &data);
   void MoveTimer(TimerData &dst, TimerData &src);
 
  private:
   friend void EpollExecutorAddEpollWatch(EpollExecutor &executor, int fd,
                                          EpollEventHandler &handler);
-  std::optional<std::function<void()>> PopPostQueue() /* REQUIRES(mutex_) */;
 
   int epoll_fd_;
   std::atomic<bool> stop_event_loop_{false};
@@ -70,7 +71,7 @@ class EpollExecutor {
 
   std::mutex mutex_;
   TimerFD timerfd_ /* GUARDED_BY(mutex_) */;
-  std::queue<std::function<void()>> post_queue_ /* GUARDED_BY(mutex_) */;
+  CallbackQueue callback_queue_ /* GUARDED_BY(mutex_) */;
 };
 
 }  // namespace ario

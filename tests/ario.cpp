@@ -11,6 +11,7 @@
 #include <unordered_map>
 
 #include "ario/epoll.h"
+#include "ario/error.h"
 #include "ario/memory.h"
 #include "ario/rdma.h"
 #include "ario/timer.h"
@@ -762,7 +763,8 @@ class TimerBencher {
     std::vector<Timer> warmup_timers;
     for (int i = 0; i < kWarmupCount; ++i) {
       auto timeout = now + std::chrono::milliseconds(i);
-      warmup_timers.emplace_back(executor_, timeout, [this] { ++cnt_warmup_; });
+      warmup_timers.emplace_back(executor_, timeout,
+                                 [this](ErrorCode) { ++cnt_warmup_; });
     }
 
     std::vector<Timer> bench_timers;
@@ -775,7 +777,7 @@ class TimerBencher {
       auto timeout =
           begin + std::chrono::nanoseconds((i + 1) * timeout_interval_ns);
       timers_.push_back(timeout);
-      bench_timers.emplace_back(executor_, timeout, [this, i] {
+      bench_timers.emplace_back(executor_, timeout, [this, i](ErrorCode) {
         ++cnt_bench_;
         TimePoint now = Clock::now();
         auto offset_ns = (now - timers_[i]).count();
@@ -790,7 +792,7 @@ class TimerBencher {
     fprintf(stderr, "BenchTimerMain: wait for %.0f ms before benching...\n",
             wait_ms);
 
-    Timer wait_timer(executor_, begin, [this, timeout_interval_ns] {
+    Timer wait_timer(executor_, begin, [this, timeout_interval_ns](ErrorCode) {
       fprintf(stderr, "BenchTimerMain: benching... timeout_interval: %f us\n",
               timeout_interval_ns / 1e3);
     });

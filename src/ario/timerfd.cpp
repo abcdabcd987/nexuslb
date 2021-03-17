@@ -8,6 +8,7 @@
 #include <mutex>
 #include <vector>
 
+#include "ario/error.h"
 #include "ario/timer.h"
 #include "ario/utils.h"
 
@@ -21,7 +22,7 @@ TimerFD::TimerFD() {
 TimerFD::~TimerFD() { close(timer_fd_); }
 
 bool TimerFD::EnqueueTimer(TimerData& data, TimePoint timeout,
-                           std::function<void()>&& callback) {
+                           std::function<void(ErrorCode)>&& callback) {
   if (data.heap_index == TimerData::kInvalidHeapIndex) {
     data.heap_index = heap_.size();
     heap_.push_back({timeout, &data});
@@ -31,11 +32,10 @@ bool TimerFD::EnqueueTimer(TimerData& data, TimePoint timeout,
   return data.heap_index == 0 && data.callbacks.size() == 1;
 }
 
-size_t TimerFD::CancelTimer(TimerData& data,
-                            std::queue<std::function<void()>>& out) {
+size_t TimerFD::CancelTimer(TimerData& data, CallbackQueue& out) {
   size_t cnt_cancelled = 0;
   if (data.heap_index != TimerData::kInvalidHeapIndex) {
-    cnt_cancelled = PopCallbacks(data, out);
+    cnt_cancelled = PopCallbacks(data, ErrorCode::kCancelled, out);
     HeapRemove(data.heap_index);
   }
   return cnt_cancelled;
@@ -71,7 +71,7 @@ void TimerFD::SetTimerFd(TimePoint timeout) {
   if (ret < 0) die_perror("timerfd_settime");
 }
 
-size_t TimerFD::PopReadyTimerItems(std::queue<std::function<void()>>& out) {
+size_t TimerFD::PopReadyTimerItems(CallbackQueue& out) {
   TimePoint now = Clock::now();
   size_t cnt_ready = 0;
   while (!heap_.empty()) {
@@ -80,17 +80,17 @@ size_t TimerFD::PopReadyTimerItems(std::queue<std::function<void()>>& out) {
       break;
     }
 
-    cnt_ready += PopCallbacks(*element.data, out);
+    cnt_ready += PopCallbacks(*element.data, ErrorCode::kOk, out);
     HeapRemove(0);
   }
   return cnt_ready;
 }
 
-size_t TimerFD::PopCallbacks(TimerData& data,
-                             std::queue<std::function<void()>>& out) {
+size_t TimerFD::PopCallbacks(TimerData& data, ErrorCode error,
+                             CallbackQueue& out) {
   auto cnt = data.callbacks.size();
   for (auto& cb : data.callbacks) {
-    out.emplace(std::move(cb));
+    out.PushBack(std::move(cb), error);
   }
   data.callbacks.clear();
   return cnt;

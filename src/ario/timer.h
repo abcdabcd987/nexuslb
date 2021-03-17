@@ -5,6 +5,7 @@
 #include <list>
 
 #include "ario/chrono.h"
+#include "ario/error.h"
 
 namespace ario {
 
@@ -23,7 +24,7 @@ class TimerData {
   TimerData(TimerData&& other) = delete;
   TimerData& operator=(TimerData&& other) = delete;
 
-  std::list<std::function<void()>> callbacks;
+  std::list<std::function<void(ErrorCode)>> callbacks;
   size_t heap_index;
 };
 
@@ -34,7 +35,7 @@ class Timer {
   Timer();
   explicit Timer(EpollExecutor& executor);
   Timer(EpollExecutor& executor, TimePoint timeout,
-        std::function<void()>&& callback);
+        std::function<void(ErrorCode)>&& callback);
   ~Timer();
   Timer(const Timer& other) = delete;
   Timer& operator=(const Timer& other) = delete;
@@ -45,7 +46,7 @@ class Timer {
 
   size_t CancelAll();
   size_t SetTimeout(TimePoint timeout);
-  void AsyncWait(std::function<void()>&& callback);
+  void AsyncWait(std::function<void(ErrorCode)>&& callback);
 
  private:
   EpollExecutor* executor_;

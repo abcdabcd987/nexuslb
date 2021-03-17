@@ -40,6 +40,7 @@ find_package(Threads REQUIRED)
 
 ###### ario ######
 add_library(ario
+        src/ario/callback_queue.cpp
         src/ario/epoll.cpp
         src/ario/memory.cpp
         src/ario/rdma.cpp

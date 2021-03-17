@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "ario/error.h"
 #include "ario/timer.h"
 #include "nexus/common/metric.h"
 #include "nexus/common/model_db.h"
@@ -280,7 +281,10 @@ void RankScheduler::SetupActivePlan(
   // Setup timer
   plan->send_timer = std::make_unique<ario::Timer>(
       *executor_, plan->send_time,
-      [this, plan_id = plan->plan_id] { OnPlanTimer(plan_id); });
+      [this, plan_id = plan->plan_id](ario::ErrorCode error) {
+        if (error == ario::ErrorCode::kCancelled) return;
+        OnPlanTimer(plan_id);
+      });
 }
 
 void RankScheduler::RemoveActivePlan(ModelSessionContext* mctx) {
@@ -410,8 +414,10 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
                         microseconds(kDataPlaneLatencyUs) -
                         microseconds(kCtrlPlaneLatencyUs);
   bctx->schedule_timer.SetTimeout(bctx->schedule_time);
-  bctx->schedule_timer.AsyncWait(
-      [this, backend_id] { OnBackendAvailableSoon(backend_id); });
+  bctx->schedule_timer.AsyncWait([this, backend_id](ario::ErrorCode error) {
+    if (error == ario::ErrorCode::kCancelled) return;
+    OnBackendAvailableSoon(backend_id);
+  });
 
   // Remove pending queries.
   for (auto& qctx : plan->candidate->inputs) {

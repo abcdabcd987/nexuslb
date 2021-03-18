@@ -76,6 +76,7 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
     std::getline(fin, line);
     if (line.find("Preprocess latency (mean,std,repeat)") == 0) break;
     SplitString(line, ',', &tokens);
+    CHECK_EQ(tokens.size(), 6) << filepath;
     ProfileEntry entry;
     uint32_t batch = stoi(tokens[0]);
     entry.latency_mean = stof(tokens[1]) * FLAGS_profile_multiplier;

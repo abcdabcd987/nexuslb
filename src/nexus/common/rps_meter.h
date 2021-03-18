@@ -22,7 +22,6 @@ class RpsMeter {
   size_t Index(int64_t time_ns);
 
   int64_t window_span_ns_;
-  size_t history_length_;
   int64_t earliest_time_ns_;
 
   // TODO: use a circular buffer

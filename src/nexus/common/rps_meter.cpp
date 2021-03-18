@@ -43,7 +43,7 @@ void RpsMeter::Hit(TimePoint time) {
   }
   PopLeft(time_ns);
   auto idx = Index(time_ns);
-  CHECK_LT(idx, history_length_);
+  CHECK_LT(idx, counters_.size());
   ++counters_[idx];
 }
 
@@ -54,7 +54,7 @@ std::optional<AvgStd> RpsMeter::Get(TimePoint now) {
   }
   PopLeft(time_ns);
   auto idx = Index(time_ns);
-  CHECK_LT(idx, history_length_);
+  CHECK_LT(idx, counters_.size());
 
   double avg = 0;
   for (size_t i = 0; i <= idx; ++i) avg += counters_[i];

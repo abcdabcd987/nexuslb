@@ -146,7 +146,7 @@ class RankScheduler : public Scheduler {
                       ExecutionCandidate::OrderByLatestExecTimeASC>
       candidate_pool_;
 
-  // std::mutex mutex_;
+  std::mutex mutex_;
   PlanId next_plan_id_{1};
   std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>> models_;
   std::unordered_map<NodeId, std::shared_ptr<BackendContext>> backends_;

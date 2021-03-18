@@ -94,7 +94,7 @@ void RankScheduler::Stop() {
 }
 
 void RankScheduler::AddModelSession(ModelSession model_session) {
-  // std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // Add model session
   auto mctx = std::make_shared<ModelSessionContext>(std::move(model_session));
@@ -131,7 +131,7 @@ void RankScheduler::AddModelSession(ModelSession model_session) {
 }
 
 void RankScheduler::AddBackend(NodeId backend_id) {
-  // std::lock_guard<std::mutex> lock(mutex_);
+  std::lock_guard<std::mutex> lock(mutex_);
 
   // Add backend
   auto delegate = dispatcher_->GetBackend(backend_id);
@@ -315,6 +315,8 @@ std::vector<std::shared_ptr<BackendContext>> RankScheduler::GetIdleBackends(
 }
 
 CtrlStatus RankScheduler::EnqueueQuery(DispatchRequest&& request) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
   std::shared_ptr<QueryContext> qctx;
   {
     const auto& q = request.query_without_input();
@@ -361,6 +363,7 @@ CtrlStatus RankScheduler::EnqueueQuery(DispatchRequest&& request) {
 PlanId RankScheduler::NextPlanId() { return PlanId(next_plan_id_.t++); }
 
 void RankScheduler::OnBackendAvailableSoon(NodeId backend_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
   TimePoint now = Clock::now();
   auto& bctx = backends_.at(backend_id);
   auto schedule_time = bctx->next_available_time -
@@ -387,6 +390,7 @@ void RankScheduler::OnBackendAvailableSoon(NodeId backend_id) {
 
 void RankScheduler::OnPlanTimer(PlanId plan_id) {
   using namespace std::chrono;
+  std::lock_guard<std::mutex> lock(mutex_);
   VLOG(1) << "OnPlanTimer: start. plan_id=" << plan_id.t;
   TimePoint now = Clock::now();
   std::shared_ptr<ActivePlan> plan;

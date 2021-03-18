@@ -1,6 +1,5 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include <pthread.h>
 
 #include <algorithm>
 #include <chrono>
@@ -19,6 +18,8 @@
 #include <vector>
 
 #include "ario/epoll.h"
+#include "ario/error.h"
+#include "ario/timer.h"
 #include "bench_dispatcher/fake_accessor.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
@@ -277,34 +278,51 @@ class DispatcherBencher {
   }
 
   void Run() {
+    TimePoint now = Clock::now();
+    warmup_time_ = now + std::chrono::seconds(2);
+    serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
+    stop_time_ = serious_time_ + std::chrono::seconds(options_.duration);
+    cnt_stopped_ = 0;
+    should_join_ = false;
+
+    loadgen_contexts_.resize(workloads_.size());
+    for (size_t i = 0; i < workloads_.size(); ++i) {
+      InitLoadGen(i);
+      PrepareNextRequest(i);
+      auto& l = loadgen_contexts_[i];
+      l.timer = ario::Timer(
+          executor_, l.next_time,
+          [this, i](ario::ErrorCode error) { ContinueLoadGen(error, i); });
+    }
     for (int i = 0; i < options_.threads; ++i) {
-      threads_.emplace_back([this] {
-        pthread_setname_np(pthread_self(), "Scheduler");
-        executor_.RunEventLoop();
-      });
+      threads_.emplace_back(&ario::EpollExecutor::RunEventLoop, &executor_);
     }
 
-    for (size_t i = 0; i < workloads_.size(); ++i) {
-      threads_.emplace_back([this, i] {
-        pthread_setname_np(pthread_self(), "LoadGen");
-        RunLoadGenWorker(i);
-      });
-    }
+    ario::Timer wait_warmup(executor_, warmup_time_, [this](ario::ErrorCode) {
+      LOG(INFO) << "Start warming up...";
+    });
+    ario::Timer wait_serious(executor_, serious_time_, [this](ario::ErrorCode) {
+      LOG(INFO) << "Start benchmarking...";
+    });
 
     {
-      std::lock_guard lock(mutex_);
-      bench_started_ = true;
-      TimePoint now = Clock::now();
-      warmup_time_ = now + std::chrono::seconds(2);
-      serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
-      stop_time_ = serious_time_ + std::chrono::seconds(options_.duration);
+      std::unique_lock lock(mutex_);
+      cv_.wait(lock, [this] { return cnt_stopped_ == workloads_.size(); });
     }
-    cv_.notify_all();
-    std::this_thread::sleep_until(warmup_time_);
-    LOG(INFO) << "Start benchmarking...";
-
-    std::this_thread::sleep_until(stop_time_ + std::chrono::seconds(1));
     LOG(INFO) << "Stopped sending more requests";
+
+    ario::Timer wait_finish(executor_, stop_time_ + std::chrono::seconds(1),
+                            [this](ario::ErrorCode) {
+                              std::unique_lock lock(mutex_);
+                              should_join_ = true;
+                              lock.unlock();
+                              cv_.notify_all();
+                            });
+    {
+      std::unique_lock lock(mutex_);
+      cv_.wait(lock, [this] { return should_join_; });
+    }
+
     scheduler_->Stop();
     executor_.StopEventLoop();
     for (auto iter = threads_.rbegin(); iter != threads_.rend(); ++iter) {
@@ -439,75 +457,97 @@ class DispatcherBencher {
     }
   }
 
-  void RunLoadGenWorker(size_t workload_idx) {
+  void InitLoadGen(size_t workload_idx) {
+    auto& l = loadgen_contexts_[workload_idx];
     const auto& workload = workloads_[workload_idx];
-    std::mt19937 rand_gen(options_.seed + workload_idx * 31);
-    std::exponential_distribution<double> gap_gen(workload.avg_rps);
-    auto last_time = warmup_time_;
-    uint64_t last_global_id = 1000000000 * (workload_idx + 1);
-    uint64_t last_query_id = 0;
-    DispatchRequest request;
-    auto model_session_id = ModelSessionToString(workload.model_session);
-    auto* frontend = frontends_[workload_idx].get();
-    auto frontend_id = frontend->node_id();
-    auto reserved_size = (1.0 + std::sqrt(workload.avg_rps)) *
-                         workload.avg_rps *
-                         (options_.warmup + options_.duration) * 3;
-    frontend->Reserve(reserved_size);
+    l.rand_gen = std::mt19937(options_.seed + workload_idx * 31);
+    l.gap_gen = std::exponential_distribution<double>(workload.avg_rps);
+    l.last_time = warmup_time_;
+    l.last_global_id = 1000000000 * (workload_idx + 1);
+    l.last_query_id = 0;
+    l.model_session_id = ModelSessionToString(workload.model_session);
+    l.frontend = frontends_[workload_idx].get();
+    l.reserved_size = (1.0 + std::sqrt(workload.avg_rps)) * workload.avg_rps *
+                      (options_.warmup + options_.duration) * 3;
+    l.frontend->Reserve(l.reserved_size);
+  }
 
-    {
+  void PrepareNextRequest(size_t workload_idx) {
+    auto& l = loadgen_contexts_[workload_idx];
+    const auto& workload = workloads_[workload_idx];
+    auto gap_ns = static_cast<long>(l.gap_gen(l.rand_gen) * 1e9);
+    l.next_time = l.last_time + std::chrono::nanoseconds(gap_ns);
+    auto next_time_ns = l.next_time.time_since_epoch().count();
+    if (l.next_time > stop_time_) {
+      return;
+    }
+    auto query_id = ++l.last_query_id;
+    auto global_id = ++l.last_global_id;
+    CHECK_LT(query_id, l.reserved_size) << "Reserved size not big enough.";
+    l.request.mutable_model_session()->CopyFrom(workload.model_session);
+    l.request.set_query_id(query_id);
+    auto* query = l.request.mutable_query_without_input();
+    query->set_query_id(query_id);
+    query->set_model_session_id(l.model_session_id);
+    query->set_global_id(global_id);
+    query->set_frontend_id(l.frontend->node_id());
+    auto* clock = query->mutable_clock();
+    clock->set_frontend_recv_ns(next_time_ns);
+    clock->set_frontend_dispatch_ns(next_time_ns);
+    clock->set_dispatcher_recv_ns(next_time_ns);
+
+    l.frontend->ReceivedQuery(query_id, next_time_ns);
+  }
+
+  void ContinueLoadGen(ario::ErrorCode error, size_t workload_idx) {
+    if (error != ario::ErrorCode::kOk) {
+      return;
+    }
+    auto& l = loadgen_contexts_[workload_idx];
+    TimePoint now = Clock::now();
+    while (l.next_time < now && l.next_time <= stop_time_) {
+      scheduler_->EnqueueQuery(std::move(l.request));
+      l.last_time = l.next_time;
+      PrepareNextRequest(workload_idx);
+    }
+    if (l.next_time <= stop_time_) {
+      l.timer.SetTimeout(l.next_time);
+      l.timer.AsyncWait([this, workload_idx](ario::ErrorCode error) {
+        ContinueLoadGen(error, workload_idx);
+      });
+    } else {
+      l.frontend->set_total_queries(l.last_query_id);
       std::unique_lock lock(mutex_);
-      cv_.wait(lock, [this] { return bench_started_; });
-    }
-
-    std::this_thread::sleep_until(warmup_time_);
-    for (;;) {
-      auto gap_ns = static_cast<long>(gap_gen(rand_gen) * 1e9);
-      auto next_time = last_time + std::chrono::nanoseconds(gap_ns);
-      auto next_time_ns = next_time.time_since_epoch().count();
-      if (next_time > stop_time_) {
-        break;
+      ++cnt_stopped_;
+      if (cnt_stopped_ == workloads_.size()) {
+        lock.unlock();
+        cv_.notify_all();
       }
-      auto query_id = ++last_query_id;
-      auto global_id = ++last_global_id;
-      CHECK_LT(query_id, reserved_size) << "Reserved size not big enough.";
-      request.mutable_model_session()->CopyFrom(workload.model_session);
-      request.set_query_id(query_id);
-      auto* query = request.mutable_query_without_input();
-      query->set_query_id(query_id);
-      query->set_model_session_id(model_session_id);
-      query->set_global_id(global_id);
-      query->set_frontend_id(frontend_id);
-      auto* clock = query->mutable_clock();
-      clock->set_frontend_recv_ns(next_time_ns);
-      clock->set_frontend_dispatch_ns(next_time_ns);
-      clock->set_dispatcher_recv_ns(next_time_ns);
-
-      frontend->ReceivedQuery(query_id, next_time_ns);
-      std::this_thread::sleep_until(next_time);
-      executor_.Post(
-          [this, req = std::move(request)](ario::ErrorCode) mutable {
-            scheduler_->EnqueueQuery(std::move(req));
-          },
-          ario::ErrorCode::kOk);
-
-      TimePoint now = Clock::now();
-      if (now > serious_time_ &&
-          now - next_time > std::chrono::milliseconds(1)) {
-        auto diff_ns = (now - next_time).count();
-        LOG(ERROR) << "Scheduler too busy. now - next_time = " << diff_ns / 1000
-                   << "us";
-      }
-      last_time = next_time;
     }
-    frontend->set_total_queries(last_query_id);
   }
 
   using Clock = std::chrono::high_resolution_clock;
   using TimePoint = std::chrono::time_point<Clock, std::chrono::nanoseconds>;
 
+  struct LoadGenContext {
+    ario::Timer timer;
+
+    std::mt19937 rand_gen;
+    std::exponential_distribution<double> gap_gen;
+    TimePoint last_time;
+    uint64_t last_global_id;
+    uint64_t last_query_id;
+    std::string model_session_id;
+    FakeFrontendDelegate* frontend;
+    size_t reserved_size;
+
+    TimePoint next_time;
+    DispatchRequest request;
+  };
+
   Options options_;
   std::vector<Workload> workloads_;
+  std::vector<LoadGenContext> loadgen_contexts_;
   ario::EpollExecutor executor_;
   std::mutex scheduler_mutex_;
   std::unique_ptr<Scheduler> scheduler_;
@@ -518,10 +558,11 @@ class DispatcherBencher {
   std::vector<std::thread> threads_;
   std::mutex mutex_;
   std::condition_variable cv_;
-  bool bench_started_ = false;
   TimePoint warmup_time_;
   TimePoint serious_time_;
   TimePoint stop_time_;
+  size_t cnt_stopped_;
+  bool should_join_;
 };
 
 int main(int argc, char** argv) {

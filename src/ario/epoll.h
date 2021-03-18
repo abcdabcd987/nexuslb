@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -68,6 +69,10 @@ class EpollExecutor {
   int epoll_fd_;
   std::atomic<bool> stop_event_loop_{false};
   Interrupter interrupter_;
+
+  std::mutex stop_mutex_;
+  size_t cnt_workers_ /* GUARDED_BY(stop_mutex_) */ = 0;
+  std::condition_variable stop_cv_;
 
   std::mutex mutex_;
   TimerFD timerfd_ /* GUARDED_BY(mutex_) */;

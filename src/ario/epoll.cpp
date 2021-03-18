@@ -55,6 +55,11 @@ void EpollExecutor::RunEventLoop() {
   struct epoll_event events[kMaxEvents];
   memset(&events, 0, sizeof(events));
 
+  {
+    std::lock_guard<std::mutex> lock(stop_mutex_);
+    ++cnt_workers_;
+  }
+
   while (!stop_event_loop_) {
     int n = epoll_wait(epoll_fd_, events, kMaxEvents, -1);
     for (int i = 0; i < n; ++i) {
@@ -85,11 +90,25 @@ void EpollExecutor::RunEventLoop() {
       bind->callback(bind->error);
     }
   }
+
+  std::unique_lock<std::mutex> lock(stop_mutex_);
+  --cnt_workers_;
+  lock.unlock();
+  stop_cv_.notify_all();
 }
 
 void EpollExecutor::StopEventLoop() {
+  // TODO: stop more elegantly
   stop_event_loop_ = true;
   interrupter_.Interrupt();
+
+  std::unique_lock<std::mutex> lock(stop_mutex_);
+  stop_cv_.wait(lock, [this] {
+    if (cnt_workers_) {
+      interrupter_.Interrupt();
+    }
+    return cnt_workers_ == 0;
+  });
 }
 
 void EpollExecutor::Post(std::function<void(ErrorCode)> &&func,

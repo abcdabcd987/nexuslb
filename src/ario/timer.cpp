@@ -30,7 +30,7 @@ Timer::Timer(Timer&& other)
 
 Timer& Timer::operator=(Timer&& other) {
   if (this != &other) {
-    executor_->CancelTimer(data_);
+    CancelAll();
     executor_ = std::exchange(other.executor_, nullptr);
     timeout_ = std::exchange(other.timeout_, {});
     executor_->MoveTimer(data_, other.data_);

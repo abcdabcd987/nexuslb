@@ -1,11 +1,3 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#include <condition_variable>
-#include <mutex>
-#include <set>
-#include <sstream>
-#include <thread>
-#endif
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 #include <pthread.h>
@@ -13,18 +5,25 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <random>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "ario/epoll.h"
 #include "bench_dispatcher/fake_accessor.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/util.h"
+#include "nexus/dispatcher/rank_scheduler.h"
 #include "nexus/dispatcher/round_robin_scheduler.h"
 #include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
@@ -224,7 +223,7 @@ class FakeBackendDelegate : public BackendDelegate {
 
     CHECK_LT(request.exec_time_ns(), request.expected_finish_time_ns())
         << "Incorrect finish time. " << request.DebugString();
-    CHECK_LT(now_ns, request.exec_time_ns())
+    LOG_IF(ERROR, now_ns > request.exec_time_ns())
         << "BatchPlan too late. " << request.DebugString();
 
     std::vector<BatchPlanProto> finished_plans;
@@ -272,7 +271,8 @@ class DispatcherBencher {
   explicit DispatcherBencher(Options options) : options_(std::move(options)) {
     BuildWorkloads();
     LOG(INFO) << "Preparing the benchmark";
-    BuildRoundRobinScheduler();
+    // BuildRoundRobinScheduler();
+    BuildRankScheduler();
     BuildFakeServers();
   }
 
@@ -280,7 +280,7 @@ class DispatcherBencher {
     for (int i = 0; i < options_.threads; ++i) {
       threads_.emplace_back([this] {
         pthread_setname_np(pthread_self(), "Scheduler");
-        scheduler_->RunAsWorker();
+        executor_.RunEventLoop();
       });
     }
 
@@ -306,6 +306,7 @@ class DispatcherBencher {
     std::this_thread::sleep_until(stop_time_ + std::chrono::seconds(1));
     LOG(INFO) << "Stopped sending more requests";
     scheduler_->Stop();
+    executor_.StopEventLoop();
     for (auto iter = threads_.rbegin(); iter != threads_.rend(); ++iter) {
       iter->join();
     }
@@ -407,6 +408,13 @@ class DispatcherBencher {
     scheduler_ = builder.Build(std::move(accessor));
   }
 
+  void BuildRankScheduler() {
+    auto accessor = std::make_unique<FakeDispatcherAccessor>();
+    accessor_ = accessor.get();
+    RankScheduler::Builder builder(executor_);
+    scheduler_ = builder.Build(std::move(accessor));
+  }
+
   void BuildFakeServers() {
     uint32_t next_backend_id = 10001;
     for (const auto& w : workloads_) {
@@ -473,16 +481,21 @@ class DispatcherBencher {
       auto* clock = query->mutable_clock();
       clock->set_frontend_recv_ns(next_time_ns);
       clock->set_frontend_dispatch_ns(next_time_ns);
+      clock->set_dispatcher_recv_ns(next_time_ns);
 
       frontend->ReceivedQuery(query_id, next_time_ns);
       std::this_thread::sleep_until(next_time);
-      scheduler_->EnqueueQuery(std::move(request));
+      executor_.Post(
+          [this, req = std::move(request)](ario::ErrorCode) mutable {
+            scheduler_->EnqueueQuery(std::move(req));
+          },
+          ario::ErrorCode::kOk);
 
       TimePoint now = Clock::now();
       if (now > serious_time_ &&
           now - next_time > std::chrono::milliseconds(1)) {
         auto diff_ns = (now - next_time).count();
-        LOG(FATAL) << "Scheduler too busy. now - next_time = " << diff_ns / 1000
+        LOG(ERROR) << "Scheduler too busy. now - next_time = " << diff_ns / 1000
                    << "us";
       }
       last_time = next_time;
@@ -495,6 +508,8 @@ class DispatcherBencher {
 
   Options options_;
   std::vector<Workload> workloads_;
+  ario::EpollExecutor executor_;
+  std::mutex scheduler_mutex_;
   std::unique_ptr<Scheduler> scheduler_;
   FakeDispatcherAccessor* accessor_;  // Owned by scheduler_
   std::vector<std::shared_ptr<FakeBackendDelegate>> backends_;

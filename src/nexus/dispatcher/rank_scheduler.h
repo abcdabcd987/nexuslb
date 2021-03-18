@@ -47,6 +47,8 @@ struct ExecutionCandidate {
 };
 
 struct ActivePlan {
+  explicit ActivePlan(ario::EpollExecutor& executor);
+
   PlanId plan_id;
   TimePoint send_time;
   TimePoint exec_time;
@@ -54,7 +56,7 @@ struct ActivePlan {
   TimePoint deadline;
   std::shared_ptr<ExecutionCandidate> candidate;
 
-  std::unique_ptr<ario::Timer> send_timer;
+  ario::Timer send_timer;
 };
 
 struct InstanceContext {

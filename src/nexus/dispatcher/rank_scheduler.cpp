@@ -36,6 +36,8 @@ constexpr uint32_t kDataPlaneLatencyUs = 5000;
 
 }  // namespace
 
+ActivePlan::ActivePlan(ario::EpollExecutor& executor) : send_timer(executor) {}
+
 InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
                                  const ModelProfile& profile)
     : model_session(std::move(model_session)),
@@ -84,7 +86,11 @@ void RankScheduler::RunAsWorker() {
 }
 
 void RankScheduler::Stop() {
-  // TODO
+  plans_.clear();
+  queries_.clear();
+  models_.clear();
+  backends_.clear();
+  LOG(INFO) << "RankScheduler::Stop";
 }
 
 void RankScheduler::AddModelSession(ModelSession model_session) {
@@ -256,7 +262,7 @@ void RankScheduler::SetupActivePlan(
     TimePoint now, TimePoint earliest_exec_time, ModelSessionContext* mctx,
     std::shared_ptr<ExecutionCandidate> candidate) {
   // Build plan
-  auto plan = std::make_shared<ActivePlan>();
+  auto plan = std::make_shared<ActivePlan>(*executor_);
   plan->plan_id = NextPlanId();
   plan->deadline = candidate->inputs[0]->deadline;
   uint32_t batch_size = candidate->inputs.size();
@@ -279,8 +285,8 @@ void RankScheduler::SetupActivePlan(
   plans_[plan->plan_id] = plan;
 
   // Setup timer
-  plan->send_timer = std::make_unique<ario::Timer>(
-      *executor_, plan->send_time,
+  plan->send_timer.SetTimeout(plan->send_time);
+  plan->send_timer.AsyncWait(
       [this, plan_id = plan->plan_id](ario::ErrorCode error) {
         if (error == ario::ErrorCode::kCancelled) return;
         OnPlanTimer(plan_id);
@@ -291,7 +297,7 @@ void RankScheduler::RemoveActivePlan(ModelSessionContext* mctx) {
   auto plan = mctx->active_plan;
   if (plan) {
     plans_.erase(plan->plan_id);
-    plan->send_timer->CancelAll();
+    plan->send_timer.CancelAll();
     mctx->active_plan = nullptr;
   }
 }
@@ -470,10 +476,10 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
         ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
   }
   // Send to backend
-  VLOG(1) << "WorkFinalizePlan: send to backend.";
+  VLOG(1) << "OnPlanTimer: send to backend.";
   delegate->EnqueueBatchPlan(std::move(proto));
   SendDroppedQueries(plan->candidate->drops);
-  VLOG(1) << "WorkFinalizePlan: done.";
+  VLOG(1) << "OnPlanTimer: done.";
 }
 
 void RankScheduler::SendDroppedQueries(

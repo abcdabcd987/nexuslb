@@ -315,6 +315,17 @@ target_link_libraries(bench_dispatcher PUBLIC dispatcher_obj)
 
 
 
+###### tools/run_dispatcher ######
+add_executable(run_dispatcher
+    tools/bench_dispatcher/run_dispatcher_main.cpp
+    tools/bench_dispatcher/fake_accessor.cpp
+)
+target_include_directories(run_dispatcher PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(run_dispatcher PUBLIC dispatcher_obj)
+
+
+
 ###### tests ######
 add_executable(runtest
         tests/cpp/rps_meter_test.cpp

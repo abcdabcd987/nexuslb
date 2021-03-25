@@ -280,6 +280,9 @@ void RankScheduler::SetupActivePlan(
   auto exec_elapse = mctx->EstimateExecElapse(batch_size);
   plan->finish_time = plan->exec_time + exec_elapse;
   plan->candidate = candidate;
+  CHECK(plan->finish_time <= plan->deadline)
+      << "diff = " << (plan->finish_time - plan->deadline).count() / 1e3
+      << "us";
 
   // Update bookkeeping
   mctx->active_plan = plan;
@@ -447,8 +450,9 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
   // Update candidate pool
   auto earliest_exec_time = plan->exec_time;
   auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
-  UpdateCandidatePool(now, earliest_exec_time, mctx);
-  UpdateActivePlans(now, earliest_exec_time, mctx, num_idle_backends);
+  UpdateCandidatePool(plan->send_time, earliest_exec_time, mctx);
+  UpdateActivePlans(plan->send_time, earliest_exec_time, mctx,
+                    num_idle_backends);
 
   // Prepare to send to backend.
   auto delegate = dispatcher_->GetBackend(backend_id);

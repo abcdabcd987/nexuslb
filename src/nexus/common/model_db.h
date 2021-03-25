@@ -12,8 +12,8 @@ namespace nexus {
 
 struct ProfileEntry {
   // latency in us unit
-  float latency_mean;
-  float latency_std;
+  double latency_mean;
+  double latency_std;
   size_t static_memory;
   size_t memory_usage;
   int repeat;
@@ -37,11 +37,11 @@ class ModelProfile {
 
   std::string gpu_uuid() const { return gpu_uuid_; }
 
-  float GetForwardLatency(uint32_t batch) const;
+  double GetForwardLatency(uint32_t batch) const;
 
-  float GetPreprocessLatency() const;
+  double GetPreprocessLatency() const;
 
-  float GetPostprocessLatency() const;
+  double GetPostprocessLatency() const;
 
   size_t GetMemoryUsage(uint32_t batch) const;
   /*!
@@ -49,16 +49,16 @@ class ModelProfile {
    * \param latency_sla Latency SLA in ms
    * \return max batch size
    */
-  uint32_t GetMaxBatch(float latency_sla_ms) const;
+  uint32_t GetMaxBatch(double latency_sla_ms) const;
 
-  uint32_t GetMaxBatchWithFullBudget(float time_budget_ms) const;
+  uint32_t GetMaxBatchWithFullBudget(double time_budget_ms) const;
 
   /*!
    * \brief Computes the maximum throughput can be achieved within latency_sla
    * \param latency_sla Latency SLA in ms
    * \return pair of best batch size and max throughput
    */
-  std::pair<uint32_t, float> GetMaxThroughput(float latency_sla_ms) const;
+  std::pair<uint32_t, double> GetMaxThroughput(double latency_sla_ms) const;
 
  private:
   std::string profile_id_;
@@ -67,7 +67,7 @@ class ModelProfile {
   std::unordered_map<uint32_t, ProfileEntry> forward_lats_;
   ProfileEntry preprocess_;
   ProfileEntry postprocess_;
-  float network_latency_us_ = 2000;  // us
+  double network_latency_us_ = 2000;  // us
 };
 
 struct TFShareSuffixInfo {

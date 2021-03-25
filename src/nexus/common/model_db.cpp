@@ -99,7 +99,7 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
   postprocess_.repeat = std::stoi(tokens[2]);
 }
 
-float ModelProfile::GetForwardLatency(uint32_t batch) const {
+double ModelProfile::GetForwardLatency(uint32_t batch) const {
   if (forward_lats_.find(batch) == forward_lats_.end()) {
     LOG(FATAL) << "Cannot find forward latency: model=" << profile_id()
                << " batch=" << batch;
@@ -109,11 +109,11 @@ float ModelProfile::GetForwardLatency(uint32_t batch) const {
   return entry.latency_mean + entry.latency_std;
 }
 
-float ModelProfile::GetPreprocessLatency() const {
+double ModelProfile::GetPreprocessLatency() const {
   return preprocess_.latency_mean + preprocess_.latency_std;
 }
 
-float ModelProfile::GetPostprocessLatency() const {
+double ModelProfile::GetPostprocessLatency() const {
   return postprocess_.latency_mean + postprocess_.latency_std;
 }
 
@@ -124,8 +124,8 @@ size_t ModelProfile::GetMemoryUsage(uint32_t batch) const {
   return forward_lats_.at(batch).memory_usage;
 }
 
-uint32_t ModelProfile::GetMaxBatch(float latency_sla_ms) const {
-  float latency_budget = latency_sla_ms * 1000 - network_latency_us_;
+uint32_t ModelProfile::GetMaxBatch(double latency_sla_ms) const {
+  double latency_budget = latency_sla_ms * 1000 - network_latency_us_;
   latency_budget -= GetPreprocessLatency();
   latency_budget -= GetPostprocessLatency();
   // divide by 2 is because half of time will spend in batching
@@ -146,8 +146,8 @@ uint32_t ModelProfile::GetMaxBatch(float latency_sla_ms) const {
   return batch;
 }
 
-uint32_t ModelProfile::GetMaxBatchWithFullBudget(float time_budget_ms) const {
-  float latency_budget = time_budget_ms * 1000 - network_latency_us_;
+uint32_t ModelProfile::GetMaxBatchWithFullBudget(double time_budget_ms) const {
+  double latency_budget = time_budget_ms * 1000 - network_latency_us_;
   latency_budget -= GetPreprocessLatency();
   latency_budget -= GetPostprocessLatency();
   uint32_t batch = 1;
@@ -166,20 +166,20 @@ uint32_t ModelProfile::GetMaxBatchWithFullBudget(float time_budget_ms) const {
   return batch;
 }
 
-std::pair<uint32_t, float> ModelProfile::GetMaxThroughput(
-    float latency_sla_ms) const {
-  float max_throughput = 0;
+std::pair<uint32_t, double> ModelProfile::GetMaxThroughput(
+    double latency_sla_ms) const {
+  double max_throughput = 0;
   uint32_t best_batch = 0;
   // divide by 2 is becuase half of time will spend in batching
-  float exec_budget = (latency_sla_ms * 1000 - network_latency_us_ -
-                       GetPreprocessLatency() - GetPostprocessLatency()) *
-                      0.5;
+  double exec_budget = (latency_sla_ms * 1000 - network_latency_us_ -
+                        GetPreprocessLatency() - GetPostprocessLatency()) *
+                       0.5;
   for (uint32_t batch = 1; batch <= forward_lats_.size(); ++batch) {
-    float forward_lat = GetForwardLatency(batch);
+    double forward_lat = GetForwardLatency(batch);
     if (forward_lat < 0 || forward_lat > exec_budget) {
       break;
     }
-    float tp = batch * 1e6 / forward_lat;
+    double tp = batch * 1e6 / forward_lat;
     if (tp > max_throughput) {
       max_throughput = tp;
       best_batch = batch;
@@ -189,15 +189,15 @@ std::pair<uint32_t, float> ModelProfile::GetMaxThroughput(
 }
 
 ModelProfile ModelProfile::FromSleepProfile(const SleepProfile& profile) {
-  constexpr float kStdFactor = 0.01;
+  constexpr double kStdFactor = 0.01;
   ModelProfile p;
   for (uint32_t i = 1; i < 500; ++i) {
-    float f = profile.forward_us(i);
+    double f = profile.forward_us(i);
     p.forward_lats_[i] = ProfileEntry{f, f * kStdFactor, 0, 0, 1};
   }
-  p.preprocess_ = ProfileEntry{static_cast<float>(profile.preprocess_us()),
+  p.preprocess_ = ProfileEntry{static_cast<double>(profile.preprocess_us()),
                                profile.preprocess_us() * kStdFactor, 0, 0, 1};
-  p.postprocess_ = ProfileEntry{static_cast<float>(profile.postprocess_us()),
+  p.postprocess_ = ProfileEntry{static_cast<double>(profile.postprocess_us()),
                                 profile.postprocess_us() * kStdFactor, 0, 0, 1};
   return p;
 }

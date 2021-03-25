@@ -208,8 +208,8 @@ void RankScheduler::UpdateCandidatePool(TimePoint now,
   } else {
     latest_exec_time = TimePoint::max();
   }
-  std::shared_ptr<ExecutionCandidate> candidate(new ExecutionCandidate{
-      latest_exec_time, mctx, {inputs.begin(), inputs.end()}});
+  std::shared_ptr<ExecutionCandidate> candidate(
+      new ExecutionCandidate{latest_exec_time, mctx});
   candidate_pool_.Upsert(mctx->string_id, candidate);
 }
 
@@ -260,10 +260,6 @@ void RankScheduler::SetupActivePlan(
     std::shared_ptr<ExecutionCandidate> candidate) {
   auto* mctx = candidate->mctx;
   const auto& inputs = mctx->batch_policy.inputs();
-  CHECK_EQ(inputs.size(), candidate->debug_inputs.size());
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    CHECK_EQ(inputs[i].get(), candidate->debug_inputs[i].get());
-  }
 
   // Build plan
   auto plan = std::make_shared<ActivePlan>(*executor_);
@@ -276,10 +272,11 @@ void RankScheduler::SetupActivePlan(
                         std::chrono::microseconds(kCtrlPlaneLatencyUs) -
                         std::chrono::microseconds(kDataPlaneLatencyUs);
   plan->send_time = std::max(now, send_time_calc);
-  auto exec_time_calc = plan->send_time +
-                        std::chrono::microseconds(kCtrlPlaneLatencyUs) +
-                        std::chrono::microseconds(kDataPlaneLatencyUs);
-  plan->exec_time = std::max(earliest_exec_time, exec_time_calc);
+  plan->exec_time = plan->send_time +
+                    std::chrono::microseconds(kCtrlPlaneLatencyUs) +
+                    std::chrono::microseconds(kDataPlaneLatencyUs);
+  CHECK_LE(earliest_exec_time.time_since_epoch().count(),
+           plan->exec_time.time_since_epoch().count());
   auto exec_elapse = mctx->EstimateExecElapse(batch_size);
   plan->finish_time = plan->exec_time + exec_elapse;
   plan->candidate = candidate;
@@ -359,6 +356,9 @@ CtrlStatus RankScheduler::EnqueueQuery(DispatchRequest&& request) {
   auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
   UpdateCandidatePool(now, earliest_exec_time, mctx.get());
   UpdateActivePlans(now, earliest_exec_time, mctx.get(), num_idle_backends);
+  if (!mctx->batch_policy.drops().empty()) {
+    SendDroppedQueries(mctx->batch_policy.PopDrops());
+  }
 
   VLOG(1) << "EnqueueQuery success. global_id=" << qctx->global_id.t;
   return CtrlStatus::CTRL_OK;
@@ -384,11 +384,12 @@ void RankScheduler::OnBackendAvailableSoon(NodeId backend_id) {
   auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
   CHECK_GT(num_idle_backends, 0);
   auto rank = num_idle_backends - 1;
-  auto candidate = PopCandidatePool(now, earliest_exec_time, rank);
+  auto candidate = PopCandidatePool(schedule_time, earliest_exec_time, rank);
   if (candidate) {
     auto* mctx = candidate->mctx;
     CHECK_EQ(mctx->active_plan, nullptr);
-    UpdateActivePlans(now, earliest_exec_time, mctx, num_idle_backends);
+    UpdateActivePlans(schedule_time, earliest_exec_time, mctx,
+                      num_idle_backends);
   }
 }
 
@@ -435,10 +436,6 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
 
   // Remove pending queries.
   auto inputs = mctx->batch_policy.PopInputs();
-  CHECK_EQ(inputs.size(), plan->candidate->debug_inputs.size());
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    CHECK_EQ(inputs[i].get(), plan->candidate->debug_inputs[i].get());
-  }
   auto drops = mctx->batch_policy.PopDrops();
   for (auto& qctx : inputs) {
     queries_.erase(qctx->global_id);

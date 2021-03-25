@@ -36,7 +36,6 @@ class ModelSessionContext;
 struct ExecutionCandidate {
   TimePoint latest_exec_time;
   ModelSessionContext* mctx;
-  std::vector<std::shared_ptr<QueryContext>> debug_inputs;
 
   struct OrderByLatestExecTimeASC {
     bool operator()(const std::shared_ptr<ExecutionCandidate>& lhs,

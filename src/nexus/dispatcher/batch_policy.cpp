@@ -22,21 +22,16 @@ void GetBatchBySlidingWindowWithFreeLunch(
       nanoseconds(static_cast<long>(profile.GetPostprocessLatency() * 1e3));
 
   // Drop existing timeout inputs
-  size_t qremain = queries.size();
-  uint32_t bs = std::min(static_cast<uint32_t>(inputs.size() + qremain),
-                         target_batch_size);
   while (!inputs.empty()) {
     auto deadline = inputs[0]->deadline;
-    auto fwd_elapse =
-        nanoseconds(static_cast<long>(profile.GetForwardLatency(bs) * 1e3));
+    auto fwd_elapse = nanoseconds(
+        static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
     auto finish_time = exec_time + fwd_elapse + proc_elapse;
     if (deadline > finish_time) {
       break;
     } else {
       drops.push_back(inputs[0]);
       inputs.pop_front();
-      bs = std::min(static_cast<uint32_t>(inputs.size() + qremain),
-                    target_batch_size);
     }
   }
 
@@ -49,6 +44,9 @@ void GetBatchBySlidingWindowWithFreeLunch(
          "head's.";
 
   // Sliding window policy
+  size_t qremain = queries.size();
+  uint32_t bs = std::min(static_cast<uint32_t>(inputs.size() + qremain),
+                         target_batch_size);
   auto qiter = queries.begin();
   while (inputs.size() < bs && qiter != queries.end()) {
     --qremain;
@@ -82,6 +80,15 @@ void GetBatchBySlidingWindowWithFreeLunch(
       break;
     }
     ++qiter;
+  }
+
+  // Sanity check
+  if (!inputs.empty()) {
+    auto fwd_elapse = nanoseconds(
+        static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
+    auto finish_time = exec_time + fwd_elapse + proc_elapse;
+    CHECK_LE(finish_time.time_since_epoch().count(),
+             inputs.front()->deadline.time_since_epoch().count());
   }
 
   remains_begin = qiter;

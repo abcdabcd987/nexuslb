@@ -49,6 +49,7 @@ InstanceContext::InstanceContext(ModelSession model_session, NodeId backend_id,
 
 ModelSessionContext::ModelSessionContext(ModelSession model_session)
     : model_session(std::move(model_session)),
+      batch_policy(queries),
       rps_meter(this->model_session.latency_sla() * 1e-3,
                 kRpsMeterHistoryLength, Clock::now()) {
   string_id = ModelSessionToString(this->model_session);
@@ -123,6 +124,7 @@ void RankScheduler::AddModelSession(ModelSession model_session) {
     // TODO: GPU performance heterogeneity.
     if (!mctx->profile) {
       mctx->profile = profile;
+      mctx->batch_policy.SetProfile(*profile);
       if (!mctx->target_batch_size) {
         UpdateTargetBatchSize(mctx.get(), std::nullopt);
       }
@@ -164,6 +166,7 @@ void RankScheduler::AddBackend(NodeId backend_id) {
     // TODO: GPU performance heterogeneity.
     if (!mctx->profile) {
       mctx->profile = profile;
+      mctx->batch_policy.SetProfile(*profile);
       if (!mctx->target_batch_size) {
         UpdateTargetBatchSize(mctx.get(), std::nullopt);
       }
@@ -195,24 +198,18 @@ void RankScheduler::UpdateCandidatePool(TimePoint now,
                                         ModelSessionContext* mctx) {
   auto rps = mctx->rps_meter.Get(now);
   UpdateTargetBatchSize(mctx, rps);
-  auto batch =
-      batch_policy_.Getbatch(earliest_exec_time, mctx->target_batch_size,
-                             mctx->queries, *mctx->profile);
-
-  mctx->queries.clear();
-  mctx->queries.insert(batch.inputs.begin(), batch.inputs.end());
-  mctx->queries.insert(batch.remains.begin(), batch.remains.end());
+  mctx->batch_policy.Update(earliest_exec_time, mctx->target_batch_size);
 
   TimePoint latest_exec_time;
-  if (!batch.inputs.empty()) {
-    auto elapse = mctx->EstimateExecElapse(batch.inputs.size());
-    latest_exec_time = batch.inputs[0]->deadline - elapse;
+  const auto& inputs = mctx->batch_policy.inputs();
+  if (!inputs.empty()) {
+    auto elapse = mctx->EstimateExecElapse(inputs.size());
+    latest_exec_time = inputs[0]->deadline - elapse;
   } else {
     latest_exec_time = TimePoint::max();
   }
   std::shared_ptr<ExecutionCandidate> candidate(new ExecutionCandidate{
-      mctx->string_id, latest_exec_time, std::move(batch.inputs),
-      std::move(batch.drops), std::move(batch.remains)});
+      latest_exec_time, mctx, {inputs.begin(), inputs.end()}});
   candidate_pool_.Upsert(mctx->string_id, candidate);
 }
 
@@ -223,9 +220,10 @@ void RankScheduler::UpdateActivePlans(TimePoint now,
   size_t rank = candidate_pool_.Rank(mctx->string_id);
   if (rank < num_idle_backends) {
     const auto& candidate = candidate_pool_.GetByKey(mctx->string_id);
-    if (!candidate->inputs.empty()) {
+    const auto& inputs = candidate->mctx->batch_policy.inputs();
+    if (!inputs.empty()) {
       RemoveActivePlan(mctx);
-      SetupActivePlan(now, earliest_exec_time, mctx, candidate);
+      SetupActivePlan(now, earliest_exec_time, candidate);
     }
   }
   if (candidate_pool_.Size() > num_idle_backends) {
@@ -244,12 +242,11 @@ std::shared_ptr<ExecutionCandidate> RankScheduler::PopCandidatePool(
   }
   std::shared_ptr<ExecutionCandidate> bottom_candidate;
   for (auto& old_candidate : candidates) {
-    const auto& model_session_id = old_candidate->model_session_id;
-    auto& mctx = models_.at(model_session_id);
+    auto* mctx = old_candidate->mctx;
     if (old_candidate->latest_exec_time < earliest_exec_time) {
-      UpdateCandidatePool(now, earliest_exec_time, mctx.get());
+      UpdateCandidatePool(now, earliest_exec_time, mctx);
     }
-    const auto& new_candidate = candidate_pool_.GetByKey(model_session_id);
+    const auto& new_candidate = candidate_pool_.GetByKey(mctx->string_id);
     if (!bottom_candidate ||
         new_candidate->latest_exec_time < bottom_candidate->latest_exec_time) {
       bottom_candidate = new_candidate;
@@ -259,13 +256,20 @@ std::shared_ptr<ExecutionCandidate> RankScheduler::PopCandidatePool(
 }
 
 void RankScheduler::SetupActivePlan(
-    TimePoint now, TimePoint earliest_exec_time, ModelSessionContext* mctx,
+    TimePoint now, TimePoint earliest_exec_time,
     std::shared_ptr<ExecutionCandidate> candidate) {
+  auto* mctx = candidate->mctx;
+  const auto& inputs = mctx->batch_policy.inputs();
+  CHECK_EQ(inputs.size(), candidate->debug_inputs.size());
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    CHECK_EQ(inputs[i].get(), candidate->debug_inputs[i].get());
+  }
+
   // Build plan
   auto plan = std::make_shared<ActivePlan>(*executor_);
   plan->plan_id = NextPlanId();
-  plan->deadline = candidate->inputs[0]->deadline;
-  uint32_t batch_size = candidate->inputs.size();
+  plan->deadline = inputs[0]->deadline;
+  uint32_t batch_size = inputs.size();
   auto frontrun_elapse = mctx->EstimateExecElapse(batch_size + 1);
   auto frontrun_exec_time = plan->deadline - frontrun_elapse;
   auto send_time_calc = frontrun_exec_time -
@@ -382,9 +386,9 @@ void RankScheduler::OnBackendAvailableSoon(NodeId backend_id) {
   auto rank = num_idle_backends - 1;
   auto candidate = PopCandidatePool(now, earliest_exec_time, rank);
   if (candidate) {
-    auto& mctx = models_.at(candidate->model_session_id);
+    auto* mctx = candidate->mctx;
     CHECK_EQ(mctx->active_plan, nullptr);
-    UpdateActivePlans(now, earliest_exec_time, mctx.get(), num_idle_backends);
+    UpdateActivePlans(now, earliest_exec_time, mctx, num_idle_backends);
   }
 }
 
@@ -410,7 +414,7 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
     auto us = duration_cast<microseconds>(timer_delay).count();
     LOG(WARNING) << "OnPlanTimer: huge timer delay: " << us << " us";
   }
-  auto& mctx = models_.at(plan->candidate->model_session_id);
+  auto* mctx = plan->candidate->mctx;
 
   // Assign backend
   auto idle_backends = GetIdleBackends(plan->exec_time);
@@ -430,20 +434,24 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
   });
 
   // Remove pending queries.
-  for (auto& qctx : plan->candidate->inputs) {
-    mctx->queries.erase(qctx);
+  auto inputs = mctx->batch_policy.PopInputs();
+  CHECK_EQ(inputs.size(), plan->candidate->debug_inputs.size());
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    CHECK_EQ(inputs[i].get(), plan->candidate->debug_inputs[i].get());
+  }
+  auto drops = mctx->batch_policy.PopDrops();
+  for (auto& qctx : inputs) {
     queries_.erase(qctx->global_id);
   }
-  for (auto& qctx : plan->candidate->drops) {
-    mctx->queries.erase(qctx);
+  for (auto& qctx : drops) {
     queries_.erase(qctx->global_id);
   }
 
   // Update candidate pool
   auto earliest_exec_time = plan->exec_time;
   auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
-  UpdateCandidatePool(now, earliest_exec_time, mctx.get());
-  UpdateActivePlans(now, earliest_exec_time, mctx.get(), num_idle_backends);
+  UpdateCandidatePool(now, earliest_exec_time, mctx);
+  UpdateActivePlans(now, earliest_exec_time, mctx, num_idle_backends);
 
   // Prepare to send to backend.
   auto delegate = dispatcher_->GetBackend(backend_id);
@@ -456,14 +464,14 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
   BatchPlanProto proto;
   EnqueueQueryCommand query;
   proto.set_plan_id(plan->plan_id.t);
-  proto.set_model_session_id(plan->candidate->model_session_id);
+  proto.set_model_session_id(mctx->string_id);
   proto.set_exec_time_ns(
       duration_cast<nanoseconds>(plan->exec_time.time_since_epoch()).count());
   proto.set_deadline_ns(
       duration_cast<nanoseconds>(plan->deadline.time_since_epoch()).count());
   proto.set_expected_finish_time_ns(
       duration_cast<nanoseconds>(plan->finish_time.time_since_epoch()).count());
-  for (auto& qctx : plan->candidate->inputs) {
+  for (auto& qctx : inputs) {
     query.mutable_query_without_input()->Swap(
         qctx->request.mutable_query_without_input());
     query.set_rdma_read_offset(qctx->request.rdma_read_offset());
@@ -482,7 +490,7 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
   // Send to backend
   VLOG(1) << "OnPlanTimer: send to backend.";
   delegate->EnqueueBatchPlan(std::move(proto));
-  SendDroppedQueries(plan->candidate->drops);
+  SendDroppedQueries(drops);
   VLOG(1) << "OnPlanTimer: done.";
 }
 

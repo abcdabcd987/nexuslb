@@ -31,12 +31,12 @@ namespace nexus {
 namespace dispatcher {
 namespace rank {
 
+class ModelSessionContext;
+
 struct ExecutionCandidate {
-  std::string model_session_id;
   TimePoint latest_exec_time;
-  std::vector<std::shared_ptr<QueryContext>> inputs;
-  std::vector<std::shared_ptr<QueryContext>> drops;
-  std::vector<std::shared_ptr<QueryContext>> remains;
+  ModelSessionContext* mctx;
+  std::vector<std::shared_ptr<QueryContext>> debug_inputs;
 
   struct OrderByLatestExecTimeASC {
     bool operator()(const std::shared_ptr<ExecutionCandidate>& lhs,
@@ -77,6 +77,7 @@ struct ModelSessionContext {
   std::string string_id;
   std::unordered_map<NodeId, std::shared_ptr<InstanceContext>> instances;
   SortedQueryList queries;
+  IncrementalBatchPolicy batch_policy;
   RpsMeter rps_meter;
   std::shared_ptr<ActivePlan> active_plan;
 
@@ -128,7 +129,6 @@ class RankScheduler : public Scheduler {
   std::shared_ptr<ExecutionCandidate> PopCandidatePool(
       TimePoint now, TimePoint earliest_exec_time, size_t rank);
   void SetupActivePlan(TimePoint now, TimePoint earliest_exec_time,
-                       ModelSessionContext* mctx,
                        std::shared_ptr<ExecutionCandidate> candidate);
   void RemoveActivePlan(ModelSessionContext* mctx);
   std::vector<std::shared_ptr<BackendContext>> GetIdleBackends(
@@ -141,7 +141,6 @@ class RankScheduler : public Scheduler {
   ario::EpollExecutor* executor_;
 
   BatchSizeEstimator bse_;
-  BatchPolicyBySlidingWindowWithFreeLunch batch_policy_;
   ValueRankedSplayMap<std::string, std::shared_ptr<ExecutionCandidate>,
                       ExecutionCandidate::OrderByLatestExecTimeASC>
       candidate_pool_;

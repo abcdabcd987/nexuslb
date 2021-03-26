@@ -37,10 +37,9 @@ struct ExecutionCandidate {
   TimePoint latest_exec_time;
   ModelSessionContext* mctx;
 
-  struct OrderByLatestExecTimeASC {
-    bool operator()(const std::shared_ptr<ExecutionCandidate>& lhs,
-                    const std::shared_ptr<ExecutionCandidate>& rhs) const {
-      return lhs->latest_exec_time < rhs->latest_exec_time;
+  struct CompareKeyFn {
+    TimePoint operator()(const std::shared_ptr<ExecutionCandidate>& obj) const {
+      return obj->latest_exec_time;
     }
   };
 };
@@ -130,8 +129,6 @@ class RankScheduler : public Scheduler {
   void SetupActivePlan(TimePoint now, TimePoint earliest_exec_time,
                        std::shared_ptr<ExecutionCandidate> candidate);
   void RemoveActivePlan(ModelSessionContext* mctx);
-  std::vector<std::shared_ptr<BackendContext>> GetIdleBackends(
-      TimePoint earliest_exec_time);
   void SendDroppedQueries(
       const std::vector<std::shared_ptr<QueryContext>>& drops);
   void OnBackendAvailableSoon(NodeId backend_id);
@@ -141,8 +138,9 @@ class RankScheduler : public Scheduler {
 
   BatchSizeEstimator bse_;
   ValueRankedSplayMap<std::string, std::shared_ptr<ExecutionCandidate>,
-                      ExecutionCandidate::OrderByLatestExecTimeASC>
+                      ExecutionCandidate::CompareKeyFn>
       candidate_pool_;
+  ValueRankedSplayMap<NodeId, TimePoint> backend_availability_pool_;
 
   std::mutex mutex_;
   PlanId next_plan_id_{1};

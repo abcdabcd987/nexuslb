@@ -146,6 +146,7 @@ void RankScheduler::AddBackend(NodeId backend_id) {
     LOG(ERROR) << "Backend already exists. backend_id=" << backend_id.t;
     return;
   }
+  backend_availability_pool_.Upsert(backend_id, bctx->next_available_time);
   backends_[backend_id] = std::move(bctx);
 
   // Add instances
@@ -306,18 +307,6 @@ void RankScheduler::RemoveActivePlan(ModelSessionContext* mctx) {
   }
 }
 
-std::vector<std::shared_ptr<BackendContext>> RankScheduler::GetIdleBackends(
-    TimePoint earliest_exec_time) {
-  // TODO: Use Splay
-  std::vector<std::shared_ptr<BackendContext>> ret;
-  for (auto& pair : backends_) {
-    if (pair.second->next_available_time <= earliest_exec_time) {
-      ret.push_back(pair.second);
-    }
-  }
-  return ret;
-}
-
 CtrlStatus RankScheduler::EnqueueQuery(DispatchRequest&& request) {
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -356,7 +345,8 @@ CtrlStatus RankScheduler::EnqueueQuery(DispatchRequest&& request) {
   auto earliest_exec_time = now +
                             std::chrono::microseconds(kDataPlaneLatencyUs) +
                             std::chrono::microseconds(kCtrlPlaneLatencyUs);
-  auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
+  auto num_idle_backends =
+      backend_availability_pool_.CountLessEqual(earliest_exec_time);
   UpdateCandidatePool(now, earliest_exec_time, mctx.get());
   UpdateActivePlans(now, earliest_exec_time, mctx.get(), num_idle_backends);
   if (!mctx->batch_policy.drops().empty()) {
@@ -384,7 +374,8 @@ void RankScheduler::OnBackendAvailableSoon(NodeId backend_id) {
   }
 
   auto earliest_exec_time = bctx->next_available_time;
-  auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
+  auto num_idle_backends =
+      backend_availability_pool_.CountLessEqual(earliest_exec_time);
   CHECK_GT(num_idle_backends, 0);
   auto rank = num_idle_backends - 1;
   auto candidate = PopCandidatePool(schedule_time, earliest_exec_time, rank);
@@ -421,13 +412,14 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
   auto* mctx = plan->candidate->mctx;
 
   // Assign backend
-  auto idle_backends = GetIdleBackends(plan->exec_time);
-  CHECK_GT(idle_backends.size(), 0);
-  auto bctx = idle_backends[0];
-  auto backend_id = bctx->backend_id;
+  auto backend_id = backend_availability_pool_.GetByRank(0).key.get();
+  auto& bctx = backends_.at(backend_id);
+  CHECK_LT(bctx->next_available_time.time_since_epoch().count(),
+           plan->exec_time.time_since_epoch().count());
 
   // Setup next schedule when this batch is almost done
   bctx->next_available_time = plan->finish_time;
+  backend_availability_pool_.Upsert(backend_id, bctx->next_available_time);
   bctx->schedule_time = bctx->next_available_time -
                         microseconds(kDataPlaneLatencyUs) -
                         microseconds(kCtrlPlaneLatencyUs);
@@ -449,7 +441,8 @@ void RankScheduler::OnPlanTimer(PlanId plan_id) {
 
   // Update candidate pool
   auto earliest_exec_time = plan->exec_time;
-  auto num_idle_backends = GetIdleBackends(earliest_exec_time).size();
+  auto num_idle_backends =
+      backend_availability_pool_.CountLessEqual(earliest_exec_time);
   UpdateCandidatePool(plan->send_time, earliest_exec_time, mctx);
   UpdateActivePlans(plan->send_time, earliest_exec_time, mctx,
                     num_idle_backends);

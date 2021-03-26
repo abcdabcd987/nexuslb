@@ -32,7 +32,7 @@ class ValueRankedHashMap {
   RefPair GetByRank(size_t rank) const;         // O(n)
   size_t Rank(const Key& key) const;            // O(n)
 
-  // sum([1 for (key, value) in map_ if value < ck])
+  // sum([1 for (key, value) in map_ if value <= ck])
   size_t CountLessEqual(const CompareKey& ck) const;  // O(n)
 
  private:

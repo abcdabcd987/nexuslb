@@ -2,16 +2,52 @@
 
 #include <chrono>
 #include <cstdio>
+#include <functional>
 #include <limits>
+#include <ostream>
 #include <random>
 #include <unordered_map>
 
 #include "nexus/common/value_ranked_hash_map.h"
 #include "nexus/common/value_ranked_splay_map.h"
 
+namespace {
+
+class MyInt {
+ public:
+  MyInt() : value_(0) {}
+  explicit MyInt(int value) : value_(value) {}
+  int value() const { return value_; }
+  friend bool operator==(const MyInt& lhs, const MyInt& rhs) {
+    return lhs.value() == rhs.value();
+  }
+
+ private:
+  int value_;
+};
+
+std::ostream& operator<<(std::ostream& os, const MyInt& obj) {
+  return os << "MyInt(" << obj.value() << ")";
+}
+
+struct MyIntCompareKeyFn {
+  int operator()(const MyInt& obj) const { return obj.value(); }
+};
+
+}  // namespace
+
+namespace std {
+template <>
+struct hash<MyInt> {
+  std::size_t operator()(const MyInt& obj) const noexcept {
+    return std::hash<int>{}(obj.value());
+  }
+};
+}  // namespace std
+
 TEST(ValueRankedMapTest, RandomizedTest) {
   using Key = int;
-  using Value = int;
+  using Value = MyInt;
   using Uniform = std::uniform_int_distribution<int>;
   constexpr int kSwitchInsert = 2;
   constexpr int kSwitchUpdate = 2 + kSwitchInsert;
@@ -23,12 +59,14 @@ TEST(ValueRankedMapTest, RandomizedTest) {
   constexpr int kSwitchGetByKey = 4 + kSwitchContainsRemoved;
   constexpr int kSwitchGetByRank = 4 + kSwitchGetByKey;
   constexpr int kSwitchRank = 4 + kSwitchGetByRank;
+  constexpr int kSwitchCountLessEqual = 4 + kSwitchRank;
   constexpr int kNumOps = 3000000;
 
   std::mt19937 gen(0xabcdabcd987LL);
-  Uniform op_d(0, kSwitchRank - 1);
-  nexus::ValueRankedHashMap<Key, Value> naive;
-  nexus::ValueRankedSplayMap<Key, Value> splay;
+  Uniform op_d(0, kSwitchCountLessEqual - 1);
+  nexus::ValueRankedHashMap<Key, Value, MyIntCompareKeyFn> naive;
+  nexus::ValueRankedSplayMap<Key, Value, MyIntCompareKeyFn> splay;
+  nexus::ValueRankedSplayMap<Key, Value, MyIntCompareKeyFn>::CompareKey k;
   int keys_begin = 0;
   int keys_end = 0;
 
@@ -41,15 +79,15 @@ TEST(ValueRankedMapTest, RandomizedTest) {
     if (op < kSwitchInsert) {
       int key = keys_end++;
       int value = gen();
-      naive.Upsert(key, value);
-      splay.Upsert(key, value);
+      naive.Upsert(key, MyInt(value));
+      splay.Upsert(key, MyInt(value));
 
     } else if (op < kSwitchUpdate) {
       if (keys_end == keys_begin) continue;
       int key = Uniform{keys_begin, keys_end - 1}(gen);
       int value = gen();
-      naive.Upsert(key, value);
-      splay.Upsert(key, value);
+      naive.Upsert(key, MyInt(value));
+      splay.Upsert(key, MyInt(value));
 
     } else if (op < kSwitchRemove) {
       if (keys_end == keys_begin) continue;
@@ -97,6 +135,10 @@ TEST(ValueRankedMapTest, RandomizedTest) {
       if (keys_end == keys_begin) continue;
       int key = Uniform{keys_begin, keys_end - 1}(gen);
       ASSERT_EQ(naive.Rank(key), splay.Rank(key));
+
+    } else if (op < kSwitchCountLessEqual) {
+      int v = gen();
+      ASSERT_EQ(naive.CountLessEqual(v), splay.CountLessEqual(v));
 
     } else {
       FAIL() << "Unreachable";

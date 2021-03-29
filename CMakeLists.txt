@@ -104,6 +104,7 @@ add_library(common OBJECT
         src/nexus/common/util.cpp)
 target_include_directories(common PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party
         ${GENERATED_SRC_DIR}/src)
 target_compile_features(common PUBLIC cxx_std_17)
 target_link_libraries(common PUBLIC ario)

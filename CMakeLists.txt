@@ -140,6 +140,7 @@ add_library(dispatcher_obj
     src/nexus/dispatcher/frontend_delegate_impl.cpp
     src/nexus/dispatcher/query_context.cpp
     src/nexus/dispatcher/rank_scheduler.cpp
+    src/nexus/dispatcher/rankmt_scheduler.cpp
     src/nexus/dispatcher/round_robin_scheduler.cpp
     src/nexus/dispatcher/session_context.cpp
 )

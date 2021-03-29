@@ -83,7 +83,7 @@ void RdmaManager::CreateContext() {
     ret = ibv_query_device(ctx, &device_attr);
     if (ret) die("ibv_query_device");
     fprintf(stderr,
-            "Found ibv device: name=%s, guid=0x%016lx. Active ports:", name,
+            "Found ibv device: name=%s, guid=0x%016llx. Active ports:", name,
             ibv_get_device_guid(devs[i]));
     int dev_port = 0;
     for (int p = 1; p <= device_attr.phys_port_cnt; ++p) {

@@ -53,6 +53,7 @@ class EpollExecutor {
   EpollExecutor &operator=(const EpollExecutor &other) = delete;
   EpollExecutor(EpollExecutor &&other) = delete;
   EpollExecutor &operator=(EpollExecutor &&other) = delete;
+  static EpollExecutor *ThisThreadExecutor() { return this_thread_executor_; }
 
   void RunEventLoop();
   void StopEventLoop();
@@ -65,6 +66,7 @@ class EpollExecutor {
  private:
   friend void EpollExecutorAddEpollWatch(EpollExecutor &executor, int fd,
                                          EpollEventHandler &handler);
+  static thread_local EpollExecutor *this_thread_executor_;
 
   int epoll_fd_;
   std::atomic<bool> stop_event_loop_{false};

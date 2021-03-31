@@ -33,6 +33,8 @@ void Interrupter::Reset() {
   (void)ret;
 }
 
+thread_local EpollExecutor *EpollExecutor::this_thread_executor_ = nullptr;
+
 EpollExecutor::EpollExecutor() : epoll_fd_(epoll_create1(0)) {
   if (epoll_fd_ < 0) die_perror("epoll_create1");
 
@@ -55,6 +57,7 @@ void EpollExecutor::RunEventLoop() {
   struct epoll_event events[kMaxEvents];
   memset(&events, 0, sizeof(events));
 
+  this_thread_executor_ = this;
   {
     std::lock_guard<std::mutex> lock(stop_mutex_);
     ++cnt_workers_;

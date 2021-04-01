@@ -255,13 +255,24 @@ class MultiThreadRankScheduler {
     ario::EpollExecutor* rank_thread_executor_;
   };
 
+  class RequestEntrance {
+   public:
+    CtrlStatus EnqueueQuery(DispatchRequest&& request);
+
+   private:
+    friend class MultiThreadRankScheduler;
+    explicit RequestEntrance(ModelThread* model_thread);
+
+    ModelThread* model_thread_;
+  };
+
   MultiThreadRankScheduler(std::unique_ptr<DispatcherAccessor> dispatcher,
                            ario::EpollExecutor* scheduler_executor,
                            ario::EpollExecutor* rank_thread_executor);
   ~MultiThreadRankScheduler();
   void Stop();
-  void AddModelSession(ario::EpollExecutor* model_thread_executor,
-                       ModelSession model_session);
+  [[nodiscard]] RequestEntrance AddModelSession(
+      ario::EpollExecutor* model_thread_executor, ModelSession model_session);
   void AddBackend(NodeId backend_id);
 
  private:

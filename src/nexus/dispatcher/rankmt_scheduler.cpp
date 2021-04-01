@@ -55,6 +55,7 @@ ModelSessionContext::ModelSessionContext(ModelSession model_session,
                 kRpsMeterHistoryLength, Clock::now()),
       profile(profile) {
   string_id = ModelSessionToString(this->model_session);
+  batch_policy.SetProfile(profile);
 }
 
 BackendContext::BackendContext(NodeId backend_id,
@@ -387,7 +388,7 @@ void RankThread::DoUpdateCandidateCommand(UpdateCandidateCommand& cmd) {
 
   auto num_idle_backends = backend_availability_pool_.CountLessEqual(
       cinfo->candidate.earliest_exec_time);
-  UpdateActivePlans(cmd.now, cinfo->candidate.latest_exec_time, mdata,
+  UpdateActivePlans(cmd.now, cinfo->candidate.earliest_exec_time, mdata,
                     num_idle_backends);
 }
 
@@ -594,6 +595,19 @@ MultiThreadRankScheduler::MultiThreadRankScheduler(
       executor_(*CHECK_NOTNULL(scheduler_executor)),
       rank_thread_(rank_thread_executor, &rank_thread_command_queue_) {}
 
+MultiThreadRankScheduler::RequestEntrance::RequestEntrance(
+    ModelThread* model_thread)
+    : model_thread_(model_thread) {}
+
+CtrlStatus MultiThreadRankScheduler::RequestEntrance::EnqueueQuery(
+    DispatchRequest&& request) {
+  return model_thread_->EnqueueQuery(std::move(request));
+}
+
+MultiThreadRankScheduler::~MultiThreadRankScheduler() {
+  // TODO
+}
+
 void MultiThreadRankScheduler::Stop() {
   // TODO
   LOG(INFO) << "MultiThreadRankScheduler::Stop";
@@ -603,7 +617,8 @@ void MultiThreadRankScheduler::Stop() {
   rank_thread_.Stop();
 }
 
-void MultiThreadRankScheduler::AddModelSession(
+MultiThreadRankScheduler::RequestEntrance
+MultiThreadRankScheduler::AddModelSession(
     ario::EpollExecutor* model_thread_executor, ModelSession model_session) {
   CHECK_NE(model_thread_executor, nullptr);
   std::lock_guard<std::mutex> lock(mutex_);
@@ -614,9 +629,8 @@ void MultiThreadRankScheduler::AddModelSession(
 
   auto model_session_id = ModelSessionToString(model_session);
   if (model_threads_.count(model_session_id)) {
-    LOG(ERROR) << "Model session already exists. model_session="
+    LOG(FATAL) << "Model session already exists. model_session="
                << model_session_id;
-    return;
   }
 
   auto profile_id = ModelSessionToProfileID(model_session);
@@ -631,6 +645,11 @@ void MultiThreadRankScheduler::AddModelSession(
   model_threads_[model_session_id] =
       std::make_unique<ModelThread>(model_thread_executor, model_session,
                                     *profile, &rank_thread_, dispatcher_.get());
+  auto* model_thread = model_threads_[model_session_id].get();
+  rank_thread_command_queue_.enqueue(
+      AddModelThreadCommand{model_session, model_thread});
+  rank_thread_.PostCommandFromScheduler();
+  return RequestEntrance(model_thread);
 }
 
 void MultiThreadRankScheduler::AddBackend(NodeId backend_id) {

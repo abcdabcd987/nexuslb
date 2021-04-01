@@ -24,7 +24,7 @@
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/util.h"
-#include "nexus/dispatcher/rank_scheduler.h"
+#include "nexus/dispatcher/rankmt_scheduler.h"
 #include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
@@ -32,8 +32,9 @@
 DEFINE_int64(seed, 0xabcdabcd987LL, "Random seed");
 DEFINE_int32(warmup, 3, "Warmup duration in seconds");
 DEFINE_int32(duration, 10, "Benchmark duration in seconds");
-DEFINE_int32(threads, 1, "Scheduler worker threads");
-DEFINE_int32(max_flying, 10, "Max number of flying requests");
+DEFINE_bool(multithread, false, "Whether to enable multithreading");
+DEFINE_int32(max_flying_per_workload, 10,
+             "Max number of flying requests per workload");
 DEFINE_int32(num_backends, 1, "Number of backends");
 DEFINE_int32(num_models, 1, "Number of models. l(b) = slope * b + intercept.");
 DEFINE_int32(profile_slope, 5973, "Slope in microseconds");
@@ -50,8 +51,8 @@ struct Options {
   int64_t seed;
   int warmup;
   int duration;
-  int threads;
-  int max_flying;
+  bool multithread;
+  int max_flying_per_workload;
   int num_backends;
   int num_models;
   int profile_slope;
@@ -61,11 +62,18 @@ struct Options {
   int model_slo_hi;
 
   static Options FromArgs(int argc, char** argv, int argp) {
-    return Options{
-        FLAGS_seed,          FLAGS_warmup,        FLAGS_duration,
-        FLAGS_threads,       FLAGS_max_flying,    FLAGS_num_backends,
-        FLAGS_num_models,    FLAGS_profile_slope, FLAGS_profile_intercept,
-        FLAGS_profile_noise, FLAGS_model_slo_lo,  FLAGS_model_slo_hi};
+    return Options{FLAGS_seed,
+                   FLAGS_warmup,
+                   FLAGS_duration,
+                   FLAGS_multithread,
+                   FLAGS_max_flying_per_workload,
+                   FLAGS_num_backends,
+                   FLAGS_num_models,
+                   FLAGS_profile_slope,
+                   FLAGS_profile_intercept,
+                   FLAGS_profile_noise,
+                   FLAGS_model_slo_lo,
+                   FLAGS_model_slo_hi};
   }
 };
 
@@ -92,10 +100,11 @@ class FakeFrontendDelegate : public FrontendDelegate {
   };
 
   FakeFrontendDelegate(DispatcherBencher& bencher, uint32_t node_id,
-                       ModelSession model_session)
+                       ModelSession model_session, size_t workload_idx)
       : FrontendDelegate(node_id),
         bencher_(&bencher),
-        model_session_(std::move(model_session)) {}
+        model_session_(std::move(model_session)),
+        workload_idx_(workload_idx) {}
 
   void Tick() override {
     // Ignore
@@ -145,6 +154,7 @@ class FakeFrontendDelegate : public FrontendDelegate {
  private:
   DispatcherBencher* bencher_;
   ModelSession model_session_;
+  size_t workload_idx_;
   size_t reserved_size_ = 0;
   std::unique_ptr<QueryContext[]> queries_;
 };
@@ -250,9 +260,16 @@ class DispatcherBencher {
  public:
   explicit DispatcherBencher(Options options)
       : options_(std::move(options)), gen_(options_.seed) {
+    main_executor_ = std::make_shared<ario::EpollExecutor>();
+    if (options_.multithread) {
+      rank_executor_ = std::make_shared<ario::EpollExecutor>();
+    } else {
+      rank_executor_ = main_executor_;
+    }
+
     BuildWorkloads();
     LOG(INFO) << "Preparing the benchmark";
-    BuildRankScheduler();
+    BuildMultiThreadRankScheduler();
     BuildFakeServers();
   }
 
@@ -261,7 +278,6 @@ class DispatcherBencher {
     warmup_time_ = now + std::chrono::seconds(2);
     serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
     stop_time_ = serious_time_ + std::chrono::seconds(options_.duration);
-    cnt_flying_ = 0;
     should_join_ = false;
 
     loadgen_contexts_.resize(workloads_.size());
@@ -270,35 +286,59 @@ class DispatcherBencher {
       PrepareNextRequest(i);
       auto& l = loadgen_contexts_[i];
     }
-    for (int i = 0; i < options_.threads; ++i) {
-      threads_.emplace_back(&ario::EpollExecutor::RunEventLoop, &executor_);
+    threads_.emplace_back(&ario::EpollExecutor::RunEventLoop,
+                          main_executor_.get());
+    if (options_.multithread) {
+      threads_.emplace_back(&ario::EpollExecutor::RunEventLoop,
+                            rank_executor_.get());
+      for (auto& e : model_executors_) {
+        threads_.emplace_back(&ario::EpollExecutor::RunEventLoop, e.get());
+      }
     }
 
-    ario::Timer wait_warmup(executor_, warmup_time_, [this](ario::ErrorCode) {
-      LOG(INFO) << "Start warming up...";
-      SendMore();
-    });
-    ario::Timer wait_serious(executor_, serious_time_, [this](ario::ErrorCode) {
-      LOG(INFO) << "Start benchmarking...";
-    });
-    ario::Timer wait_stop(executor_, stop_time_, [this](ario::ErrorCode) {
+    ario::Timer wait_warmup(*main_executor_, warmup_time_,
+                            [this](ario::ErrorCode) {
+                              LOG(INFO) << "Start warming up...";
+                              for (size_t i = 0; i < workloads_.size(); ++i) {
+                                model_executors_[i]->Post(
+                                    [this, workload_idx = i](ario::ErrorCode) {
+                                      SendMore(workload_idx);
+                                    },
+                                    ario::ErrorCode::kOk);
+                              }
+                            });
+    ario::Timer wait_serious(
+        *main_executor_, serious_time_,
+        [this](ario::ErrorCode) { LOG(INFO) << "Start benchmarking..."; });
+    ario::Timer wait_stop(*main_executor_, stop_time_, [this](ario::ErrorCode) {
       LOG(INFO) << "Stopped sending more requests";
     });
 
-    ario::Timer wait_finish(executor_, stop_time_ + std::chrono::seconds(1),
-                            [this](ario::ErrorCode) {
-                              std::unique_lock lock(mutex_);
+    std::mutex mutex;
+    std::condition_variable cv;
+    ario::Timer wait_finish(*main_executor_,
+                            stop_time_ + std::chrono::seconds(1),
+                            [this, &mutex, &cv](ario::ErrorCode) {
+                              std::unique_lock lock(mutex);
                               should_join_ = true;
                               lock.unlock();
-                              cv_.notify_all();
+                              cv.notify_all();
                             });
     {
-      std::unique_lock lock(mutex_);
-      cv_.wait(lock, [this] { return should_join_; });
+      std::unique_lock lock(mutex);
+      cv.wait(lock, [this] { return should_join_; });
     }
 
     scheduler_->Stop();
-    executor_.StopEventLoop();
+
+    if (options_.multithread) {
+      for (auto& e : model_executors_) {
+        e->StopEventLoop();
+      }
+      rank_executor_->StopEventLoop();
+    }
+    main_executor_->StopEventLoop();
+
     for (auto iter = threads_.rbegin(); iter != threads_.rend(); ++iter) {
       iter->join();
     }
@@ -371,13 +411,12 @@ class DispatcherBencher {
     }
   }
 
-  void OnRequestDone(size_t cnt_done) {
-    {
-      std::lock_guard lock(send_mutex_);
-      cnt_flying_ -= cnt_done;
-    }
-    executor_.Post([this](ario::ErrorCode) { SendMore(); },
-                   ario::ErrorCode::kOk);
+  void OnRequestDone(size_t cnt_done, size_t workload_idx) {
+    auto& l = loadgen_contexts_[workload_idx];
+    l.cnt_flying -= cnt_done;
+    model_executors_[workload_idx]->Post(
+        [this, workload_idx](ario::ErrorCode) { SendMore(workload_idx); },
+        ario::ErrorCode::kOk);
   }
 
  private:
@@ -407,10 +446,11 @@ class DispatcherBencher {
     }
   }
 
-  void BuildRankScheduler() {
+  void BuildMultiThreadRankScheduler() {
     auto accessor = std::make_unique<FakeDispatcherAccessor>();
     accessor_ = accessor.get();
-    RankScheduler::Builder builder(executor_);
+    MultiThreadRankScheduler::Builder builder(main_executor_.get(),
+                                              rank_executor_.get());
     scheduler_ = builder.Build(std::move(accessor));
   }
 
@@ -419,7 +459,7 @@ class DispatcherBencher {
     for (int i = 0; i < options_.num_backends; ++i) {
       auto backend_id = next_backend_id++;
       auto backend = std::make_shared<FakeBackendDelegate>(
-          executor_, backend_id, accessor_);
+          *main_executor_, backend_id, accessor_);
       accessor_->AddBackend(NodeId(backend_id), backend);
       backends_.push_back(backend);
       scheduler_->AddBackend(NodeId(backend_id));
@@ -428,11 +468,19 @@ class DispatcherBencher {
     for (size_t i = 0; i < workloads_.size(); ++i) {
       const auto& w = workloads_[i];
       uint32_t frontend_id = 60001 + i;
-      auto frontend = std::make_shared<FakeFrontendDelegate>(*this, frontend_id,
-                                                             w.model_session);
+      auto frontend = std::make_shared<FakeFrontendDelegate>(
+          *this, frontend_id, w.model_session, i);
       accessor_->AddFrontend(NodeId(frontend_id), frontend);
       frontends_.push_back(frontend);
-      scheduler_->AddModelSession(w.model_session);
+
+      if (options_.multithread) {
+        model_executors_.push_back(std::make_shared<ario::EpollExecutor>());
+      } else {
+        model_executors_.push_back(main_executor_);
+      }
+      auto entrance = scheduler_->AddModelSession(model_executors_.back().get(),
+                                                  w.model_session);
+      request_entrances_.push_back(entrance);
     }
   }
 
@@ -445,6 +493,7 @@ class DispatcherBencher {
     l.frontend = frontends_[workload_idx].get();
     l.reserved_size = (options_.warmup + options_.duration) * 1000000;
     l.frontend->Reserve(l.reserved_size);
+    l.cnt_flying = 0;
   }
 
   void PrepareNextRequest(size_t workload_idx) {
@@ -472,26 +521,21 @@ class DispatcherBencher {
     clock->set_dispatcher_recv_ns(now_ns);
     l.frontend->ReceivedQuery(query->query_id(), now_ns);
 
-    scheduler_->EnqueueQuery(std::move(l.request));
+    auto& entrance = request_entrances_[workload_idx];
+    entrance.EnqueueQuery(std::move(l.request));
   }
 
-  void SendMore() {
-    std::uniform_int_distribution<int> uniform{0, options_.num_models - 1};
+  void SendMore(size_t workload_idx) {
+    auto& l = loadgen_contexts_[workload_idx];
     for (;;) {
-      int workload_idx = uniform(gen_);
-      {
-        std::lock_guard lock(send_mutex_);
-        if (cnt_flying_ == options_.max_flying) {
-          break;
-        }
-        ++cnt_flying_;
+      if (l.cnt_flying == options_.max_flying_per_workload) {
+        break;
       }
       TimePoint now = Clock::now();
       if (now > stop_time_) {
-        std::lock_guard lock(send_mutex_);
-        --cnt_flying_;
         break;
       }
+      ++l.cnt_flying;
       SendQuery(now, workload_idx);
       PrepareNextRequest(workload_idx);
     }
@@ -508,33 +552,31 @@ class DispatcherBencher {
     size_t reserved_size;
 
     DispatchRequest request;
+    size_t cnt_flying;
   };
 
   Options options_;
   std::mt19937 gen_;
   std::vector<Workload> workloads_;
   std::vector<LoadGenContext> loadgen_contexts_;
-  ario::EpollExecutor executor_;
-  std::mutex scheduler_mutex_;
-  std::unique_ptr<Scheduler> scheduler_;
+  std::shared_ptr<ario::EpollExecutor> main_executor_;
+  std::shared_ptr<ario::EpollExecutor> rank_executor_;
+  std::vector<std::shared_ptr<ario::EpollExecutor>> model_executors_;
+  std::unique_ptr<MultiThreadRankScheduler> scheduler_;
+  std::vector<MultiThreadRankScheduler::RequestEntrance> request_entrances_;
   FakeDispatcherAccessor* accessor_;  // Owned by scheduler_
   std::vector<std::shared_ptr<FakeBackendDelegate>> backends_;
   std::vector<std::shared_ptr<FakeFrontendDelegate>> frontends_;
 
   std::vector<std::thread> threads_;
-  std::mutex mutex_;
-  std::condition_variable cv_;
   TimePoint warmup_time_;
   TimePoint serious_time_;
   TimePoint stop_time_;
   bool should_join_;
-
-  std::mutex send_mutex_;
-  size_t cnt_flying_;
 };
 
 void FakeFrontendDelegate::ReportRequestDone(size_t cnt_done) {
-  bencher_->OnRequestDone(cnt_done);
+  bencher_->OnRequestDone(cnt_done, workload_idx_);
 }
 
 int main(int argc, char** argv) {

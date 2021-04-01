@@ -317,6 +317,17 @@ target_link_libraries(bench_dispatcher PUBLIC dispatcher_obj)
 
 
 
+###### tools/bench_rankmt ######
+add_executable(bench_rankmt
+    tools/bench_dispatcher/bench_rankmt_main.cpp
+    tools/bench_dispatcher/fake_accessor.cpp
+)
+target_include_directories(bench_rankmt PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(bench_rankmt PUBLIC dispatcher_obj)
+
+
+
 ###### tools/run_dispatcher ######
 add_executable(run_dispatcher
     tools/bench_dispatcher/run_dispatcher_main.cpp

@@ -72,21 +72,12 @@ struct BackendContext {
   ario::Timer schedule_timer;
 };
 
-struct PopQueueHeadCommand {
-  TimePoint now;
-  TimePoint earliest_exec_time;
-};
-
-struct SendPlanCommand {
-  ExecutionCandidate candidate;
+struct GrantedBackendMessage {
   NodeId backend_id;
   PlanId plan_id;
-  TimePoint send_time;
-  TimePoint exec_time;
-  TimePoint finish_time;
 };
 
-using ModelCommand = std::variant<PopQueueHeadCommand, SendPlanCommand>;
+using ModelCommand = std::variant<GrantedBackendMessage>;
 
 struct AddModelThreadCommand {
   ModelSession model_session;
@@ -99,13 +90,17 @@ struct AddBackendCommand {
 };
 
 struct UpdateCandidateCommand {
-  TimePoint now;
   std::string model_session_id;  // PERFORMANCE: remove
   ExecutionCandidate candidate;
 };
 
+struct UpdateBackendCommand {
+  NodeId backend_id;
+  TimePoint next_available_time;
+};
+
 using RankCommand = std::variant<AddModelThreadCommand, AddBackendCommand,
-                                 UpdateCandidateCommand>;
+                                 UpdateCandidateCommand, UpdateBackendCommand>;
 
 class ModelThread {
  public:
@@ -134,11 +129,10 @@ class ModelThread {
  private:
   // Command handlers
   void ExecuteCommand();
-  void DoPopQueueHeadCommand(PopQueueHeadCommand& cmd);
-  void DoSendPlanCommand(SendPlanCommand& cmd);
+  void DoGrantedBackendMessage(GrantedBackendMessage& cmd);
 
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
-  void UpdateCandidate(TimePoint now, TimePoint earliest_exec_time);
+  void UpdateCandidate(TimePoint earliest_exec_time);
   void SendDroppedQueries(
       const std::vector<std::shared_ptr<QueryContext>>& drops);
 
@@ -150,6 +144,7 @@ class ModelThread {
   BatchSizeEstimator bse_;
   std::unordered_map<GlobalId, std::shared_ptr<QueryContext>> queries_;
   ModelSessionContext mctx_;
+  ExecutionCandidate candidate_;
 };
 
 class RankThread {
@@ -209,19 +204,17 @@ class RankThread {
   void DoAddModelThreadCommand(AddModelThreadCommand& cmd);
   void DoAddBackendCommand(AddBackendCommand& cmd);
   void DoUpdateCandidateCommand(UpdateCandidateCommand& cmd);
+  void DoUpdateBackendCommand(UpdateBackendCommand& cmd);
 
   PlanId NextPlanId();
-  void UpdateActivePlans(TimePoint now, TimePoint earliest_exec_time,
-                         PerModelThreadData& mdata, size_t num_idle_backends);
-  void SetupActivePlan(TimePoint now, TimePoint earliest_exec_time,
-                       PerModelThreadData& mdata,
+  void UpdateActivePlans(TimePoint earliest_exec_time,
+                         PerModelThreadData& mdata);
+  void SetupActivePlan(TimePoint earliest_exec_time, PerModelThreadData& mdata,
                        std::shared_ptr<CandidateInfo> cinfo);
   void RemoveActivePlan(PerModelThreadData& mdata);
   void OnBackendAvailableSoon(NodeId backend_id);
-  std::shared_ptr<CandidateInfo> PopCandidatePool(TimePoint now,
-                                                  TimePoint earliest_exec_time,
-                                                  size_t rank);
   void OnPlanTimer(PlanId plan_id);
+  void UpdateBackend(BackendContext* bctx, TimePoint next_available_time);
 
   ario::EpollExecutor& executor_;
   moodycamel::ReaderWriterQueue<RankCommand>& scheduler_command_queue_;

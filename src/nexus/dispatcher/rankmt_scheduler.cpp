@@ -129,12 +129,12 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   auto earliest_exec_time = now +
                             std::chrono::microseconds(kDataPlaneLatencyUs) +
                             std::chrono::microseconds(kCtrlPlaneLatencyUs);
-  UpdateCandidate(now, earliest_exec_time);
+  UpdateCandidate(earliest_exec_time);
 
-  // Send dropped queries
-  if (!mctx_.batch_policy.drops().empty()) {
-    SendDroppedQueries(mctx_.batch_policy.PopDrops());
-  }
+  // Notify the RankThread
+  rank_command_queue_.enqueue(
+      UpdateCandidateCommand{mctx_.string_id, candidate_});
+  rank_thread_.PostCommandFromModelThread(&mctx_.string_id);
 
   return CtrlStatus::CTRL_OK;
 }
@@ -153,8 +153,8 @@ void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   }
 }
 
-void ModelThread::UpdateCandidate(TimePoint now, TimePoint earliest_exec_time) {
-  auto rps = mctx_.rps_meter.Get(now);
+void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
+  auto rps = mctx_.rps_meter.Get(earliest_exec_time);
   UpdateTargetBatchSize(rps);
   mctx_.batch_policy.Update(earliest_exec_time, mctx_.target_batch_size);
 
@@ -171,13 +171,13 @@ void ModelThread::UpdateCandidate(TimePoint now, TimePoint earliest_exec_time) {
   }
 
   uint32_t batch_size = mctx_.batch_policy.inputs().size();
-  auto candidate = ExecutionCandidate{earliest_exec_time, latest_exec_time,
-                                      deadline, batch_size};
+  candidate_ = ExecutionCandidate{earliest_exec_time, latest_exec_time,
+                                  deadline, batch_size};
 
-  // Notify the RankThread
-  rank_command_queue_.enqueue(
-      UpdateCandidateCommand{now, mctx_.string_id, candidate});
-  rank_thread_.PostCommandFromModelThread(&mctx_.string_id);
+  // Send dropped queries
+  if (!mctx_.batch_policy.drops().empty()) {
+    SendDroppedQueries(mctx_.batch_policy.PopDrops());
+  }
 }
 
 void ModelThread::SendDroppedQueries(
@@ -200,13 +200,14 @@ void ModelThread::SendDroppedQueries(
     dispatch_reply.set_query_id(qctx->request.query_without_input().query_id());
     dispatch_reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
     frontend->MarkQueryDroppedByDispatcher(std::move(dispatch_reply));
+
+    queries_.erase(qctx->global_id);
   }
 }
 
 void ModelThread::ExecuteCommand() {
   auto visitor = make_visitor(
-      [this](PopQueueHeadCommand& cmd) { DoPopQueueHeadCommand(cmd); },
-      [this](SendPlanCommand& cmd) { DoSendPlanCommand(cmd); }
+      [this](GrantedBackendMessage& cmd) { DoGrantedBackendMessage(cmd); }
       // Force newline for clang-format
   );
 
@@ -216,43 +217,18 @@ void ModelThread::ExecuteCommand() {
   }
 }
 
-void ModelThread::DoPopQueueHeadCommand(PopQueueHeadCommand& cmd) {
-  UpdateCandidate(cmd.now, cmd.earliest_exec_time);
-}
-
-void ModelThread::DoSendPlanCommand(SendPlanCommand& cmd) {
+void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   using namespace std::chrono;
-  VLOG(1) << "DoSendPlanCommand: start. plan_id=" << cmd.plan_id.t;
-
-  TimePoint now = Clock::now();
-  auto timer_delay = now - cmd.send_time;
-  if (timer_delay > microseconds(100)) {
-    auto us = duration_cast<microseconds>(timer_delay).count();
-    LOG(WARNING) << "DoSendPlanCommand: huge timer delay: " << us << " us";
-  }
+  auto now = Clock::now();
+  auto exec_time = now + microseconds(kDataPlaneLatencyUs) +
+                   microseconds(kCtrlPlaneLatencyUs);
+  UpdateCandidate(exec_time);
 
   // Remove pending queries.
   auto inputs = mctx_.batch_policy.PopInputs();
-  auto drops = mctx_.batch_policy.PopDrops();
   for (auto& qctx : inputs) {
     queries_.erase(qctx->global_id);
   }
-  for (auto& qctx : drops) {
-    queries_.erase(qctx->global_id);
-  }
-  // TODO: handle inconsistency between SendPlanCommand and ModelThread's view.
-  LOG_IF(ERROR, inputs.size() != cmd.candidate.batch_size)
-      << "Inconsistency: inputs.size()=" << inputs.size()
-      << ", cmd.candidate.batch_size=" << cmd.candidate.batch_size;
-  LOG_IF(ERROR,
-         !inputs.empty() && cmd.candidate.deadline != inputs[0]->deadline)
-      << "Inconsistency: cmd.candidate.deadline="
-      << cmd.candidate.deadline.time_since_epoch().count()
-      << ", inputs[0]->deadline="
-      << inputs[0]->deadline.time_since_epoch().count();
-
-  // Update candidate
-  UpdateCandidate(cmd.send_time, cmd.exec_time);
 
   // Prepare to send to backend.
   auto delegate = dispatcher_.GetBackend(cmd.backend_id);
@@ -266,12 +242,14 @@ void ModelThread::DoSendPlanCommand(SendPlanCommand& cmd) {
   proto.set_plan_id(cmd.plan_id.t);
   proto.set_model_session_id(mctx_.string_id);
   proto.set_exec_time_ns(
-      duration_cast<nanoseconds>(cmd.exec_time.time_since_epoch()).count());
+      duration_cast<nanoseconds>(exec_time.time_since_epoch()).count());
   proto.set_deadline_ns(
-      duration_cast<nanoseconds>(cmd.candidate.deadline.time_since_epoch())
+      duration_cast<nanoseconds>(candidate_.deadline.time_since_epoch())
           .count());
+  auto exec_elapse = EstimateExecElapse(mctx_.profile, candidate_.batch_size);
+  auto finish_time = exec_time + exec_elapse;
   proto.set_expected_finish_time_ns(
-      duration_cast<nanoseconds>(cmd.finish_time.time_since_epoch()).count());
+      duration_cast<nanoseconds>(finish_time.time_since_epoch()).count());
   for (auto& qctx : inputs) {
     query.mutable_query_without_input()->Swap(
         qctx->request.mutable_query_without_input());
@@ -289,10 +267,15 @@ void ModelThread::DoSendPlanCommand(SendPlanCommand& cmd) {
         ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
   }
   // Send to backend
-  VLOG(1) << "DoSendPlanCommand: send to backend.";
   delegate->EnqueueBatchPlan(std::move(proto));
-  SendDroppedQueries(drops);
-  VLOG(1) << "DoSendPlanCommand: done.";
+
+  // Update candidate
+  UpdateCandidate(exec_time);
+
+  // Notify the RankThread
+  rank_command_queue_.enqueue(
+      UpdateCandidateCommand{mctx_.string_id, candidate_});
+  rank_thread_.PostCommandFromModelThread(&mctx_.string_id);
 }
 
 // ============ RankThread ============
@@ -339,7 +322,8 @@ void RankThread::ExecuteCommand(
   auto visitor = make_visitor(
       [this](AddModelThreadCommand& cmd) { DoAddModelThreadCommand(cmd); },
       [this](AddBackendCommand& cmd) { DoAddBackendCommand(cmd); },
-      [this](UpdateCandidateCommand& cmd) { DoUpdateCandidateCommand(cmd); }
+      [this](UpdateCandidateCommand& cmd) { DoUpdateCandidateCommand(cmd); },
+      [this](UpdateBackendCommand& cmd) { DoUpdateBackendCommand(cmd); }
       // Force newline for clang-format
   );
 
@@ -386,21 +370,24 @@ void RankThread::DoUpdateCandidateCommand(UpdateCandidateCommand& cmd) {
       std::shared_ptr<CandidateInfo>(new CandidateInfo{mdata, cmd.candidate});
   candidate_pool_.Upsert(cmd.model_session_id, cinfo);
 
-  auto num_idle_backends = backend_availability_pool_.CountLessEqual(
-      cinfo->candidate.earliest_exec_time);
-  UpdateActivePlans(cmd.now, cinfo->candidate.earliest_exec_time, mdata,
-                    num_idle_backends);
+  UpdateActivePlans(cinfo->candidate.earliest_exec_time, mdata);
 }
 
-void RankThread::UpdateActivePlans(TimePoint now, TimePoint earliest_exec_time,
-                                   PerModelThreadData& mdata,
-                                   size_t num_idle_backends) {
+void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
+  auto& bctx = backends_.at(cmd.backend_id);
+  UpdateBackend(bctx.get(), cmd.next_available_time);
+}
+
+void RankThread::UpdateActivePlans(TimePoint earliest_exec_time,
+                                   PerModelThreadData& mdata) {
+  auto num_idle_backends =
+      backend_availability_pool_.CountLessEqual(earliest_exec_time);
   size_t rank = candidate_pool_.Rank(mdata.model_session_id);
   if (rank < num_idle_backends) {
     const auto& cinfo = candidate_pool_.GetByKey(mdata.model_session_id);
     if (cinfo->candidate.batch_size) {
       RemoveActivePlan(mdata);
-      SetupActivePlan(now, earliest_exec_time, mdata, cinfo);
+      SetupActivePlan(earliest_exec_time, mdata, cinfo);
     }
   }
   if (candidate_pool_.Size() > num_idle_backends) {
@@ -410,7 +397,7 @@ void RankThread::UpdateActivePlans(TimePoint now, TimePoint earliest_exec_time,
   }
 }
 
-void RankThread::SetupActivePlan(TimePoint now, TimePoint earliest_exec_time,
+void RankThread::SetupActivePlan(TimePoint earliest_exec_time,
                                  PerModelThreadData& mdata,
                                  std::shared_ptr<CandidateInfo> cinfo) {
   // Build plan
@@ -420,12 +407,9 @@ void RankThread::SetupActivePlan(TimePoint now, TimePoint earliest_exec_time,
   uint32_t batch_size = cinfo->candidate.batch_size;
   auto frontrun_elapse = EstimateExecElapse(mdata.profile, batch_size + 1);
   auto frontrun_exec_time = plan->deadline - frontrun_elapse;
-  auto send_time_calc = frontrun_exec_time -
-                        std::chrono::microseconds(kCtrlPlaneLatencyUs) -
-                        std::chrono::microseconds(kDataPlaneLatencyUs);
-  plan->send_time = std::max(now, send_time_calc);
-  plan->exec_time = plan->send_time +
-                    std::chrono::microseconds(kCtrlPlaneLatencyUs) +
+  plan->exec_time = std::max(earliest_exec_time, frontrun_exec_time);
+  plan->send_time = plan->exec_time -
+                    std::chrono::microseconds(kCtrlPlaneLatencyUs) -
                     std::chrono::microseconds(kDataPlaneLatencyUs);
   CHECK_LE(earliest_exec_time.time_since_epoch().count(),
            plan->exec_time.time_since_epoch().count());
@@ -475,38 +459,13 @@ void RankThread::OnBackendAvailableSoon(NodeId backend_id) {
   auto num_idle_backends =
       backend_availability_pool_.CountLessEqual(earliest_exec_time);
   CHECK_GT(num_idle_backends, 0);
-  auto rank = num_idle_backends - 1;
-  auto cinfo = PopCandidatePool(schedule_time, earliest_exec_time, rank);
-  if (cinfo) {
+  auto kv = candidate_pool_.GetByRank(num_idle_backends - 1);
+  auto& cinfo = kv.value.get();
+  if (cinfo->candidate.batch_size > 0) {
     auto& mdata = cinfo->mdata;
     CHECK_EQ(mdata.active_plan, nullptr);
-    UpdateActivePlans(schedule_time, earliest_exec_time, mdata,
-                      num_idle_backends);
+    UpdateActivePlans(earliest_exec_time, mdata);
   }
-}
-
-std::shared_ptr<RankThread::CandidateInfo> RankThread::PopCandidatePool(
-    TimePoint now, TimePoint earliest_exec_time, size_t rank) {
-  std::vector<std::shared_ptr<CandidateInfo>> cinfo_list;
-  for (size_t i = rank; rank < candidate_pool_.Size(); ++i) {
-    auto pair = candidate_pool_.GetByRank(i);
-    cinfo_list.push_back(pair.value);
-  }
-  std::shared_ptr<CandidateInfo> bottom_cinfo;
-  for (auto& old_cinfo : cinfo_list) {
-    auto& mdata = old_cinfo->mdata;
-    if (old_cinfo->candidate.latest_exec_time < earliest_exec_time) {
-      mdata.model_command_queue.enqueue(
-          PopQueueHeadCommand{now, earliest_exec_time});
-      mdata.model_thread.PostCommand();
-    }
-    const auto& new_cinfo = candidate_pool_.GetByKey(mdata.model_session_id);
-    if (!bottom_cinfo || new_cinfo->candidate.latest_exec_time <
-                             bottom_cinfo->candidate.latest_exec_time) {
-      bottom_cinfo = new_cinfo;
-    }
-  }
-  return bottom_cinfo;
 }
 
 void RankThread::OnPlanTimer(PlanId plan_id) {
@@ -539,37 +498,36 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
            plan->exec_time.time_since_epoch().count());
 
   // Setup next schedule when this batch is almost done
-  bctx->next_available_time = plan->finish_time;
-  backend_availability_pool_.Upsert(backend_id, bctx->next_available_time);
-  bctx->schedule_time = bctx->next_available_time -
-                        microseconds(kDataPlaneLatencyUs) -
-                        microseconds(kCtrlPlaneLatencyUs);
-  bctx->schedule_timer.SetTimeout(bctx->schedule_time);
-  bctx->schedule_timer.AsyncWait([this, backend_id](ario::ErrorCode error) {
-    if (error == ario::ErrorCode::kCancelled) return;
-    OnBackendAvailableSoon(backend_id);
-  });
+  UpdateBackend(bctx.get(), plan->finish_time);
 
   // Update candidate pool
-  auto earliest_exec_time = plan->exec_time;
-  auto num_idle_backends =
-      backend_availability_pool_.CountLessEqual(earliest_exec_time);
   candidate_pool_.Upsert(mdata.model_session_id,
                          std::shared_ptr<CandidateInfo>(new CandidateInfo{
                              mdata, ExecutionCandidate::Invalid()}));
-  UpdateActivePlans(plan->send_time, earliest_exec_time, mdata,
-                    num_idle_backends);
+  UpdateActivePlans(plan->exec_time, mdata);
 
   // Let ModelThread send out the plan
-  SendPlanCommand send;
-  send.candidate = plan->cinfo->candidate;
-  send.backend_id = backend_id;
-  send.plan_id = plan->plan_id;
-  send.send_time = plan->send_time;
-  send.exec_time = plan->exec_time;
-  send.finish_time = plan->finish_time;
-  mdata.model_command_queue.enqueue(std::move(send));
+  GrantedBackendMessage msg;
+  msg.backend_id = backend_id;
+  msg.plan_id = plan->plan_id;
+  mdata.model_command_queue.enqueue(std::move(msg));
   mdata.model_thread.PostCommand();
+}
+
+void RankThread::UpdateBackend(BackendContext* bctx,
+                               TimePoint next_available_time) {
+  bctx->next_available_time = next_available_time;
+  bctx->schedule_time = next_available_time -
+                        std::chrono::microseconds(kDataPlaneLatencyUs) -
+                        std::chrono::microseconds(kCtrlPlaneLatencyUs);
+  bctx->schedule_timer.SetTimeout(bctx->schedule_time);
+  bctx->schedule_timer.AsyncWait(
+      [this, backend_id = bctx->backend_id](ario::ErrorCode error) {
+        if (error == ario::ErrorCode::kCancelled) return;
+        OnBackendAvailableSoon(backend_id);
+      });
+
+  backend_availability_pool_.Upsert(bctx->backend_id, next_available_time);
 }
 
 // ============ MultiThreadRankScheduler ============

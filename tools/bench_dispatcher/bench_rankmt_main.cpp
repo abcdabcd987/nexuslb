@@ -273,7 +273,7 @@ class DispatcherBencher {
     BuildFakeServers();
   }
 
-  void Run() {
+  int Run() {
     TimePoint now = Clock::now();
     warmup_time_ = now + std::chrono::seconds(2);
     serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
@@ -406,9 +406,11 @@ class DispatcherBencher {
               << "Throughput: " << throughput << " rps";
 
     if (sum_noreply) {
-      LOG(FATAL) << "Buggy scheduler. There are " << sum_noreply
+      LOG(ERROR) << "Buggy scheduler. There are " << sum_noreply
                  << " queries having no reply.";
+      return 1;
     }
+    return 0;
   }
 
   void OnRequestDone(size_t cnt_done, size_t workload_idx) {
@@ -587,5 +589,6 @@ int main(int argc, char** argv) {
 
   auto options = Options::FromArgs(argc, argv, argp);
   DispatcherBencher bencher(std::move(options));
-  bencher.Run();
+  int exitcode = bencher.Run();
+  return exitcode;
 }

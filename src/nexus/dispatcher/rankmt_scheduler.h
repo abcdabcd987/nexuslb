@@ -49,31 +49,6 @@ struct ExecutionCandidate {
   }
 };
 
-struct ModelSessionContext {
-  ModelSessionContext(ModelSession model_session, const ModelProfile& profile);
-
-  ModelSession model_session;
-  std::string string_id;
-  SortedQueryList queries;
-  IncrementalBatchPolicy batch_policy;
-  RpsMeter rps_meter;
-
-  // TODO: GPU performance heterogeneity
-  const ModelProfile& profile;
-  uint32_t target_batch_size = 0;
-};
-
-struct BackendContext {
-  BackendContext(NodeId backend_id, std::shared_ptr<BackendDelegate> delegate);
-
-  NodeId backend_id;
-  std::shared_ptr<BackendDelegate> delegate;
-  TimePoint schedule_time;
-  TimePoint next_available_time;
-
-  ario::Timer schedule_timer;
-};
-
 struct GrantedBackendMessage {
   NodeId backend_id;
   PlanId plan_id;
@@ -92,7 +67,6 @@ struct AddBackendCommand {
 };
 
 struct UpdateCandidateCommand {
-  std::string model_session_id;  // PERFORMANCE: remove
   ExecutionCandidate candidate;
 };
 
@@ -123,7 +97,7 @@ class ModelThread {
   moodycamel::ReaderWriterQueue<RankCommand>* rank_command_queue() {
     return &rank_command_queue_;
   };
-  const ModelProfile& profile() const { return mctx_.profile; }
+  const ModelProfile& profile() const { return profile_; }
 
   CtrlStatus EnqueueQuery(DispatchRequest&& request);
   void PostCommand();
@@ -142,12 +116,18 @@ class ModelThread {
   ario::EpollExecutor& executor_;
   RankThread& rank_thread_;
   DispatcherAccessor& dispatcher_;
+  ModelSession model_session_;
+  std::string model_session_id_;
+  // TODO: GPU performance heterogeneity
+  const ModelProfile& profile_;
   bool stop_flag_;
   moodycamel::ReaderWriterQueue<ModelCommand> model_command_queue_;
   moodycamel::ReaderWriterQueue<RankCommand> rank_command_queue_;
   BatchSizeEstimator bse_;
-  std::unordered_map<GlobalId, std::shared_ptr<QueryContext>> queries_;
-  ModelSessionContext mctx_;
+  RpsMeter rps_meter_;
+  SortedQueryList unprocessed_queries_;
+  IncrementalBatchPolicy batch_policy_;
+  uint32_t target_batch_size_;
   ExecutionCandidate candidate_;
   ario::Timer drop_timer_;
 };
@@ -186,11 +166,8 @@ class RankThread {
     explicit ActivePlan(ario::EpollExecutor& executor);
 
     PlanId plan_id;
-    TimePoint send_time;
     TimePoint exec_time;
-    TimePoint finish_time;
-    TimePoint deadline;
-    std::shared_ptr<CandidateInfo> cinfo;
+    PerModelThreadData* mdata;
 
     ario::Timer send_timer;
   };
@@ -204,11 +181,24 @@ class RankThread {
     std::shared_ptr<ActivePlan> active_plan;
   };
 
+  struct BackendContext {
+    BackendContext(NodeId backend_id,
+                   std::shared_ptr<BackendDelegate> delegate);
+
+    NodeId backend_id;
+    std::shared_ptr<BackendDelegate> delegate;
+    TimePoint next_available_time;
+
+    ario::Timer schedule_timer;
+  };
+
   // Command handlers
-  void ExecuteCommand(moodycamel::ReaderWriterQueue<RankCommand>& queue);
+  void ExecuteCommand(moodycamel::ReaderWriterQueue<RankCommand>& queue,
+                      const std::string* ptr_model_session_id);
   void DoAddModelThreadCommand(AddModelThreadCommand& cmd);
   void DoAddBackendCommand(AddBackendCommand& cmd);
-  void DoUpdateCandidateCommand(UpdateCandidateCommand& cmd);
+  void DoUpdateCandidateCommand(UpdateCandidateCommand& cmd,
+                                const std::string* ptr_model_session_id);
   void DoUpdateBackendCommand(UpdateBackendCommand& cmd);
 
   PlanId NextPlanId();

@@ -200,8 +200,14 @@ class FakeBackendDelegate : public BackendDelegate {
     std::lock_guard lock(mutex_);
     for (const auto& plan : batchplans_) {
       CHECK(!BatchPlanIntersects(plan, request))
-          << "Batchplan intersects. iter: " << plan.DebugString()
-          << " request: " << request.DebugString();
+          << "Batchplan intersects.\n"
+          << "existing plan: exec_time=base"
+          << " finish_time=base+"
+          << (plan.expected_finish_time_ns() - plan.exec_time_ns()) << "\n"
+          << "new plan: exec_time=base+"
+          << (request.exec_time_ns() - plan.exec_time_ns())
+          << " finish_time=base+"
+          << (request.expected_finish_time_ns() - plan.exec_time_ns());
     }
     batchplans_.emplace_back(std::move(request));
     std::push_heap(batchplans_.begin(), batchplans_.end(),
@@ -314,10 +320,15 @@ class DispatcherBencher {
       LOG(INFO) << "Stopped sending more requests";
     });
 
+    uint32_t max_slo = 0;
+    for (auto& w : workloads_) {
+      max_slo = std::max(max_slo, w.model_session.latency_sla());
+    }
+    uint32_t cooldown_ms = max_slo * 1.5;
     std::mutex mutex;
     std::condition_variable cv;
     ario::Timer wait_finish(*main_executor_,
-                            stop_time_ + std::chrono::seconds(1),
+                            stop_time_ + std::chrono::milliseconds(cooldown_ms),
                             [this, &mutex, &cv](ario::ErrorCode) {
                               std::unique_lock lock(mutex);
                               should_join_ = true;

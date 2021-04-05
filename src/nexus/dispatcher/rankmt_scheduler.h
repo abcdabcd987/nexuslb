@@ -2,6 +2,8 @@
 #define NEXUS_DISPATCHER_RANKMT_SCHEDULER_H_
 
 #include <chrono>
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -112,7 +114,7 @@ class ModelThread {
   ModelThread(ModelThread&& other) = delete;
   ModelThread& operator=(ModelThread&& other) = delete;
   ~ModelThread();
-  void Stop();
+  void Stop(std::mutex& mutex, size_t& cnt, std::condition_variable& cv);
 
   // Getters
   moodycamel::ReaderWriterQueue<ModelCommand>* model_command_queue() {
@@ -133,18 +135,21 @@ class ModelThread {
 
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
   void UpdateCandidate(TimePoint earliest_exec_time);
+  void OnDropTimer();
   void SendDroppedQueries(
       const std::vector<std::shared_ptr<QueryContext>>& drops);
 
   ario::EpollExecutor& executor_;
   RankThread& rank_thread_;
   DispatcherAccessor& dispatcher_;
+  bool stop_flag_;
   moodycamel::ReaderWriterQueue<ModelCommand> model_command_queue_;
   moodycamel::ReaderWriterQueue<RankCommand> rank_command_queue_;
   BatchSizeEstimator bse_;
   std::unordered_map<GlobalId, std::shared_ptr<QueryContext>> queries_;
   ModelSessionContext mctx_;
   ExecutionCandidate candidate_;
+  ario::Timer drop_timer_;
 };
 
 class RankThread {
@@ -157,7 +162,7 @@ class RankThread {
   RankThread(RankThread&& other) = delete;
   RankThread& operator=(RankThread&& other) = delete;
   ~RankThread();
-  void Stop();
+  void Stop(std::mutex& mutex, size_t& cnt, std::condition_variable& cv);
 
   ario::EpollExecutor& executor() const { return executor_; }
 
@@ -218,6 +223,7 @@ class RankThread {
 
   ario::EpollExecutor& executor_;
   moodycamel::ReaderWriterQueue<RankCommand>& scheduler_command_queue_;
+  bool stop_flag_;
   PlanId next_plan_id_{1};
   std::unordered_map<NodeId, std::shared_ptr<BackendContext>> backends_;
 

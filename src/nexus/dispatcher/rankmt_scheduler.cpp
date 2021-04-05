@@ -6,6 +6,7 @@
 #include <boost/asio/post.hpp>
 #include <boost/system/error_code.hpp>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -73,18 +74,32 @@ ModelThread::ModelThread(ario::EpollExecutor* executor,
     : executor_(*CHECK_NOTNULL(executor)),
       rank_thread_(*CHECK_NOTNULL(rank_thread)),
       dispatcher_(*CHECK_NOTNULL(dispatcher)),
+      stop_flag_(false),
       bse_(1.0, 0.0),
-      mctx_(std::move(model_session), profile) {
+      mctx_(std::move(model_session), profile),
+      drop_timer_(*CHECK_NOTNULL(executor)) {
   UpdateTargetBatchSize(std::nullopt);
 }
 
 ModelThread::~ModelThread() {
-  // TODO
+  LOG_IF(ERROR, !stop_flag_) << "ModelThread::Stop() not called!";
 }
 
-void ModelThread::Stop() {
+void ModelThread::Stop(std::mutex& mutex, size_t& cnt,
+                       std::condition_variable& cv) {
   // TODO
-  queries_.clear();
+  executor_.Post(
+      [this, &mutex, &cnt, &cv](ario::ErrorCode) {
+        stop_flag_ = true;
+        drop_timer_.CancelAll();
+        queries_.clear();
+        {
+          std::lock_guard lock(mutex);
+          cnt += 1;
+        }
+        cv.notify_all();
+      },
+      ario::ErrorCode::kOk);
 }
 
 void ModelThread::PostCommand() {
@@ -165,9 +180,12 @@ void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
     auto elapse = EstimateExecElapse(mctx_.profile, inputs.size());
     latest_exec_time = inputs[0]->deadline - elapse;
     deadline = inputs[0]->deadline;
+    drop_timer_.SetTimeout(deadline);
+    drop_timer_.AsyncWait([this](ario::ErrorCode) { OnDropTimer(); });
   } else {
     latest_exec_time = TimePoint::max();
     deadline = TimePoint::max();
+    drop_timer_.CancelAll();
   }
 
   uint32_t batch_size = mctx_.batch_policy.inputs().size();
@@ -178,6 +196,14 @@ void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
   if (!mctx_.batch_policy.drops().empty()) {
     SendDroppedQueries(mctx_.batch_policy.PopDrops());
   }
+}
+
+void ModelThread::OnDropTimer() {
+  auto now = Clock::now();
+  auto earliest_exec_time = now +
+                            std::chrono::microseconds(kDataPlaneLatencyUs) +
+                            std::chrono::microseconds(kCtrlPlaneLatencyUs);
+  UpdateCandidate(earliest_exec_time);
 }
 
 void ModelThread::SendDroppedQueries(
@@ -206,6 +232,9 @@ void ModelThread::SendDroppedQueries(
 }
 
 void ModelThread::ExecuteCommand() {
+  if (stop_flag_) {
+    return;
+  }
   auto visitor = make_visitor(
       [this](GrantedBackendMessage& cmd) { DoGrantedBackendMessage(cmd); }
       // Force newline for clang-format
@@ -230,13 +259,23 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
     queries_.erase(qctx->global_id);
   }
 
-  // Prepare to send to backend.
-  auto delegate = dispatcher_.GetBackend(cmd.backend_id);
-  if (!delegate) {
-    LOG(ERROR) << "Cannot find backend delegate. backend_id="
-               << cmd.backend_id.t;
+  // Early return when batch_size=0
+  if (inputs.empty()) {
+    rank_command_queue_.enqueue(UpdateBackendCommand{cmd.backend_id, now});
+    rank_command_queue_.enqueue(
+        UpdateCandidateCommand{mctx_.string_id, candidate_});
+    rank_thread_.PostCommandFromModelThread(&mctx_.string_id);
     return;
   }
+
+  // Inform RankThread about the backend's correct next_available_time
+  auto exec_elapse = EstimateExecElapse(mctx_.profile, candidate_.batch_size);
+  auto finish_time = exec_time + exec_elapse;
+  rank_command_queue_.enqueue(
+      UpdateBackendCommand{cmd.backend_id, finish_time});
+  rank_thread_.PostCommandFromModelThread(&mctx_.string_id);
+
+  // Prepare the batchplan
   BatchPlanProto proto;
   EnqueueQueryCommand query;
   proto.set_plan_id(cmd.plan_id.t);
@@ -246,8 +285,6 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   proto.set_deadline_ns(
       duration_cast<nanoseconds>(candidate_.deadline.time_since_epoch())
           .count());
-  auto exec_elapse = EstimateExecElapse(mctx_.profile, candidate_.batch_size);
-  auto finish_time = exec_time + exec_elapse;
   proto.set_expected_finish_time_ns(
       duration_cast<nanoseconds>(finish_time.time_since_epoch()).count());
   for (auto& qctx : inputs) {
@@ -267,12 +304,17 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
         ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
   }
   // Send to backend
+  auto delegate = dispatcher_.GetBackend(cmd.backend_id);
+  if (!delegate) {
+    LOG(ERROR) << "Cannot find backend delegate. backend_id="
+               << cmd.backend_id.t;
+    return;
+  }
   delegate->EnqueueBatchPlan(std::move(proto));
 
   // Update candidate
   UpdateCandidate(exec_time);
-
-  // Notify the RankThread
+  // Notify the RankThread about the new candidate
   rank_command_queue_.enqueue(
       UpdateCandidateCommand{mctx_.string_id, candidate_});
   rank_thread_.PostCommandFromModelThread(&mctx_.string_id);
@@ -287,16 +329,28 @@ RankThread::RankThread(
     ario::EpollExecutor* executor,
     moodycamel::ReaderWriterQueue<RankCommand>* scheduler_command_queue)
     : executor_(*CHECK_NOTNULL(executor)),
-      scheduler_command_queue_(*CHECK_NOTNULL(scheduler_command_queue)) {}
+      scheduler_command_queue_(*CHECK_NOTNULL(scheduler_command_queue)),
+      stop_flag_(false) {}
 
 RankThread::~RankThread() {
   // TODO
+  LOG_IF(ERROR, !stop_flag_) << "RankThread::Stop() not called!";
 }
 
-void RankThread::Stop() {
+void RankThread::Stop(std::mutex& mutex, size_t& cnt,
+                      std::condition_variable& cv) {
   // TODO
-  plans_.clear();
-  backends_.clear();
+  executor_.Post(
+      [this, &mutex, &cnt, &cv](ario::ErrorCode) {
+        plans_.clear();
+        backends_.clear();
+        {
+          std::lock_guard lock(mutex);
+          ++cnt;
+        }
+        cv.notify_all();
+      },
+      ario::ErrorCode::kOk);
 }
 
 PlanId RankThread::NextPlanId() { return PlanId(next_plan_id_.t++); }
@@ -319,6 +373,9 @@ void RankThread::PostCommandFromModelThread(
 
 void RankThread::ExecuteCommand(
     moodycamel::ReaderWriterQueue<RankCommand>& queue) {
+  if (stop_flag_) {
+    return;
+  }
   auto visitor = make_visitor(
       [this](AddModelThreadCommand& cmd) { DoAddModelThreadCommand(cmd); },
       [this](AddBackendCommand& cmd) { DoAddBackendCommand(cmd); },
@@ -400,11 +457,16 @@ void RankThread::UpdateActivePlans(TimePoint earliest_exec_time,
 void RankThread::SetupActivePlan(TimePoint earliest_exec_time,
                                  PerModelThreadData& mdata,
                                  std::shared_ptr<CandidateInfo> cinfo) {
+  uint32_t batch_size = cinfo->candidate.batch_size;
+  if (!batch_size) {
+    mdata.active_plan = nullptr;
+    return;
+  }
+
   // Build plan
   auto plan = std::make_shared<ActivePlan>(executor_);
   plan->plan_id = NextPlanId();
   plan->deadline = cinfo->candidate.deadline;
-  uint32_t batch_size = cinfo->candidate.batch_size;
   auto frontrun_elapse = EstimateExecElapse(mdata.profile, batch_size + 1);
   auto frontrun_exec_time = plan->deadline - frontrun_elapse;
   plan->exec_time = std::max(earliest_exec_time, frontrun_exec_time);
@@ -492,13 +554,14 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   auto& mdata = plan->cinfo->mdata;
 
   // Assign backend
+  CHECK_GT(backend_availability_pool_.Size(), 0);
   auto backend_id = backend_availability_pool_.GetByRank(0).key.get();
   auto& bctx = backends_.at(backend_id);
   CHECK_LT(bctx->next_available_time.time_since_epoch().count(),
            plan->exec_time.time_since_epoch().count());
 
-  // Setup next schedule when this batch is almost done
-  UpdateBackend(bctx.get(), plan->finish_time);
+  // Mark backend unavailable until ModelThread gives UpdateBackendCommand
+  UpdateBackend(bctx.get(), TimePoint::max());
 
   // Update candidate pool
   candidate_pool_.Upsert(mdata.model_session_id,
@@ -569,10 +632,19 @@ MultiThreadRankScheduler::~MultiThreadRankScheduler() {
 void MultiThreadRankScheduler::Stop() {
   // TODO
   LOG(INFO) << "MultiThreadRankScheduler::Stop";
+  std::mutex mutex;
+  size_t cnt = 0;
+  std::condition_variable cv;
   for (auto& pair : model_threads_) {
-    pair.second->Stop();
+    pair.second->Stop(mutex, cnt, cv);
   }
-  rank_thread_.Stop();
+  rank_thread_.Stop(mutex, cnt, cv);
+  {
+    size_t target = model_threads_.size() + 1;
+    std::unique_lock lock(mutex);
+    cv.wait(lock, [target, &cnt] { return cnt == target; });
+  }
+  model_threads_.clear();
 }
 
 MultiThreadRankScheduler::RequestEntrance

@@ -104,13 +104,17 @@ void EpollExecutor::StopEventLoop() {
   // TODO: stop more elegantly
   stop_event_loop_ = true;
   interrupter_.Interrupt();
+  if (cnt_workers_ == 1 && this_thread_executor_ == this) {
+    return;
+  }
 
   std::unique_lock<std::mutex> lock(stop_mutex_);
   stop_cv_.wait(lock, [this] {
     if (cnt_workers_) {
       interrupter_.Interrupt();
     }
-    return cnt_workers_ == 0;
+    return cnt_workers_ == 0 ||
+           (cnt_workers_ == 1 && this_thread_executor_ == this);
   });
 }
 

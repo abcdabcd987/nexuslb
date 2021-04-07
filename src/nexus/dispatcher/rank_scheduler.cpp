@@ -205,7 +205,7 @@ void RankScheduler::UpdateCandidatePool(TimePoint now,
   const auto& inputs = mctx->batch_policy.inputs();
   if (!inputs.empty()) {
     auto elapse = mctx->EstimateExecElapse(inputs.size());
-    latest_exec_time = inputs[0]->deadline - elapse;
+    latest_exec_time = (*inputs.begin())->deadline - elapse;
   } else {
     latest_exec_time = TimePoint::max();
   }
@@ -265,7 +265,7 @@ void RankScheduler::SetupActivePlan(
   // Build plan
   auto plan = std::make_shared<ActivePlan>(*executor_);
   plan->plan_id = NextPlanId();
-  plan->deadline = inputs[0]->deadline;
+  plan->deadline = (*inputs.begin())->deadline;
   uint32_t batch_size = inputs.size();
   auto frontrun_elapse = mctx->EstimateExecElapse(batch_size + 1);
   auto frontrun_exec_time = plan->deadline - frontrun_elapse;

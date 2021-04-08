@@ -10,6 +10,7 @@
 #include <thread>
 #include <unordered_map>
 
+#include "ario/chrono.h"
 #include "ario/epoll.h"
 #include "ario/error.h"
 #include "ario/memory.h"
@@ -181,6 +182,11 @@ void DieUsage(const char *program) {
   printf(
       "  %s benchread <dev_name> <server_host> <server_port> "
       "<max_flying> <num_packets> <read_size> <logfilename>\n",
+      program);
+  printf(
+      "  %s benchincast <dev_name> "
+      "<read_size> <concurrent_reads> <warmups> <tests> "
+      "<ip:port>...\n",
       program);
   printf("  %s benchtimer <duration> <count>\n", program);
   std::exit(1);
@@ -749,6 +755,196 @@ void BenchReadMain(int argc, char **argv) {
   event_loop_thread.join();
 }
 
+class IncastHandler : public ario::RdmaEventHandler {
+ public:
+  struct Options {
+    size_t read_size;
+    size_t concurrent_reads;
+    size_t warmups;
+    size_t tests;
+  };
+
+  IncastHandler(Options options, ario::EpollExecutor &executor,
+                ario::MemoryBlockAllocator &allocator, size_t num_servers)
+      : options_(std::move(options)),
+        executor_(executor),
+        allocator_(allocator),
+        num_servers_(num_servers),
+        gen_(0xabcdabcd987LL),
+        test_elapse_ns_(options_.warmups + options_.tests) {}
+
+  void OnConnected(RdmaQueuePair *conn) override {}
+  void OnRecv(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {}
+  void OnSent(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {}
+  void OnError(RdmaQueuePair *conn, RdmaError error) override {
+    fprintf(stderr, "IncastHandler::OnError. error=%d\n",
+            static_cast<int>(error));
+  }
+
+  void OnRemoteMemoryRegionReceived(RdmaQueuePair *conn, uint64_t addr,
+                                    size_t size) override {
+    fprintf(stderr, "Got MemoryRegion from %s:%d size %zu\n",
+            conn->peer_ip().c_str(), conn->peer_tcp_port(), size);
+    if (servers_.size() == num_servers_) die("Unexpected connection.");
+    if (size < options_.read_size)
+      die("MemoryRegion too small (" + std::to_string(size) +
+          "), expecting at least" + std::to_string(options_.read_size));
+    size_t rand_upper = size - options_.read_size + 1;
+    servers_.push_back({conn, size, rand_upper});
+    if (servers_.size() == num_servers_) {
+      executor_.Post([this](ario::ErrorCode) { StartBench(); },
+                     ario::ErrorCode::kOk);
+    }
+  }
+
+  void OnRdmaReadComplete(RdmaQueuePair *conn, WorkRequestID wrid,
+                          OwnedMemoryBlock buf) override {
+    ++cnt_complete_;
+    if (cnt_complete_ == target_complete_) {
+      executor_.Post(
+          [this, now = Clock::now()](ario::ErrorCode) { TestDone(now); },
+          ario::ErrorCode::kOk);
+    }
+  }
+
+ private:
+  struct ServerInfo {
+    RdmaQueuePair *conn;
+    size_t remote_memory_size;
+    size_t rand_upper;
+  };
+
+  void StartBench() {
+    start_time_ = Clock::now();
+    cnt_done_test_ = 0;
+    target_complete_ = options_.concurrent_reads * num_servers_;
+    BenchMore();
+  }
+
+  void BenchMore() {
+    if (cnt_done_test_ == options_.warmups + options_.tests) {
+      fprintf(stderr, "Benchmark done.\n");
+      BenchmarkDone();
+      return;
+    } else if (cnt_done_test_ == options_.warmups) {
+      fprintf(stderr, "Start to benchmark.\n");
+    } else if (cnt_done_test_ == 0) {
+      fprintf(stderr, "Start to warmup.\n");
+    }
+
+    cnt_complete_ = 0;
+    test_start_time_ = Clock::now();
+    for (const auto &server : servers_) {
+      for (size_t i = 0; i < options_.concurrent_reads; ++i) {
+        size_t offset = gen_() % server.rand_upper;
+        server.conn->AsyncRead(allocator_.Allocate(), offset,
+                               options_.read_size);
+      }
+    }
+  }
+
+  void TestDone(TimePoint test_done_time) {
+    auto elapse_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         test_done_time - test_start_time_)
+                         .count();
+    test_elapse_ns_[cnt_done_test_] = elapse_ns;
+    ++cnt_done_test_;
+    ReportProgress(false);
+    BenchMore();
+  }
+
+  void BenchmarkDone() {
+    executor_.StopEventLoop();
+    ReportProgress(true);
+
+    std::sort(test_elapse_ns_.begin(), test_elapse_ns_.end());
+    auto pp = [this](double p) {
+      size_t idx = std::floor(test_elapse_ns_.size() * p / 100.);
+      double latency_us = test_elapse_ns_[idx] / 1e3;
+      double throughput_gbps = target_complete_ * options_.read_size /
+                               (test_elapse_ns_[idx] / 1e9) / 1e9;
+      printf("p%-5.2f: %4.0f us (%6.3f Gbps)\n", p, latency_us,
+             throughput_gbps);
+    };
+    pp(50);
+    pp(75);
+    pp(90);
+    pp(95);
+    pp(99);
+    pp(99.5);
+    pp(99.9);
+    pp(99.95);
+    pp(99.99);
+  }
+
+  void ReportProgress(bool force) {
+    auto now = Clock::now();
+    auto last_second = std::chrono::duration_cast<std::chrono::seconds>(
+                           last_report_time_ - start_time_)
+                           .count();
+    auto now_second =
+        std::chrono::duration_cast<std::chrono::seconds>(now - start_time_)
+            .count();
+    if (now_second == last_second && !force) {
+      return;
+    }
+    auto nanos = (now - start_time_).count();
+    auto seconds = nanos / 1e9;
+    auto total = options_.warmups + options_.tests;
+    auto pct = cnt_done_test_ * 100 / total;
+    auto rps = cnt_done_test_ * target_complete_ / seconds;
+    fprintf(stderr, "[%3lu%%] Sent %lu/%lu requests in %.6fs. (avg %.3f rps)\n",
+            pct, cnt_done_test_, total, seconds, rps);
+    last_report_time_ = now;
+  }
+
+  Options options_;
+  ario::EpollExecutor &executor_;
+  ario::MemoryBlockAllocator &allocator_;
+  size_t num_servers_;
+  std::vector<ServerInfo> servers_;
+  std::mt19937 gen_;
+  std::vector<int64_t> test_elapse_ns_;
+  TimePoint start_time_;
+  TimePoint last_report_time_;
+
+  size_t cnt_done_test_;
+  size_t target_complete_;
+  size_t cnt_complete_;
+  TimePoint test_start_time_;
+};
+
+void BenchIncastMain(int argc, char **argv) {
+  if (argc < 8) DieUsage(argv[0]);
+  std::string dev_name = argv[2];
+  IncastHandler::Options options;
+  options.read_size = std::stoul(argv[3]);
+  options.concurrent_reads = std::stoul(argv[4]);
+  options.warmups = std::stoul(argv[5]);
+  options.tests = std::stoul(argv[6]);
+  std::vector<std::pair<std::string, uint16_t>> servers;
+  for (int i = 7; i < argc; ++i) {
+    std::string s(argv[i]);
+    auto pos = s.find(':');
+    if (pos == std::string::npos) die("Failed to parse server address: " + s);
+    auto ip = s.substr(0, pos);
+    uint16_t port = std::stoul(s.substr(pos + 1));
+    servers.push_back({ip, port});
+  }
+
+  EpollExecutor executor;
+  MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
+  IncastHandler handler(options, executor, buf, servers.size());
+  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop, &handler,
+                      &buf);
+  for (const auto &p : servers) {
+    fprintf(stderr, "Connecting to %s:%u\n", p.first.c_str(), p.second);
+    manager.ConnectTcp(p.first, p.second);
+  }
+  fprintf(stderr, "Waiting for memory regions\n");
+  executor.RunEventLoop();
+}
+
 class TimerBencher {
  public:
   TimerBencher(int duration_sec, int count)
@@ -851,6 +1047,8 @@ int main(int argc, char **argv) {
     BenchSendMain(argc, argv);
   } else if (std::string("benchread") == argv[1]) {
     BenchReadMain(argc, argv);
+  } else if (std::string("benchincast") == argv[1]) {
+    BenchIncastMain(argc, argv);
   } else if (std::string("benchtimer") == argv[1]) {
     BenchTimerMain(argc, argv);
   } else if (std::string("tcpserver") == argv[1]) {

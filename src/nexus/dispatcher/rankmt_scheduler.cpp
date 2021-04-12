@@ -161,8 +161,8 @@ void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
   const auto& inputs = batch_policy_.inputs();
   if (!inputs.empty()) {
     auto elapse = EstimateExecElapse(profile_, inputs.size());
-    latest_exec_time = inputs[0]->deadline - elapse;
-    deadline = inputs[0]->deadline;
+    latest_exec_time = (*inputs.begin())->deadline - elapse;
+    deadline = (*inputs.begin())->deadline;
     drop_timer_.SetTimeout(deadline);
     drop_timer_.AsyncWait([this](ario::ErrorCode) { OnDropTimer(); });
   } else {

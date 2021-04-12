@@ -25,7 +25,7 @@ class IncrementalBatchPolicy {
   const std::vector<std::shared_ptr<QueryContext>>& drops() const {
     return drops_;
   }
-  std::vector<std::shared_ptr<QueryContext>> PopInputs();
+  SortedQueryList PopInputs();
   std::vector<std::shared_ptr<QueryContext>> PopDrops();
   void SetProfile(const ModelProfile& profile);
   void Update(TimePoint exec_time, uint32_t target_batch_size);

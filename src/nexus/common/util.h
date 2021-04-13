@@ -20,6 +20,8 @@ void Memcpy(void *dst, const Device *dst_device, const void *src,
 // GetIpAddress returns the first IP addres that is not localhost (127.0.0.1)
 std::string GetIpAddress(const std::string &prefix);
 
+void PinCpu(int cpu);
+
 }  // namespace nexus
 
 #endif  // NEXUS_COMMON_UTIL_H_

@@ -666,8 +666,6 @@ MultiThreadRankScheduler::RequestEntrance
 MultiThreadRankScheduler::AddModelSession(
     ario::EpollExecutor* model_thread_executor, ModelSession model_session) {
   CHECK_NE(model_thread_executor, nullptr);
-  std::lock_guard<std::mutex> lock(mutex_);
-
   if (!gpu_info_for_profile_.has_value()) {
     LOG(FATAL) << "Add backend before adding model sessions.";
   }

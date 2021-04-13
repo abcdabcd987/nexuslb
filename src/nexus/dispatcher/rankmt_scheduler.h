@@ -246,6 +246,10 @@ class MultiThreadRankScheduler {
 
   class RequestEntrance {
    public:
+    RequestEntrance(const RequestEntrance& other) = default;
+    RequestEntrance& operator=(const RequestEntrance& other) = default;
+    RequestEntrance(RequestEntrance&& other) = default;
+    RequestEntrance& operator=(RequestEntrance&& other) = default;
     CtrlStatus EnqueueQuery(DispatchRequest&& request);
 
    private:
@@ -276,7 +280,6 @@ class MultiThreadRankScheduler {
   ario::EpollExecutor& executor_;
   RankThread rank_thread_;
 
-  std::mutex mutex_;
   // PERFORMANCE: model_session_id
   std::unordered_map<std::string, std::unique_ptr<ModelThread>> model_threads_;
   // TODO: GPU heterogeneity.

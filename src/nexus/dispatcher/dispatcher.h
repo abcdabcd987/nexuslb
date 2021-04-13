@@ -16,10 +16,14 @@
 #include <unordered_set>
 #include <utility>
 
+#include "ario/epoll.h"
 #include "nexus/common/connection.h"
 #include "nexus/common/rdma_sender.h"
 #include "nexus/common/server_base.h"
 #include "nexus/common/typedef.h"
+#include "nexus/dispatcher/global_id_issuer.h"
+#include "nexus/dispatcher/model_worker.h"
+#include "nexus/dispatcher/rankmt_scheduler.h"
 #include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
 
@@ -32,8 +36,7 @@ class ModelSessionContext;
 
 class Dispatcher {
  public:
-  Dispatcher(std::string rdma_dev, uint16_t port, std::vector<int> pin_cpus,
-             std::unique_ptr<Scheduler::Builder> scheduler_builder);
+  Dispatcher(std::string rdma_dev, uint16_t port, std::vector<int> pin_cpus);
   virtual ~Dispatcher();
 
   void Run();
@@ -57,25 +60,23 @@ class Dispatcher {
     Dispatcher& outer_;
   };
 
-  void HandleDispatch(DispatchRequest&& request, DispatchReply* reply,
-                      long dispatcher_recv_ns);
   void HandleRegister(ario::RdmaQueuePair* conn, const RegisterRequest& request,
                       RegisterReply* reply);
   void HandleUnregister(const UnregisterRequest& request, RpcReply* reply);
   void HandleLoadModel(const LoadModelRequest& request, LoadModelReply* reply);
   void HandleInformAlive(const KeepAliveRequest& request);
 
-  friend class DispatcherAccessorImpl;
+  ModelWorker& GetModelWorker(const ModelSession& model_session) const;
+
   std::string rdma_dev_;
   uint16_t tcp_server_port_;
-  const std::vector<int> pin_cpus_;
+  std::vector<int> pin_cpus_;
 
-  ario::EpollExecutor executor_;
+  ario::EpollExecutor main_executor_;
   RdmaHandler rdma_handler_;
   ario::MemoryBlockAllocator small_buffers_;
   ario::RdmaManager rdma_;
   RdmaSender rdma_sender_;
-  std::thread rdma_ev_thread_;
 
   /*! \brief Indicator whether the dispatcher is running */
   std::atomic_bool running_;
@@ -83,23 +84,20 @@ class Dispatcher {
   uint32_t beacon_interval_sec_;
   /*! \brief Frontend node ID */
   NodeId node_id_;
+  GlobalIdIssuer global_id_issuer_;
   /*! \brief Mapping from frontend node id to frontend client */
-  std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>>
-      frontends_ /* GUARDED_BY(mutex_) */;
+  std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
   /*! \brief Mapping from backend node id to backend client */
-  std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>>
-      backends_ /* GUARDED_BY(mutex_) */;
+  std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
   /*! \brief Mapping from model session ID to session information */
   std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
-      sessions_ /* GUARDED_BY(mutex_) */;
+      sessions_;
 
-  // Big lock
-  std::mutex mutex_;
-  // Maps model session ID to backend list of the model
-  std::atomic<uint64_t> next_global_id_{1};
-
-  std::unique_ptr<Scheduler> scheduler_;
-  std::vector<std::thread> scheduler_threads_;
+  // Scheduler
+  ario::EpollExecutor rank_thread_executor_;
+  MultiThreadRankScheduler scheduler_;
+  std::thread rank_thread_;
+  std::vector<std::unique_ptr<ModelWorker>> model_workers_;
 };
 
 }  // namespace dispatcher

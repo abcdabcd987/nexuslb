@@ -2,6 +2,7 @@
 #include <glog/logging.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <pthread.h>
 
 #include <iomanip>
 #include <sstream>
@@ -131,6 +132,14 @@ std::string GetIpAddress(const std::string& prefix) {
     }
   }
   return "";
+}
+
+void PinCpu(int cpu) {
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(cpu, &cpuset);
+  int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+  LOG_IF(FATAL, rc != 0) << "Error calling pthread_setaffinity_np: " << rc;
 }
 
 }  // namespace nexus

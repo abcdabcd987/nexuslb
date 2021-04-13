@@ -132,17 +132,17 @@ set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 ###### dispatcher ######
 add_library(dispatcher_obj
-    src/nexus/dispatcher/accessor_impl.cpp
     src/nexus/dispatcher/backend_delegate_impl.cpp
     src/nexus/dispatcher/batch_policy.cpp
     src/nexus/dispatcher/batch_size_estimator.cpp
-    src/nexus/dispatcher/delayed_scheduler.cpp
+#     src/nexus/dispatcher/delayed_scheduler.cpp
     src/nexus/dispatcher/dispatcher.cpp
     src/nexus/dispatcher/frontend_delegate_impl.cpp
+    src/nexus/dispatcher/model_worker.cpp
     src/nexus/dispatcher/query_context.cpp
-    src/nexus/dispatcher/rank_scheduler.cpp
+#     src/nexus/dispatcher/rank_scheduler.cpp
     src/nexus/dispatcher/rankmt_scheduler.cpp
-    src/nexus/dispatcher/round_robin_scheduler.cpp
+#     src/nexus/dispatcher/round_robin_scheduler.cpp
     src/nexus/dispatcher/session_context.cpp
 )
 target_link_libraries(dispatcher_obj PUBLIC common)
@@ -307,13 +307,13 @@ endif()
 
 
 ###### tools/bench_dispatcher ######
-add_executable(bench_dispatcher
-    tools/bench_dispatcher/bench_dispatcher_main.cpp
-    tools/bench_dispatcher/fake_accessor.cpp
-)
-target_include_directories(bench_dispatcher PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/tools)
-target_link_libraries(bench_dispatcher PUBLIC dispatcher_obj)
+# add_executable(bench_dispatcher
+#     tools/bench_dispatcher/bench_dispatcher_main.cpp
+#     tools/bench_dispatcher/fake_accessor.cpp
+# )
+# target_include_directories(bench_dispatcher PUBLIC
+#         ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+# target_link_libraries(bench_dispatcher PUBLIC dispatcher_obj)
 
 
 
@@ -329,13 +329,13 @@ target_link_libraries(bench_rankmt PUBLIC dispatcher_obj)
 
 
 ###### tools/run_dispatcher ######
-add_executable(run_dispatcher
-    tools/bench_dispatcher/run_dispatcher_main.cpp
-    tools/bench_dispatcher/fake_accessor.cpp
-)
-target_include_directories(run_dispatcher PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/tools)
-target_link_libraries(run_dispatcher PUBLIC dispatcher_obj)
+# add_executable(run_dispatcher
+#     tools/bench_dispatcher/run_dispatcher_main.cpp
+#     tools/bench_dispatcher/fake_accessor.cpp
+# )
+# target_include_directories(run_dispatcher PUBLIC
+#         ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+# target_link_libraries(run_dispatcher PUBLIC dispatcher_obj)
 
 
 

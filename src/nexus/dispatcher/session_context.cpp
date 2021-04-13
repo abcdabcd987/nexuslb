@@ -1,5 +1,7 @@
 #include "nexus/dispatcher/session_context.h"
 
+#include <glog/logging.h>
+
 namespace nexus {
 namespace dispatcher {
 

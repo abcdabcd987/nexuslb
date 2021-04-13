@@ -1,57 +1,53 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#include "ario/epoll.h"
-#endif
+#include "nexus/dispatcher/dispatcher.h"
 
 #include <glog/logging.h>
 #include <pthread.h>
 #include <sys/socket.h>
 
 #include <algorithm>
+#include <boost/functional/hash.hpp>
 #include <chrono>
+#include <memory>
 #include <sstream>
+#include <string>
 
+#include "ario/epoll.h"
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
-#include "nexus/dispatcher/accessor_impl.h"
+#include "nexus/common/util.h"
 #include "nexus/dispatcher/backend_delegate_impl.h"
 #include "nexus/dispatcher/delayed_scheduler.h"
-#include "nexus/dispatcher/dispatcher.h"
 #include "nexus/dispatcher/frontend_delegate_impl.h"
+#include "nexus/dispatcher/model_worker.h"
 #include "nexus/dispatcher/session_context.h"
 #include "nexus/proto/control.pb.h"
-
-namespace {
-void PinCpu(pthread_t thread, int cpu) {
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  CPU_SET(cpu, &cpuset);
-  int rc = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-  LOG_IF(FATAL, rc != 0) << "Error calling pthread_setaffinity_np: " << rc;
-}
-}  // namespace
 
 namespace nexus {
 namespace dispatcher {
 
 Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
-                       std::vector<int> pin_cpus,
-                       std::unique_ptr<Scheduler::Builder> scheduler_builder)
+                       std::vector<int> pin_cpus)
     : rdma_dev_(std::move(rdma_dev)),
       tcp_server_port_(port),
       pin_cpus_(std::move(pin_cpus)),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
-      rdma_(rdma_dev_, &executor_, ario::PollerType::kBlocking, &rdma_handler_,
-            &small_buffers_),
+      rdma_(rdma_dev_, &main_executor_, ario::PollerType::kBlocking,
+            &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
-      scheduler_(
-          scheduler_builder->Build(std::unique_ptr<DispatcherAccessorImpl>(
-              new DispatcherAccessorImpl(*this)))) {
-  CHECK(pin_cpus_.empty()) << "Currently CPU pinning is not supported.";
+      scheduler_(&main_executor_, &rank_thread_executor_) {
+  // Don't Pin the main thread.
+  // One CPU for the RankThread. The rest for ModelThreads.
+  CHECK_GT(pin_cpus_.size(), 1) << "Need at least two cpus";
+  for (size_t i = 1; i < pin_cpus_.size(); ++i) {
+    auto m = std::make_unique<ModelWorker>(
+        pin_cpus_[i], rdma_dev_, tcp_server_port_ + i, &global_id_issuer_);
+    model_workers_.push_back(std::move(m));
+  }
+  LOG(INFO) << "Allocated " << model_workers_.size() << " ModelWorkers";
 }
 
 Dispatcher::~Dispatcher() {
@@ -64,15 +60,24 @@ void Dispatcher::Run() {
   running_ = true;
 
   rdma_.ListenTcp(tcp_server_port_);
-  rdma_ev_thread_ = std::thread(&ario::EpollExecutor::RunEventLoop, &executor_);
-
-  // Start a single threaded scheduler.
-  scheduler_threads_.emplace_back([this] { scheduler_->RunAsWorker(); });
-
-  // Nothing to do here
-  for (;;) {
-    std::this_thread::sleep_for(std::chrono::hours(24));
+  rank_thread_ = std::thread([this] {
+    std::string s;
+    if (!pin_cpus_.empty()) {
+      s = "Pinned on CPU " + std::to_string(pin_cpus_[0]);
+      PinCpu(pin_cpus_[0]);
+    } else {
+      s = "Not CPU pinned.";
+    }
+    LOG(INFO) << "Starting RankThread. " << s;
+    rank_thread_executor_.RunEventLoop();
+  });
+  for (auto& model_worker : model_workers_) {
+    model_worker->Start();
   }
+
+  // Use the main thread for the main executor
+  LOG(INFO) << "Main thread goes into the event loop. Not CPU pinned.";
+  main_executor_.RunEventLoop();
 }
 
 void Dispatcher::Stop() {
@@ -80,15 +85,21 @@ void Dispatcher::Stop() {
   running_ = false;
 
   // Stop everything
-  executor_.StopEventLoop();
   rdma_.Stop();
-  scheduler_->Stop();
+  for (auto& w : model_workers_) {
+    w->Stop();
+  }
+  scheduler_.Stop();
+  rank_thread_executor_.StopEventLoop();
+  main_executor_.StopEventLoop();
 
   // Join all threads.
-  for (auto& thread : scheduler_threads_) {
-    thread.join();
+  LOG(INFO) << "Joining all threads";
+  for (auto& w : model_workers_) {
+    w->Join();
   }
-  rdma_ev_thread_.join();
+  rank_thread_.join();
+  LOG(INFO) << "Dispatcher stopped";
 }
 
 Dispatcher::RdmaHandler::RdmaHandler(Dispatcher& outer) : outer_(outer) {}
@@ -150,14 +161,6 @@ void Dispatcher::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
     }
-    case ControlMessage::MessageCase::kDispatch: {
-      // Dispatcher <- Frontend
-      ControlMessage resp;
-      outer_.HandleDispatch(std::move(*req.mutable_dispatch()),
-                            resp.mutable_dispatch_reply(), dispatcher_recv_ns);
-      outer_.rdma_sender_.SendMessage(conn, resp);
-      break;
-    }
     case ControlMessage::MessageCase::kLoadModelReply: {
       // Dispatcher <- Backend
       auto status = req.load_model_reply().status();
@@ -183,6 +186,8 @@ void Dispatcher::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
       }
       break;
     }
+    case ControlMessage::MessageCase::kDispatch:
+      [[fallthrough]];
     default:
       LOG(FATAL) << "Unhandled message: " << req.DebugString();
   }
@@ -198,30 +203,6 @@ void Dispatcher::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
   LOG(ERROR) << "TODO: Dispatcher::RdmaHandler::OnError";
 }
 
-void Dispatcher::HandleDispatch(DispatchRequest&& request, DispatchReply* reply,
-                                long dispatcher_recv_ns) {
-  *reply->mutable_model_session() = request.model_session();
-  reply->set_query_id(request.query_id());
-  auto* query_without_input = request.mutable_query_without_input();
-  auto* clock = query_without_input->mutable_clock();
-  clock->set_dispatcher_recv_ns(dispatcher_recv_ns);
-
-  // Update punch clock
-  auto dispatcher_sched_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          Clock::now().time_since_epoch())
-          .count();
-  clock->set_dispatcher_sched_ns(dispatcher_sched_ns);
-
-  // Assign GlobalId
-  auto global_id = next_global_id_.fetch_add(1);
-  query_without_input->set_global_id(global_id);
-
-  // Enqueue query
-  auto status = scheduler_->EnqueueQuery(std::move(request));
-  reply->set_status(status);
-}
-
 void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
                                 const RegisterRequest& request,
                                 RegisterReply* reply) {
@@ -231,23 +212,20 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
       auto frontend = std::make_shared<FrontendDelegateImpl>(
           request.node_id(), conn->peer_ip(), conn->peer_tcp_port(),
           beacon_interval_sec_, conn, rdma_sender_);
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto frontend_id = NodeId(frontend->node_id());
-        if (frontends_.find(frontend_id) != frontends_.end()) {
-          reply->set_status(CtrlStatus::CTRL_FRONTEND_NODE_ID_CONFLICT);
-          return;
-        }
-        frontends_[frontend_id] = frontend;
+      auto frontend_id = NodeId(frontend->node_id());
+      if (frontends_.find(frontend_id) != frontends_.end()) {
+        reply->set_status(CtrlStatus::CTRL_FRONTEND_NODE_ID_CONFLICT);
+        return;
       }
+      frontends_[frontend_id] = frontend;
+
+      // Add frontend for the scheduler.
+      scheduler_.AddFrontend(frontend_id, frontend);
 
       // UpdateBackendList
       BackendListUpdates update;
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (auto iter : backends_) {
-          update.add_backends()->CopyFrom(iter.second->backend_info());
-        }
+      for (auto iter : backends_) {
+        update.add_backends()->CopyFrom(iter.second->backend_info());
       }
       VLOG(1) << "Send UpdateBackendList: frontend_id=" << frontend->node_id();
       frontend->UpdateBackendList(std::move(update));
@@ -266,23 +244,17 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
           request.gpu_available_memory(), beacon_interval_sec_, conn,
           rdma_sender_);
       auto backend_id = NodeId(backend->node_id());
-      std::unordered_map<std::string, std::shared_ptr<ModelSessionContext>>
-          sessions;
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (backends_.find(backend_id) != backends_.end()) {
-          reply->set_status(CtrlStatus::CTRL_BACKEND_NODE_ID_CONFLICT);
-          return;
-        }
-        backends_[backend_id] = backend;
-        sessions = sessions_;
+      if (backends_.find(backend_id) != backends_.end()) {
+        reply->set_status(CtrlStatus::CTRL_BACKEND_NODE_ID_CONFLICT);
+        return;
       }
+      backends_[backend_id] = backend;
 
       // Add backend for the scheduler.
-      scheduler_->AddBackend(backend_id);
+      scheduler_.AddBackend(backend_id, backend);
 
       // Load Models
-      for (auto iter : sessions) {
+      for (auto iter : sessions_) {
         const auto& model_session = iter.second->model_session();
         auto profile_id = ModelSessionToProfileID(model_session);
         auto* profile = ModelDatabase::Singleton().GetModelProfile(
@@ -306,12 +278,7 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
       // UpdateBackendList
       BackendListUpdates update;
       update.add_backends()->CopyFrom(backend->backend_info());
-      decltype(frontends_) frontends;
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        frontends = frontends_;
-      }
-      for (auto iter : frontends) {
+      for (auto iter : frontends_) {
         VLOG(1) << "UpdateBackendList (adding backend_id=" << backend->node_id()
                 << "): frontend_id=" << iter.second->node_id();
         iter.second->UpdateBackendList(std::move(update));
@@ -354,24 +321,24 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
   auto model_sess_id = ModelSessionToString(request.model_session());
   VLOG(1) << "HandleLoadModel: model_sess_id=" << model_sess_id;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    {
-      auto it = sessions_.find(model_sess_id);
-      if (it != sessions_.end()) {
-        // Model already loaded. Just skip.
-        reply->set_status(CtrlStatus::CTRL_OK);
-        return;
-      }
+    auto it = sessions_.find(model_sess_id);
+    if (it != sessions_.end()) {
+      // Model already loaded. Just skip.
+      reply->set_status(CtrlStatus::CTRL_OK);
+      return;
     }
-    reply->set_status(CtrlStatus::CTRL_OK);
-
-    // Add the model session
-    auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
-    sessions_[model_sess_id] = sctx;
   }
+  reply->set_status(CtrlStatus::CTRL_OK);
+
+  // Add the model session
+  auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
+  sessions_[model_sess_id] = sctx;
 
   // Add model session for the scheduler
-  scheduler_->AddModelSession(request.model_session());
+  auto& model_worker = GetModelWorker(request.model_session());
+  auto entrance = scheduler_.AddModelSession(model_worker.executor(),
+                                             request.model_session());
+  model_worker.AddModelSession(model_sess_id, entrance);
 
   // Ask backends to load the model
   auto profile_id = ModelSessionToProfileID(request.model_session());
@@ -396,7 +363,6 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
 }
 
 void Dispatcher::HandleInformAlive(const KeepAliveRequest& request) {
-  std::lock_guard<std::mutex> lock(mutex_);
   auto node_id = NodeId(request.node_id());
   switch (request.node_type()) {
     case NodeType::FRONTEND_NODE: {
@@ -425,6 +391,15 @@ void Dispatcher::HandleInformAlive(const KeepAliveRequest& request) {
                  << " node_id=" << request.node_id();
     }
   }
+}
+
+ModelWorker& Dispatcher::GetModelWorker(
+    const ModelSession& model_session) const {
+  size_t h = 0;
+  boost::hash_combine(h, model_session.framework());
+  boost::hash_combine(h, model_session.model_name());
+  boost::hash_combine(h, model_session.latency_sla());
+  return *model_workers_.at(h % model_workers_.size());
 }
 
 }  // namespace dispatcher

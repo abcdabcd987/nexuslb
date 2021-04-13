@@ -460,11 +460,9 @@ class DispatcherBencher {
   }
 
   void BuildMultiThreadRankScheduler() {
-    auto accessor = std::make_unique<FakeDispatcherAccessor>();
-    accessor_ = accessor.get();
     MultiThreadRankScheduler::Builder builder(main_executor_.get(),
                                               rank_executor_.get());
-    scheduler_ = builder.Build(std::move(accessor));
+    scheduler_ = builder.Build();
   }
 
   void BuildFakeServers() {
@@ -472,10 +470,10 @@ class DispatcherBencher {
     for (int i = 0; i < options_.num_backends; ++i) {
       auto backend_id = next_backend_id++;
       auto backend = std::make_shared<FakeBackendDelegate>(
-          *main_executor_, backend_id, accessor_);
-      accessor_->AddBackend(NodeId(backend_id), backend);
+          *main_executor_, backend_id, &accessor_);
+      accessor_.AddBackend(NodeId(backend_id), backend);
+      scheduler_->AddBackend(NodeId(backend_id), backend);
       backends_.push_back(backend);
-      scheduler_->AddBackend(NodeId(backend_id));
     }
 
     for (size_t i = 0; i < workloads_.size(); ++i) {
@@ -483,7 +481,8 @@ class DispatcherBencher {
       uint32_t frontend_id = 60001 + i;
       auto frontend = std::make_shared<FakeFrontendDelegate>(
           *this, frontend_id, w.model_session, i);
-      accessor_->AddFrontend(NodeId(frontend_id), frontend);
+      accessor_.AddFrontend(NodeId(frontend_id), frontend);
+      scheduler_->AddFrontend(NodeId(frontend_id), frontend);
       frontends_.push_back(frontend);
 
       if (options_.multithread) {
@@ -577,7 +576,7 @@ class DispatcherBencher {
   std::vector<std::shared_ptr<ario::EpollExecutor>> model_executors_;
   std::unique_ptr<MultiThreadRankScheduler> scheduler_;
   std::vector<MultiThreadRankScheduler::RequestEntrance> request_entrances_;
-  FakeDispatcherAccessor* accessor_;  // Owned by scheduler_
+  FakeDispatcherAccessor accessor_;
   std::vector<std::shared_ptr<FakeBackendDelegate>> backends_;
   std::vector<std::shared_ptr<FakeFrontendDelegate>> frontends_;
 

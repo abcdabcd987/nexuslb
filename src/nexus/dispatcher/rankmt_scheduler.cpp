@@ -51,17 +51,19 @@ std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
 
 // ============ ModelThread ============
 
-ModelThread::ModelThread(ario::EpollExecutor* executor,
-                         ModelSession model_session,
-                         const ModelProfile& profile, RankThread* rank_thread,
-                         DispatcherAccessor* dispatcher)
+ModelThread::ModelThread(
+    ario::EpollExecutor* executor, ModelSession model_session,
+    const ModelProfile& profile, RankThread* rank_thread,
+    std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
+    std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends)
     : executor_(*CHECK_NOTNULL(executor)),
       rank_thread_(*CHECK_NOTNULL(rank_thread)),
-      dispatcher_(*CHECK_NOTNULL(dispatcher)),
       model_session_(std::move(model_session)),
       model_session_id_(ModelSessionToString(model_session_)),
       profile_(profile),
       stop_flag_(false),
+      frontends_(std::move(frontends)),
+      backends_(std::move(backends)),
       bse_(1.0, 0.0),
       rps_meter_(model_session_.latency_sla() * 1e-3, kRpsMeterHistoryLength,
                  Clock::now()),
@@ -89,6 +91,32 @@ void ModelThread::Stop(std::mutex& mutex, size_t& cnt,
         }
         cv.notify_all();
       },
+      ario::ErrorCode::kOk);
+}
+
+void ModelThread::PostAddBackend(NodeId backend_id,
+                                 std::shared_ptr<BackendDelegate> delegate) {
+  executor_.Post([this, backend_id, delegate = std::move(delegate)](
+                     ario::ErrorCode) { backends_[backend_id] = delegate; },
+                 ario::ErrorCode::kOk);
+}
+
+void ModelThread::PostAddFrontend(NodeId frontend_id,
+                                  std::shared_ptr<FrontendDelegate> delegate) {
+  executor_.Post([this, frontend_id, delegate = std::move(delegate)](
+                     ario::ErrorCode) { frontends_[frontend_id] = delegate; },
+                 ario::ErrorCode::kOk);
+}
+
+void ModelThread::PostRemoveBackend(NodeId backend_id) {
+  executor_.Post(
+      [this, backend_id](ario::ErrorCode) { backends_.erase(backend_id); },
+      ario::ErrorCode::kOk);
+}
+
+void ModelThread::PostRemoveFrontend(NodeId frontend_id) {
+  executor_.Post(
+      [this, frontend_id](ario::ErrorCode) { frontends_.erase(frontend_id); },
       ario::ErrorCode::kOk);
 }
 
@@ -195,15 +223,16 @@ void ModelThread::SendDroppedQueries(
   for (auto& qctx : drops) {
     auto frontend_id =
         NodeId(qctx->request.query_without_input().frontend_id());
-    auto frontend = dispatcher_.GetFrontend(frontend_id);
     const auto& model_session_id =
         qctx->request.query_without_input().model_session_id();
-    if (!frontend) {
+    auto iter = frontends_.find(frontend_id);
+    if (iter == frontends_.end()) {
       LOG(ERROR) << "Cannot find frontend. frontend_id=" << frontend_id.t
                  << ", global_id=" << qctx->global_id.t
                  << ", model_session=" << model_session_id;
       continue;
     }
+    auto& frontend = iter->second;
     dispatch_reply.Clear();
     ParseModelSession(model_session_id, dispatch_reply.mutable_model_session());
     dispatch_reply.set_query_id(qctx->request.query_without_input().query_id());
@@ -279,13 +308,15 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
         ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
   }
   // Send to backend
-  auto delegate = dispatcher_.GetBackend(cmd.backend_id);
-  if (!delegate) {
+  auto iter = backends_.find(cmd.backend_id);
+  if (iter != backends_.end()) {
+    auto& delegate = iter->second;
+    delegate->EnqueueBatchPlan(std::move(proto));
+  } else {
     LOG(ERROR) << "Cannot find backend delegate. backend_id="
                << cmd.backend_id.t;
     return;
   }
-  delegate->EnqueueBatchPlan(std::move(proto));
 
   // Update candidate
   UpdateCandidate(exec_time);
@@ -379,49 +410,50 @@ void RankThread::PostAddModelThread(ModelSession model_session,
   executor_.Post(
       [this, model_session = std::move(model_session),
        model_thread](ario::ErrorCode) {
-        DoAddModelThread(std::move(model_session), model_thread);
+        auto model_session_id = ModelSessionToString(model_session);
+        if (model_threads_.count(model_session_id)) {
+          LOG(ERROR) << "ModelThread already exists. model_sesion_id="
+                     << model_session_id;
+          return;
+        }
+        auto& m = *CHECK_NOTNULL(model_thread);
+        model_threads_[model_session_id] =
+            std::unique_ptr<PerModelThreadData>(new PerModelThreadData{
+                m, model_session_id, m.profile(),
+                *CHECK_NOTNULL(m.model_command_queue()),
+                *CHECK_NOTNULL(m.rank_command_queue()), nullptr});
+
+        auto& mdata = *model_threads_[model_session_id];
+        candidate_pool_.Upsert(model_session_id,
+                               std::shared_ptr<CandidateInfo>(new CandidateInfo{
+                                   mdata, ExecutionCandidate::Invalid()}));
       },
       ario::ErrorCode::kOk);
 }
 
-void RankThread::PostAddBackend(
-    NodeId backend_id, std::shared_ptr<BackendDelegate> backend_delegate) {
+void RankThread::PostAddBackend(NodeId backend_id,
+                                std::shared_ptr<BackendDelegate> delegate) {
   executor_.Post(
-      [this, backend_id, backend_delegate](ario::ErrorCode) {
-        DoAddBackend(backend_id, backend_delegate);
+      [this, backend_id, delegate = std::move(delegate)](ario::ErrorCode) {
+        auto bctx = std::make_shared<BackendContext>(backend_id, delegate);
+        if (backends_.count(bctx->backend_id)) {
+          LOG(ERROR) << "Backend already exists. backend_id=" << backend_id;
+          return;
+        }
+        backend_availability_pool_.Upsert(backend_id,
+                                          bctx->next_available_time);
+        backends_[backend_id] = std::move(bctx);
       },
       ario::ErrorCode::kOk);
 }
 
-void RankThread::DoAddModelThread(ModelSession model_session,
-                                  ModelThread* model_thread) {
-  auto model_session_id = ModelSessionToString(model_session);
-  if (model_threads_.count(model_session_id)) {
-    LOG(ERROR) << "ModelThread already exists. model_sesion_id="
-               << model_session_id;
-    return;
-  }
-  auto& m = *CHECK_NOTNULL(model_thread);
-  model_threads_[model_session_id] = std::unique_ptr<PerModelThreadData>(
-      new PerModelThreadData{m, model_session_id, m.profile(),
-                             *CHECK_NOTNULL(m.model_command_queue()),
-                             *CHECK_NOTNULL(m.rank_command_queue()), nullptr});
-
-  auto& mdata = *model_threads_[model_session_id];
-  candidate_pool_.Upsert(model_session_id,
-                         std::shared_ptr<CandidateInfo>(new CandidateInfo{
-                             mdata, ExecutionCandidate::Invalid()}));
-}
-
-void RankThread::DoAddBackend(
-    NodeId backend_id, std::shared_ptr<BackendDelegate> backend_delegate) {
-  auto bctx = std::make_shared<BackendContext>(backend_id, backend_delegate);
-  if (backends_.count(bctx->backend_id)) {
-    LOG(ERROR) << "Backend already exists. backend_id=" << backend_id;
-    return;
-  }
-  backend_availability_pool_.Upsert(backend_id, bctx->next_available_time);
-  backends_[backend_id] = std::move(bctx);
+void RankThread::PostRemoveBackend(NodeId backend_id) {
+  executor_.Post(
+      [this, backend_id](ario::ErrorCode) {
+        backend_availability_pool_.Remove(backend_id);
+        backends_.erase(backend_id);
+      },
+      ario::ErrorCode::kOk);
 }
 
 void RankThread::UpdateActivePlans(TimePoint earliest_exec_time,
@@ -588,18 +620,15 @@ MultiThreadRankScheduler::Builder::Builder(
       rank_thread_executor_(CHECK_NOTNULL(rank_thread_executor)) {}
 
 std::unique_ptr<MultiThreadRankScheduler>
-MultiThreadRankScheduler::Builder::Build(
-    std::unique_ptr<DispatcherAccessor> dispatcher) {
-  return std::make_unique<MultiThreadRankScheduler>(
-      std::move(dispatcher), scheduler_executor_, rank_thread_executor_);
+MultiThreadRankScheduler::Builder::Build() {
+  return std::make_unique<MultiThreadRankScheduler>(scheduler_executor_,
+                                                    rank_thread_executor_);
 }
 
 MultiThreadRankScheduler::MultiThreadRankScheduler(
-    std::unique_ptr<DispatcherAccessor> dispatcher,
     ario::EpollExecutor* scheduler_executor,
     ario::EpollExecutor* rank_thread_executor)
-    : dispatcher_(std::move(dispatcher)),
-      executor_(*CHECK_NOTNULL(scheduler_executor)),
+    : executor_(*CHECK_NOTNULL(scheduler_executor)),
       rank_thread_(rank_thread_executor) {}
 
 MultiThreadRankScheduler::RequestEntrance::RequestEntrance(
@@ -658,31 +687,50 @@ MultiThreadRankScheduler::AddModelSession(
       << gpu_info_for_profile_->gpu_device << "\" with uuid \""
       << gpu_info_for_profile_->gpu_uuid << "\"";
 
-  model_threads_[model_session_id] =
-      std::make_unique<ModelThread>(model_thread_executor, model_session,
-                                    *profile, &rank_thread_, dispatcher_.get());
+  model_threads_[model_session_id] = std::make_unique<ModelThread>(
+      model_thread_executor, model_session, *profile, &rank_thread_, frontends_,
+      backends_);
   auto* model_thread = model_threads_[model_session_id].get();
   rank_thread_.PostAddModelThread(model_session, model_thread);
   return RequestEntrance(model_thread);
 }
 
-void MultiThreadRankScheduler::AddBackend(NodeId backend_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Add backend
-  auto delegate = dispatcher_->GetBackend(backend_id);
-  if (!delegate) {
-    LOG(ERROR) << "Cannot find backend delegate. backend_id=" << backend_id.t;
-    return;
-  }
-
+void MultiThreadRankScheduler::AddBackend(
+    NodeId backend_id, std::shared_ptr<BackendDelegate> delegate) {
   // Workaround: use the first backend's profile as model session profile.
   if (!gpu_info_for_profile_.has_value()) {
     gpu_info_for_profile_ = {delegate->gpu_device(), delegate->gpu_uuid()};
   }
 
-  // Ask RankThread to add the backend
+  // Update RankThread and ModelThread
+  backends_[backend_id] = delegate;
   rank_thread_.PostAddBackend(backend_id, delegate);
+  for (auto& pair : model_threads_) {
+    pair.second->PostAddBackend(backend_id, delegate);
+  }
+}
+
+void MultiThreadRankScheduler::AddFrontend(
+    NodeId frontend_id, std::shared_ptr<FrontendDelegate> delegate) {
+  frontends_[frontend_id] = delegate;
+  for (auto& pair : model_threads_) {
+    pair.second->PostAddFrontend(frontend_id, delegate);
+  }
+}
+
+void MultiThreadRankScheduler::RemoveBackend(NodeId backend_id) {
+  backends_.erase(backend_id);
+  rank_thread_.PostRemoveBackend(backend_id);
+  for (auto& pair : model_threads_) {
+    pair.second->PostRemoveBackend(backend_id);
+  }
+}
+
+void MultiThreadRankScheduler::RemoveFrontend(NodeId frontend_id) {
+  frontends_.erase(frontend_id);
+  for (auto& pair : model_threads_) {
+    pair.second->PostRemoveFrontend(frontend_id);
+  }
 }
 
 }  // namespace rankmt

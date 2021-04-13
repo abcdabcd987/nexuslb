@@ -21,10 +21,10 @@
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
 #include "nexus/common/value_ranked_splay_map.h"
-#include "nexus/dispatcher/accessor.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/batch_policy.h"
 #include "nexus/dispatcher/batch_size_estimator.h"
+#include "nexus/dispatcher/frontend_delegate.h"
 #include "nexus/dispatcher/query_context.h"
 #include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
@@ -69,9 +69,11 @@ using RankCommand = std::variant<UpdateCandidateCommand, UpdateBackendCommand>;
 
 class ModelThread {
  public:
-  ModelThread(ario::EpollExecutor* executor, ModelSession model_session,
-              const ModelProfile& profile, RankThread* rank_thread,
-              DispatcherAccessor* dispatcher);
+  ModelThread(
+      ario::EpollExecutor* executor, ModelSession model_session,
+      const ModelProfile& profile, RankThread* rank_thread,
+      std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
+      std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends);
   ModelThread(const ModelThread& other) = delete;
   ModelThread& operator=(const ModelThread& other) = delete;
   ModelThread(ModelThread&& other) = delete;
@@ -91,6 +93,14 @@ class ModelThread {
   CtrlStatus EnqueueQuery(DispatchRequest&& request);
   void PostCommand();
 
+  // Control plane commands
+  void PostAddBackend(NodeId backend_id,
+                      std::shared_ptr<BackendDelegate> delegate);
+  void PostAddFrontend(NodeId frontend_id,
+                       std::shared_ptr<FrontendDelegate> delegate);
+  void PostRemoveBackend(NodeId backend_id);
+  void PostRemoveFrontend(NodeId frontend_id);
+
  private:
   // Command handlers
   void ExecuteCommand();
@@ -104,7 +114,6 @@ class ModelThread {
 
   ario::EpollExecutor& executor_;
   RankThread& rank_thread_;
-  DispatcherAccessor& dispatcher_;
   ModelSession model_session_;
   std::string model_session_id_;
   // TODO: GPU performance heterogeneity
@@ -112,6 +121,8 @@ class ModelThread {
   bool stop_flag_;
   moodycamel::ReaderWriterQueue<ModelCommand> model_command_queue_;
   moodycamel::ReaderWriterQueue<RankCommand> rank_command_queue_;
+  std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
+  std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
   BatchSizeEstimator bse_;
   RpsMeter rps_meter_;
   SortedQueryList unprocessed_queries_;
@@ -133,11 +144,12 @@ class RankThread {
 
   ario::EpollExecutor& executor() const { return executor_; }
 
-  // Commands from the scheduler
+  // Control plane commands
   void PostAddModelThread(ModelSession model_session,
                           ModelThread* model_thread);
   void PostAddBackend(NodeId backend_id,
-                      std::shared_ptr<BackendDelegate> backend_delegate);
+                      std::shared_ptr<BackendDelegate> delegate);
+  void PostRemoveBackend(NodeId backend_id);
 
   // Commands from model threads
   void PostCommandFromModelThread(const std::string* ptr_model_session_id);
@@ -185,11 +197,6 @@ class RankThread {
     ario::Timer schedule_timer;
   };
 
-  // Handlers for commands from the scheduler
-  void DoAddModelThread(ModelSession model_session, ModelThread* model_thread);
-  void DoAddBackend(NodeId backend_id,
-                    std::shared_ptr<BackendDelegate> backend_delegate);
-
   // Handlers for commands from model threads
   void ExecuteCommand(const std::string* ptr_model_session_id);
   void DoUpdateCandidateCommand(UpdateCandidateCommand& cmd,
@@ -230,8 +237,7 @@ class MultiThreadRankScheduler {
    public:
     explicit Builder(ario::EpollExecutor* scheduler_executor,
                      ario::EpollExecutor* rank_thread_executor);
-    std::unique_ptr<MultiThreadRankScheduler> Build(
-        std::unique_ptr<DispatcherAccessor> dispatcher);
+    std::unique_ptr<MultiThreadRankScheduler> Build();
 
    private:
     ario::EpollExecutor* scheduler_executor_;
@@ -249,14 +255,17 @@ class MultiThreadRankScheduler {
     ModelThread* model_thread_;
   };
 
-  MultiThreadRankScheduler(std::unique_ptr<DispatcherAccessor> dispatcher,
-                           ario::EpollExecutor* scheduler_executor,
+  MultiThreadRankScheduler(ario::EpollExecutor* scheduler_executor,
                            ario::EpollExecutor* rank_thread_executor);
   ~MultiThreadRankScheduler();
   void Stop();
   [[nodiscard]] RequestEntrance AddModelSession(
       ario::EpollExecutor* model_thread_executor, ModelSession model_session);
-  void AddBackend(NodeId backend_id);
+  void AddBackend(NodeId backend_id, std::shared_ptr<BackendDelegate> delegate);
+  void AddFrontend(NodeId frontend_id,
+                   std::shared_ptr<FrontendDelegate> delegate);
+  void RemoveBackend(NodeId backend_id);
+  void RemoveFrontend(NodeId frontend_id);
 
  private:
   struct GpuInfoForProfile {
@@ -264,7 +273,6 @@ class MultiThreadRankScheduler {
     std::string gpu_uuid;
   };
 
-  std::unique_ptr<DispatcherAccessor> dispatcher_;
   ario::EpollExecutor& executor_;
   RankThread rank_thread_;
 
@@ -273,6 +281,8 @@ class MultiThreadRankScheduler {
   std::unordered_map<std::string, std::unique_ptr<ModelThread>> model_threads_;
   // TODO: GPU heterogeneity.
   std::optional<GpuInfoForProfile> gpu_info_for_profile_;
+  std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
+  std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
 };
 
 }  // namespace rankmt

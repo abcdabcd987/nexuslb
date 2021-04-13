@@ -56,16 +56,6 @@ struct GrantedBackendMessage {
 
 using ModelCommand = std::variant<GrantedBackendMessage>;
 
-struct AddModelThreadCommand {
-  ModelSession model_session;
-  ModelThread* model_thread;
-};
-
-struct AddBackendCommand {
-  NodeId backend_id;
-  std::shared_ptr<BackendDelegate> backend_delegate;
-};
-
 struct UpdateCandidateCommand {
   ExecutionCandidate candidate;
 };
@@ -75,8 +65,7 @@ struct UpdateBackendCommand {
   TimePoint next_available_time;
 };
 
-using RankCommand = std::variant<AddModelThreadCommand, AddBackendCommand,
-                                 UpdateCandidateCommand, UpdateBackendCommand>;
+using RankCommand = std::variant<UpdateCandidateCommand, UpdateBackendCommand>;
 
 class ModelThread {
  public:
@@ -134,9 +123,7 @@ class ModelThread {
 
 class RankThread {
  public:
-  RankThread(
-      ario::EpollExecutor* executor,
-      moodycamel::ReaderWriterQueue<RankCommand>* scheduler_command_queue);
+  explicit RankThread(ario::EpollExecutor* executor);
   RankThread(const RankThread& other) = delete;
   RankThread& operator=(const RankThread& other) = delete;
   RankThread(RankThread&& other) = delete;
@@ -146,7 +133,13 @@ class RankThread {
 
   ario::EpollExecutor& executor() const { return executor_; }
 
-  void PostCommandFromScheduler();
+  // Commands from the scheduler
+  void PostAddModelThread(ModelSession model_session,
+                          ModelThread* model_thread);
+  void PostAddBackend(NodeId backend_id,
+                      std::shared_ptr<BackendDelegate> backend_delegate);
+
+  // Commands from model threads
   void PostCommandFromModelThread(const std::string* ptr_model_session_id);
 
  private:
@@ -192,11 +185,13 @@ class RankThread {
     ario::Timer schedule_timer;
   };
 
-  // Command handlers
-  void ExecuteCommand(moodycamel::ReaderWriterQueue<RankCommand>& queue,
-                      const std::string* ptr_model_session_id);
-  void DoAddModelThreadCommand(AddModelThreadCommand& cmd);
-  void DoAddBackendCommand(AddBackendCommand& cmd);
+  // Handlers for commands from the scheduler
+  void DoAddModelThread(ModelSession model_session, ModelThread* model_thread);
+  void DoAddBackend(NodeId backend_id,
+                    std::shared_ptr<BackendDelegate> backend_delegate);
+
+  // Handlers for commands from model threads
+  void ExecuteCommand(const std::string* ptr_model_session_id);
   void DoUpdateCandidateCommand(UpdateCandidateCommand& cmd,
                                 const std::string* ptr_model_session_id);
   void DoUpdateBackendCommand(UpdateBackendCommand& cmd);
@@ -212,7 +207,6 @@ class RankThread {
   void UpdateBackend(BackendContext* bctx, TimePoint next_available_time);
 
   ario::EpollExecutor& executor_;
-  moodycamel::ReaderWriterQueue<RankCommand>& scheduler_command_queue_;
   bool stop_flag_;
   PlanId next_plan_id_{1};
   std::unordered_map<NodeId, std::shared_ptr<BackendContext>> backends_;
@@ -272,7 +266,6 @@ class MultiThreadRankScheduler {
 
   std::unique_ptr<DispatcherAccessor> dispatcher_;
   ario::EpollExecutor& executor_;
-  moodycamel::ReaderWriterQueue<RankCommand> rank_thread_command_queue_;
   RankThread rank_thread_;
 
   std::mutex mutex_;

@@ -182,6 +182,7 @@ message LoadModelRequest {
 
 message LoadModelReply {
   CtrlStatus status = 1;
+  uint32 model_worker_port = 2;
 }
 
 message ModelInstanceConfig {

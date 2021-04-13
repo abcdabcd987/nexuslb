@@ -79,7 +79,7 @@ ModelWorker::ModelWorker(std::optional<int> pin_cpu, std::string rdma_dev,
       global_id_issuer_(*CHECK_NOTNULL(global_id_issuer)),
       rdma_handler_(std::make_unique<ModelWorkerRdmaHandler>(*this)),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
-      rdma_(rdma_dev_, &executor_, ario::PollerType::kBlocking,
+      rdma_(rdma_dev_, &executor_, ario::PollerType::kEventLoop,
             rdma_handler_.get(), &small_buffers_),
       rdma_sender_(&small_buffers_) {}
 

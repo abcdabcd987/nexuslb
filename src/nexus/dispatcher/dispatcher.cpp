@@ -35,7 +35,7 @@ Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
       pin_cpus_(std::move(pin_cpus)),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
-      rdma_(rdma_dev_, &main_executor_, ario::PollerType::kBlocking,
+      rdma_(rdma_dev_, &main_executor_, ario::PollerType::kEventLoop,
             &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
       scheduler_(&main_executor_, &rank_thread_executor_) {
@@ -339,6 +339,7 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
   auto entrance = scheduler_.AddModelSession(model_worker.executor(),
                                              request.model_session());
   model_worker.AddModelSession(model_sess_id, entrance);
+  reply->set_model_worker_port(model_worker.tcp_port());
 
   // Ask backends to load the model
   auto profile_id = ModelSessionToProfileID(request.model_session());

@@ -34,13 +34,14 @@ Frontend::Frontend(std::string rdma_dev, uint16_t rdma_tcp_server_port,
   uint16_t sch_port;
   auto sch_colon_idx = sch_addr.find(':');
   if (sch_colon_idx == std::string::npos) {
+    dispatcher_ip_ = sch_addr;
     sch_port = SCHEDULER_DEFAULT_PORT;
   } else {
     sch_port = std::stoi(sch_addr.substr(sch_colon_idx + 1));
-    sch_addr.resize(sch_colon_idx);
+    dispatcher_ip_ = sch_addr.substr(0, sch_colon_idx);
   }
 
-  rdma_.ConnectTcp(sch_addr, sch_port);
+  rdma_.ConnectTcp(dispatcher_ip_, sch_port);
   rdma_ev_thread_ = std::thread(&ario::EpollExecutor::RunEventLoop, &executor_);
   dispatcher_conn_ = promise_dispatcher_conn_.get_future().get();
 
@@ -100,6 +101,12 @@ Frontend::RdmaHandler::RdmaHandler(Frontend& outer) : outer_(outer) {}
 void Frontend::RdmaHandler::OnConnected(ario::RdmaQueuePair* conn) {
   if (!outer_.dispatcher_conn_) {
     outer_.promise_dispatcher_conn_.set_value(conn);
+    return;
+  }
+  if (!outer_.model_worker_conn_ &&
+      conn->peer_ip() == outer_.dispatcher_conn_->peer_ip() &&
+      conn->peer_tcp_port() == outer_.model_worker_port_) {
+    outer_.promise_model_worker_conn_.set_value(conn);
     return;
   }
 
@@ -304,19 +311,29 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req,
                                                   LoadBalancePolicy lb_policy) {
   ControlMessage request;
   request.mutable_add_model()->CopyFrom(req);
+
+  // Send AddModel to Dispatcher
   rdma_sender_.SendMessage(dispatcher_conn_, request);
   auto reply = std::move(promise_add_model_reply_.get_future().get());
   if (reply.status() != CTRL_OK) {
     LOG(ERROR) << "Load model error: " << CtrlStatus_Name(reply.status());
     return nullptr;
   }
+
+  // Connect to the ModelWorker
+  model_worker_port_ = reply.model_worker_port();
+  LOG(INFO) << "Connecting to ModelWorker. port " << model_worker_port_;
+  rdma_.ConnectTcp(dispatcher_ip_, model_worker_port_);
+  model_worker_conn_ = promise_model_worker_conn_.get_future().get();
+  LOG(INFO) << "ModelWorker connected.";
+
+  // Add to model pool
   auto model_session_id = ModelSessionToString(req.model_session());
   auto model_handler = std::make_shared<ModelHandler>(
-      model_session_id, backend_pool_, lb_policy, node_id_, dispatcher_conn_,
+      model_session_id, backend_pool_, lb_policy, node_id_, model_worker_conn_,
       rdma_sender_, &large_buffers_);
   // Only happens at Setup stage, so no concurrent modification to model_pool_
   model_pool_.emplace(model_handler->model_session_id(), model_handler);
-  // UpdateBackendPoolAndModelRoute(reply.model_route());
 
   return model_handler;
 }

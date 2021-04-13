@@ -82,14 +82,14 @@ std::atomic<uint64_t> ModelHandler::global_query_id_(0);
 ModelHandler::ModelHandler(const std::string& model_session_id,
                            BackendPool& pool, LoadBalancePolicy lb_policy,
                            NodeId frontend_id,
-                           ario::RdmaQueuePair* dispatcher_conn,
+                           ario::RdmaQueuePair* model_worker_conn,
                            RdmaSender rdma_sender,
                            ario::MemoryBlockAllocator* input_memory_allocator)
     : frontend_id_(frontend_id),
       model_session_id_(model_session_id),
       backend_pool_(pool),
       lb_policy_(lb_policy),
-      dispatcher_conn_(dispatcher_conn),
+      model_worker_conn_(model_worker_conn),
       rdma_sender_(rdma_sender),
       input_memory_allocator_(input_memory_allocator),
       total_throughput_(0.),
@@ -170,7 +170,7 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
     request->set_query_id(qid);
     request->set_rdma_read_offset(ctx->rdma_read_offset());
     request->set_rdma_read_length(ctx->rdma_read_length());
-    rdma_sender_.SendMessage(dispatcher_conn_, msg);
+    rdma_sender_.SendMessage(model_worker_conn_, msg);
   }
 
   auto reply = std::make_shared<QueryResult>(qid);

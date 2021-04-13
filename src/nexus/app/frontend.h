@@ -109,6 +109,7 @@ class Frontend : public ServerBase, public MessageHandler {
   };
 
  private:
+  std::string dispatcher_ip_;
   uint16_t rdma_tcp_server_port_;
 
   ario::EpollExecutor executor_;
@@ -119,12 +120,15 @@ class Frontend : public ServerBase, public MessageHandler {
   RdmaSender rdma_sender_;
   std::thread rdma_ev_thread_;
   ario::RdmaQueuePair* dispatcher_conn_ = nullptr;
+  uint16_t model_worker_port_ = 0;
+  ario::RdmaQueuePair* model_worker_conn_ = nullptr;
 
   // Ugly promises because ario doesn't have RPC
   std::promise<ario::RdmaQueuePair*> promise_dispatcher_conn_;
   std::promise<RegisterReply> promise_register_reply_;
   std::promise<RpcReply> promise_unregister_reply_;
   std::promise<LoadModelReply> promise_add_model_reply_;
+  std::promise<ario::RdmaQueuePair*> promise_model_worker_conn_;
 
   /*! \brief Indicator whether backend is running */
   std::atomic_bool running_;

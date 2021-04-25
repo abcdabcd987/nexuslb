@@ -1,6 +1,7 @@
 #include "nexus/dispatcher/model_worker.h"
 
 #include <glog/logging.h>
+#include <pthread.h>
 
 #include <string>
 
@@ -71,16 +72,17 @@ class ModelWorker::ModelWorkerRdmaHandler : public ario::RdmaEventHandler {
   ModelWorker& outer_;
 };
 
-ModelWorker::ModelWorker(std::optional<int> pin_cpu, std::string rdma_dev,
+ModelWorker::ModelWorker(ario::PollerType poller_type,
+                         std::optional<int> pin_cpu, std::string rdma_dev,
                          uint16_t tcp_port, GlobalIdIssuer* global_id_issuer)
     : pin_cpu_(pin_cpu),
       rdma_dev_(std::move(rdma_dev)),
       tcp_port_(tcp_port),
       global_id_issuer_(*CHECK_NOTNULL(global_id_issuer)),
+      executor_(poller_type),
       rdma_handler_(std::make_unique<ModelWorkerRdmaHandler>(*this)),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
-      rdma_(rdma_dev_, &executor_, ario::PollerType::kEventLoop,
-            rdma_handler_.get(), &small_buffers_),
+      rdma_(rdma_dev_, &executor_, rdma_handler_.get(), &small_buffers_),
       rdma_sender_(&small_buffers_) {}
 
 ModelWorker::~ModelWorker() {
@@ -92,14 +94,18 @@ ModelWorker::~ModelWorker() {
 
 void ModelWorker::Start() {
   ev_thread_ = std::thread([this] {
+    char buf[16];
     rdma_.ListenTcp(tcp_port_);
     std::string s;
     if (pin_cpu_.has_value()) {
       PinCpu(*pin_cpu_);
       s = "Pinned on CPU " + std::to_string(*pin_cpu_);
+      snprintf(buf, sizeof(buf), "ModelT CPU%2d", *pin_cpu_);
     } else {
       s = "Not CPU pinned.";
+      snprintf(buf, sizeof(buf), "ModelT");
     }
+    pthread_setname_np(pthread_self(), buf);
     LOG(INFO) << "Starting ModelWorker. Listening on port " << tcp_port_ << ". "
               << s;
     executor_.RunEventLoop();

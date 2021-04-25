@@ -26,17 +26,17 @@ DEFINE_int32(occupancy_valid, 10, "Backup backend occupancy valid time in ms");
 namespace nexus {
 namespace backend {
 
-BackendServer::BackendServer(std::string rdma_dev, uint16_t port,
-                             std::string sch_addr, int gpu_id,
+BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
+                             uint16_t port, std::string sch_addr, int gpu_id,
                              size_t num_workers, std::vector<int> cores)
     : gpu_id_(gpu_id),
       rdma_dev_(std::move(rdma_dev)),
       rdma_port_(port),
+      executor_(poller_type),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
       large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
-      rdma_(rdma_dev_, &executor_, ario::PollerType::kBlocking, &rdma_handler_,
-            &small_buffers_),
+      rdma_(rdma_dev_, &executor_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
       running_(false),
       rand_gen_(rd_()) {

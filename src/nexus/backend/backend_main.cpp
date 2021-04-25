@@ -17,6 +17,7 @@
 using namespace nexus;
 using namespace nexus::backend;
 
+DEFINE_string(poller, "blocking", "options: blocking, spinning");
 DEFINE_string(rdma_dev, "", "RDMA device name");
 DEFINE_uint32(port, BACKEND_DEFAULT_PORT,
               "TCP port used to setup RDMA connection.");
@@ -70,6 +71,16 @@ int main(int argc, char **argv) {
   google::ParseCommandLineFlags(&argc, &argv, true);
   // Setup backtrace on segfault
   google::InstallFailureSignalHandler();
+
+  ario::PollerType poller_type;
+  if (FLAGS_poller == "blocking") {
+    poller_type = ario::PollerType::kBlocking;
+  } else if (FLAGS_poller == "spinning") {
+    poller_type = ario::PollerType::kSpinning;
+  } else {
+    LOG(FATAL) << "Invalid poller type";
+  }
+
   // Decide server IP address
   LOG(INFO) << "Backend server: rdma_dev " << FLAGS_rdma_dev << ", port "
             << FLAGS_port << ", workers " << FLAGS_num_workers << ", gpu "
@@ -82,8 +93,8 @@ int main(int argc, char **argv) {
   }
   // Create the backend server
   std::vector<int> cores = ParseCores(FLAGS_cores);
-  BackendServer server(FLAGS_rdma_dev, FLAGS_port, FLAGS_sch_addr, FLAGS_gpu,
-                       FLAGS_num_workers, cores);
+  BackendServer server(poller_type, FLAGS_rdma_dev, FLAGS_port, FLAGS_sch_addr,
+                       FLAGS_gpu, FLAGS_num_workers, cores);
   server_ptr = &server;
   server.Run();
   return 0;

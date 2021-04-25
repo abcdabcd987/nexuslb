@@ -7,12 +7,12 @@ using namespace nexus::app;
 
 class SimpleApp : public AppBase {
  public:
-  SimpleApp(std::string rdma_dev, uint16_t rdma_tcp_server_port,
-            std::string nexus_server_port, std::string sch_addr,
-            size_t nthreads, const std::string& framework,
+  SimpleApp(ario::PollerType poller_type, std::string rdma_dev,
+            uint16_t rdma_tcp_server_port, std::string nexus_server_port,
+            std::string sch_addr, size_t nthreads, const std::string& framework,
             const std::string& model_name, int version, int latency_sla_ms,
             float estimate_workload, int image_height, int image_width)
-      : AppBase(std::move(rdma_dev), rdma_tcp_server_port,
+      : AppBase(poller_type, std::move(rdma_dev), rdma_tcp_server_port,
                 std::move(nexus_server_port), std::move(sch_addr), nthreads),
         framework_(framework),
         model_name_(model_name),
@@ -59,6 +59,7 @@ class SimpleApp : public AppBase {
   std::shared_ptr<ModelHandler> model_;
 };
 
+DEFINE_string(poller, "blocking", "options: blocking, spinning");
 DEFINE_string(rdma_dev, "", "RDMA device name");
 DEFINE_uint32(rdma_port, 9002, "TCP port used to setup RDMA connection.");
 DEFINE_string(nexus_port, "9001", "Server port");
@@ -84,10 +85,22 @@ int main(int argc, char** argv) {
 
   CHECK_GT(FLAGS_framework.length(), 0) << "Missing framework";
   CHECK_GT(FLAGS_model.length(), 0) << "Missing model";
+  CHECK_GT(FLAGS_width, 0) << "Missing width";
+  CHECK_GT(FLAGS_height, 0) << "Missing height";
+  CHECK_GT(FLAGS_latency, 0) << "Missing latency";
+  ario::PollerType poller_type;
+  if (FLAGS_poller == "blocking") {
+    poller_type = ario::PollerType::kBlocking;
+  } else if (FLAGS_poller == "spinning") {
+    poller_type = ario::PollerType::kSpinning;
+  } else {
+    LOG(FATAL) << "Invalid poller type";
+  }
+
   LOG(INFO) << "RDMA device " << FLAGS_rdma_dev << ", RDMA TCP port "
             << FLAGS_rdma_port << ", Nexus port " << FLAGS_nexus_port;
   // Create the frontend server
-  SimpleApp app(FLAGS_rdma_dev, FLAGS_rdma_port, FLAGS_nexus_port,
+  SimpleApp app(poller_type, FLAGS_rdma_dev, FLAGS_rdma_port, FLAGS_nexus_port,
                 FLAGS_sch_addr, FLAGS_nthread, FLAGS_framework, FLAGS_model,
                 FLAGS_model_version, FLAGS_latency, FLAGS_workload,
                 FLAGS_height, FLAGS_width);

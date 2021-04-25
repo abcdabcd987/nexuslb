@@ -1,6 +1,5 @@
 #pragma once
 #include <infiniband/verbs.h>
-#include <poll.h>
 
 #include <atomic>
 #include <cstddef>
@@ -85,12 +84,6 @@ class RdmaEventHandler {
   virtual void OnError(RdmaQueuePair *conn, RdmaError error) = 0;
 };
 
-enum class PollerType {
-  kBlocking,
-  kSpinning,
-  kEventLoop,
-};
-
 struct WorkRequestContext {
   RdmaQueuePair &conn;
   OwnedMemoryBlock buf;
@@ -102,8 +95,7 @@ struct WorkRequestContext {
 class RdmaManager {
  public:
   RdmaManager(std::string dev_name, EpollExecutor *executor,
-              PollerType poller_type, RdmaEventHandler *handler,
-              MemoryBlockAllocator *recv_buf);
+              RdmaEventHandler *handler, MemoryBlockAllocator *recv_buf);
   ~RdmaManager();
   void Stop();
   void RegisterLocalMemory(MemoryBlockAllocator *buf);
@@ -114,10 +106,19 @@ class RdmaManager {
  private:
   friend class RdmaManagerAccessor;
 
-  class CompletionQueueEpollEventHandler : public EpollEventHandler {
+  class CompletionChannelHandler : public EpollEventHandler {
    public:
-    CompletionQueueEpollEventHandler(RdmaManager &outer);
+    explicit CompletionChannelHandler(RdmaManager *outer);
     void HandleEpollEvent(uint32_t epoll_events) override;
+
+   private:
+    RdmaManager &outer_;
+  };
+
+  class CompletionQueuePoller : public EventPoller {
+   public:
+    explicit CompletionQueuePoller(RdmaManager *outer);
+    void Poll() override;
 
    private:
     RdmaManager &outer_;
@@ -127,11 +128,9 @@ class RdmaManager {
   void BuildProtectionDomain();
   void BuildCompletionQueue();
   void StartPoller();
-  void JoinPoller();
   void PollCompletionQueueBlocking();
   void PollCompletionQueueSpinning();
-  void PollCompletionQueueEventLoop();
-  void PollCompletionQueueWithChannelReady();
+  void PollCompletionQueue();
   void HandleWorkCompletion(ibv_wc *wc);
 
   void AddConnection(TcpSocket tcp);
@@ -144,8 +143,7 @@ class RdmaManager {
 
   std::string dev_name_;
   int dev_port_ = 0;
-  EpollExecutor *executor_;
-  PollerType poller_type_;
+  EpollExecutor &executor_;
   RdmaEventHandler *handler_;
   MemoryBlockAllocator *recv_buf_;
 
@@ -153,15 +151,14 @@ class RdmaManager {
   ibv_pd *pd_ = nullptr;
   ibv_cq *cq_ = nullptr;
   ibv_comp_channel *comp_channel_ = nullptr;
-  pollfd comp_channel_pollfd_;
-  std::unique_ptr<CompletionQueueEpollEventHandler> cq_epoll_handler_;
+  std::unique_ptr<CompletionChannelHandler> comp_channel_handler_;
+  std::unique_ptr<CompletionQueuePoller> cq_poller_;
 
   std::mutex mr_mutex_;
   std::unordered_map<void *, ibv_mr *> mr_ /* GUARDED_BY(mr_mutex_) */;
   ibv_mr *exposed_mr_ = nullptr;
 
-  std::atomic<bool> poller_stop_{false};
-  std::thread cq_poller_thread_;
+  std::atomic<bool> stop_{false};
 
   std::atomic<uint64_t> next_wr_id_{1};
   std::mutex wr_ctx_mutex_;

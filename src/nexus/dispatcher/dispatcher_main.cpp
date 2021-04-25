@@ -11,6 +11,7 @@
 
 using namespace nexus::dispatcher;
 
+DEFINE_string(poller, "spinning", "options: blocking, spinning");
 DEFINE_string(rdma_dev, "", "RDMA device name");
 DEFINE_uint32(port, 7001, "TCP port used to setup RDMA connection.");
 DEFINE_string(pin_cpus, "all", "Example: `0,2-4,7-16`. Example: `all`");
@@ -51,6 +52,16 @@ int main(int argc, char** argv) {
     cores = ParseCores(FLAGS_pin_cpus);
   }
 
-  Dispatcher dispatcher(FLAGS_rdma_dev, FLAGS_port, std::move(cores));
+  ario::PollerType poller_type;
+  if (FLAGS_poller == "blocking") {
+    poller_type = ario::PollerType::kBlocking;
+  } else if (FLAGS_poller == "spinning") {
+    poller_type = ario::PollerType::kSpinning;
+  } else {
+    LOG(FATAL) << "Invalid poller type";
+  }
+
+  Dispatcher dispatcher(poller_type, FLAGS_rdma_dev, FLAGS_port,
+                        std::move(cores));
   dispatcher.Run();
 }

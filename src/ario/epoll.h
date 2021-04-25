@@ -10,35 +10,26 @@
 #include "ario/callback_queue.h"
 #include "ario/chrono.h"
 #include "ario/error.h"
+#include "ario/interrupter.h"
 #include "ario/timerfd.h"
 
 namespace ario {
 
 class Timer;
 
-// Design and implementation copied from Boost.Asio. See:
-// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/eventfd_select_interrupter.hpp
-// https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/impl/eventfd_select_interrupter.ipp
-class Interrupter {
- public:
-  Interrupter();
-  ~Interrupter();
-  Interrupter(const Interrupter &other) = delete;
-  Interrupter &operator=(const Interrupter &other) = delete;
-  Interrupter(Interrupter &&other) = delete;
-  Interrupter &operator=(Interrupter &&other) = delete;
-
-  int fd() const;
-  void Interrupt();
-  void Reset();
-
- private:
-  const int event_fd_;
-};
-
 class EpollEventHandler {
  public:
   virtual void HandleEpollEvent(uint32_t epoll_events) = 0;
+};
+
+class EventPoller {
+ public:
+  virtual void Poll() = 0;
+};
+
+enum class PollerType {
+  kBlocking,
+  kSpinning,
 };
 
 // Design and implementation copied from Boost.Asio. See:
@@ -47,13 +38,17 @@ class EpollEventHandler {
 // https://github.com/boostorg/asio/blob/boost-1.75.0/include/boost/asio/detail/impl/epoll_reactor.ipp
 class EpollExecutor {
  public:
-  EpollExecutor();
+  explicit EpollExecutor(PollerType poller_type);
   ~EpollExecutor();
   EpollExecutor(const EpollExecutor &other) = delete;
   EpollExecutor &operator=(const EpollExecutor &other) = delete;
   EpollExecutor(EpollExecutor &&other) = delete;
   EpollExecutor &operator=(EpollExecutor &&other) = delete;
   static EpollExecutor *ThisThreadExecutor() { return this_thread_executor_; }
+  PollerType poller_type() const { return poller_type_; }
+
+  void WatchFD(int fd, EpollEventHandler &handler);
+  void AddPoller(EventPoller &poller);
 
   void RunEventLoop();
   void StopEventLoop();
@@ -64,10 +59,12 @@ class EpollExecutor {
   void MoveTimer(TimerData &dst, TimerData &src);
 
  private:
-  friend void EpollExecutorAddEpollWatch(EpollExecutor &executor, int fd,
-                                         EpollEventHandler &handler);
+  void LoopBlocking();
+  void LoopSpinning();
+
   static thread_local EpollExecutor *this_thread_executor_;
 
+  const PollerType poller_type_;
   int epoll_fd_;
   std::atomic<bool> stop_event_loop_{false};
   Interrupter interrupter_;
@@ -78,6 +75,7 @@ class EpollExecutor {
 
   std::mutex mutex_;
   TimerFD timerfd_ /* GUARDED_BY(mutex_) */;
+  std::vector<EventPoller *> event_pollers_ /* GUARDED_BY(mutex_) */;
   CallbackQueue callback_queue_ /* GUARDED_BY(mutex_) */;
 };
 

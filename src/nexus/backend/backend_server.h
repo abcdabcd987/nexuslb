@@ -45,9 +45,9 @@ class BackendServer {
    * port 10001 \param num_workers Number of worker threads \param gpu_id GPU
    * device ID \param model_db_root Model database root directory path
    */
-  BackendServer(std::string rdma_dev, uint16_t port, std::string sch_addr,
-                int gpu_id, size_t num_workers = 0,
-                std::vector<int> cores = {});
+  BackendServer(ario::PollerType poller_type, std::string rdma_dev,
+                uint16_t port, std::string sch_addr, int gpu_id,
+                size_t num_workers = 0, std::vector<int> cores = {});
   /*! \brief Deconstructs backend server */
   ~BackendServer();
   /*! \brief Get backend node ID */

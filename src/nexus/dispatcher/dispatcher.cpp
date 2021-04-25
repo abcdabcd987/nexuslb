@@ -28,23 +28,25 @@
 namespace nexus {
 namespace dispatcher {
 
-Dispatcher::Dispatcher(std::string rdma_dev, uint16_t port,
-                       std::vector<int> pin_cpus)
+Dispatcher::Dispatcher(ario::PollerType poller_type, std::string rdma_dev,
+                       uint16_t port, std::vector<int> pin_cpus)
     : rdma_dev_(std::move(rdma_dev)),
       tcp_server_port_(port),
       pin_cpus_(std::move(pin_cpus)),
+      main_executor_(poller_type),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
-      rdma_(rdma_dev_, &main_executor_, ario::PollerType::kEventLoop,
-            &rdma_handler_, &small_buffers_),
+      rdma_(rdma_dev_, &main_executor_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
+      rank_thread_executor_(poller_type),
       scheduler_(&main_executor_, &rank_thread_executor_) {
   // Don't Pin the main thread.
   // One CPU for the RankThread. The rest for ModelThreads.
   CHECK_GT(pin_cpus_.size(), 1) << "Need at least two cpus";
   for (size_t i = 1; i < pin_cpus_.size(); ++i) {
-    auto m = std::make_unique<ModelWorker>(
-        pin_cpus_[i], rdma_dev_, tcp_server_port_ + i, &global_id_issuer_);
+    auto m =
+        std::make_unique<ModelWorker>(poller_type, pin_cpus_[i], rdma_dev_,
+                                      tcp_server_port_ + i, &global_id_issuer_);
     model_workers_.push_back(std::move(m));
   }
   LOG(INFO) << "Allocated " << model_workers_.size() << " ModelWorkers";
@@ -61,13 +63,17 @@ void Dispatcher::Run() {
 
   rdma_.ListenTcp(tcp_server_port_);
   rank_thread_ = std::thread([this] {
+    char buf[16];
     std::string s;
     if (!pin_cpus_.empty()) {
       s = "Pinned on CPU " + std::to_string(pin_cpus_[0]);
       PinCpu(pin_cpus_[0]);
+      snprintf(buf, sizeof(buf), "RankT  CPU%2d", pin_cpus_[0]);
     } else {
       s = "Not CPU pinned.";
+      snprintf(buf, sizeof(buf), "RankT");
     }
+    pthread_setname_np(pthread_self(), buf);
     LOG(INFO) << "Starting RankThread. " << s;
     rank_thread_executor_.RunEventLoop();
   });
@@ -76,6 +82,9 @@ void Dispatcher::Run() {
   }
 
   // Use the main thread for the main executor
+  char buf[16];
+  snprintf(buf, sizeof(buf), "MainExecutor");
+  pthread_setname_np(pthread_self(), buf);
   LOG(INFO) << "Main thread goes into the event loop. Not CPU pinned.";
   main_executor_.RunEventLoop();
 }

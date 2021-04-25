@@ -166,30 +166,40 @@ class TestClientHandler : public TestHandler {
   RdmaQueuePair *conn_ = nullptr;
 };
 
-void DieUsage(const char *program) {
+[[noreturn]] void DieUsage(const char *program) {
   printf("usage:\n");
-  printf("  %s tcpserver <listen_port>\n", program);
-  printf("  %s tcpclient <server_host> <server_port>\n", program);
+  printf("  %s tcpserver block|spin <listen_port>\n", program);
+  printf("  %s tcpclient block|spin <server_host> <server_port>\n", program);
   printf(
-      "  %s server <dev_name> <listen_port> "
+      "  %s server block|spin <dev_name> <listen_port> "
       "print|noprint reply|noreply\n",
       program);
-  printf("  %s client <dev_name> <server_host> <server_port>\n", program);
+  printf("  %s client block|spin <dev_name> <server_host> <server_port>\n",
+         program);
   printf(
-      "  %s benchsend <dev_name> <server_host> <server_port> "
+      "  %s benchsend block|spin <dev_name> <server_host> <server_port> "
       "<max_flying> <num_packets> <read_size> <logfilename>\n",
       program);
   printf(
-      "  %s benchread <dev_name> <server_host> <server_port> "
+      "  %s benchread block|spin <dev_name> <server_host> <server_port> "
       "<max_flying> <num_packets> <read_size> <logfilename>\n",
       program);
   printf(
-      "  %s benchincast <dev_name> "
+      "  %s benchincast block|spin <dev_name> "
       "<read_size> <concurrent_reads> <warmups> <tests> "
       "<ip:port>...\n",
       program);
-  printf("  %s benchtimer <duration> <count>\n", program);
+  printf("  %s benchtimer block|spin <duration> <count>\n", program);
   std::exit(1);
+}
+
+EpollExecutor BuildExecutor(int argc, char **argv) {
+  if (std::string(argv[2]) == "block") {
+    return EpollExecutor(PollerType::kBlocking);
+  } else if (std::string(argv[2]) == "spin") {
+    return EpollExecutor(PollerType::kSpinning);
+  };
+  DieUsage(argv[0]);
 }
 
 class SimpleTcpConnection {
@@ -265,10 +275,10 @@ void DoAccept(TcpAcceptor &acceptor) {
 }
 
 void TcpServerMain(int argc, char **argv) {
-  if (argc != 3) DieUsage(argv[0]);
-  uint16_t listen_port = std::stoi(argv[2]);
+  if (argc != 4) DieUsage(argv[0]);
+  uint16_t listen_port = std::stoi(argv[3]);
 
-  EpollExecutor executor;
+  auto executor = BuildExecutor(argc, argv);
   TcpAcceptor acceptor(executor);
   acceptor.BindAndListen(listen_port);
   fprintf(stderr, "Listening on port %d\n", listen_port);
@@ -277,11 +287,11 @@ void TcpServerMain(int argc, char **argv) {
 }
 
 void TcpClientMain(int argc, char **argv) {
-  if (argc != 4) DieUsage(argv[0]);
-  std::string server_host = argv[2];
-  uint16_t server_port = std::stoi(argv[3]);
+  if (argc != 5) DieUsage(argv[0]);
+  std::string server_host = argv[3];
+  uint16_t server_port = std::stoi(argv[4]);
 
-  EpollExecutor executor;
+  auto executor = BuildExecutor(argc, argv);
   TcpSocket socket;
   socket.Connect(executor, server_host, server_port);
   fprintf(stderr, "connected.\n");
@@ -330,13 +340,13 @@ void FillMemoryPool(std::vector<uint8_t> &memory_pool) {
 }
 
 void ServerMain(int argc, char **argv) {
-  if (argc != 6) DieUsage(argv[0]);
-  std::string dev_name = argv[2];
-  uint16_t listen_port = std::stoul(argv[3]);
+  if (argc != 7) DieUsage(argv[0]);
+  std::string dev_name = argv[3];
+  uint16_t listen_port = std::stoul(argv[4]);
 
   auto test = std::make_unique<TestServerHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  for (size_t i = 4; i < 6; ++i) {
+  for (size_t i = 5; i < 7; ++i) {
     std::string option = argv[i];
     if (option == "print") {
       test->SetPrintMessage(true);
@@ -351,14 +361,13 @@ void ServerMain(int argc, char **argv) {
       DieUsage(argv[0]);
     }
   }
+  auto executor = BuildExecutor(argc, argv);
 
   std::vector<uint8_t> memory_pool(100 << 20);
   FillMemoryPool(memory_pool);
   test->SetExposedMemory(memory_pool.data(), memory_pool.size());
 
-  EpollExecutor executor;
-  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop, test.get(),
-                      &buf);
+  RdmaManager manager(dev_name, &executor, test.get(), &buf);
   manager.ExposeMemory(memory_pool.data(), memory_pool.size());
   manager.ListenTcp(listen_port);
   executor.RunEventLoop();
@@ -369,16 +378,15 @@ void ServerMain(int argc, char **argv) {
 }
 
 void ClientMain(int argc, char **argv) {
-  if (argc != 5) DieUsage(argv[0]);
-  std::string dev_name = argv[2];
-  std::string server_host = argv[3];
-  uint16_t server_port = std::stoi(argv[4]);
+  if (argc != 6) DieUsage(argv[0]);
+  std::string dev_name = argv[3];
+  std::string server_host = argv[4];
+  uint16_t server_port = std::stoi(argv[5]);
+  auto executor = BuildExecutor(argc, argv);
 
   auto test = std::make_unique<TestClientHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  EpollExecutor executor;
-  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop, test.get(),
-                      &buf);
+  RdmaManager manager(dev_name, &executor, test.get(), &buf);
   MemoryBlockAllocator read_buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
   manager.RegisterLocalMemory(&read_buf);
   manager.ConnectTcp(server_host, server_port);
@@ -690,20 +698,19 @@ class BenchHandler : public TestClientHandler {
 };
 
 void BenchSendMain(int argc, char **argv) {
-  if (argc != 9) DieUsage(argv[0]);
-  std::string dev_name = argv[2];
-  std::string server_host = argv[3];
-  uint16_t server_port = std::stoi(argv[4]);
-  size_t max_flying = std::stoul(argv[5]);
-  size_t num_packets = std::stoul(argv[6]);
-  size_t read_size = std::stoul(argv[7]);
-  std::string logfilename = argv[8];
+  if (argc != 10) DieUsage(argv[0]);
+  std::string dev_name = argv[3];
+  std::string server_host = argv[4];
+  uint16_t server_port = std::stoi(argv[5]);
+  size_t max_flying = std::stoul(argv[6]);
+  size_t num_packets = std::stoul(argv[7]);
+  size_t read_size = std::stoul(argv[8]);
+  std::string logfilename = argv[9];
+  auto executor = BuildExecutor(argc, argv);
 
   auto handler = std::make_unique<BenchHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  EpollExecutor executor;
-  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop,
-                      handler.get(), &buf);
+  RdmaManager manager(dev_name, &executor, handler.get(), &buf);
   handler->SetAllocator(buf);
   manager.ConnectTcp(server_host, server_port);
   std::thread event_loop_thread(&EpollExecutor::RunEventLoop, &executor);
@@ -723,20 +730,19 @@ void BenchSendMain(int argc, char **argv) {
 }
 
 void BenchReadMain(int argc, char **argv) {
-  if (argc != 9) DieUsage(argv[0]);
-  std::string dev_name = argv[2];
-  std::string server_host = argv[3];
-  uint16_t server_port = std::stoi(argv[4]);
-  size_t max_flying = std::stoul(argv[5]);
-  size_t num_packets = std::stoul(argv[6]);
-  size_t read_size = std::stoul(argv[7]);
-  std::string logfilename = argv[8];
+  if (argc != 10) DieUsage(argv[0]);
+  std::string dev_name = argv[3];
+  std::string server_host = argv[4];
+  uint16_t server_port = std::stoi(argv[5]);
+  size_t max_flying = std::stoul(argv[6]);
+  size_t num_packets = std::stoul(argv[7]);
+  size_t read_size = std::stoul(argv[8]);
+  std::string logfilename = argv[9];
+  auto executor = BuildExecutor(argc, argv);
 
   auto handler = std::make_unique<BenchHandler>();
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
-  EpollExecutor executor;
-  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop,
-                      handler.get(), &buf);
+  RdmaManager manager(dev_name, &executor, handler.get(), &buf);
   handler->SetAllocator(buf);
   manager.ConnectTcp(server_host, server_port);
   std::thread event_loop_thread(&EpollExecutor::RunEventLoop, &executor);
@@ -915,15 +921,15 @@ class IncastHandler : public ario::RdmaEventHandler {
 };
 
 void BenchIncastMain(int argc, char **argv) {
-  if (argc < 8) DieUsage(argv[0]);
-  std::string dev_name = argv[2];
+  if (argc < 9) DieUsage(argv[0]);
+  std::string dev_name = argv[3];
   IncastHandler::Options options;
-  options.read_size = std::stoul(argv[3]);
-  options.concurrent_reads = std::stoul(argv[4]);
-  options.warmups = std::stoul(argv[5]);
-  options.tests = std::stoul(argv[6]);
+  options.read_size = std::stoul(argv[4]);
+  options.concurrent_reads = std::stoul(argv[5]);
+  options.warmups = std::stoul(argv[6]);
+  options.tests = std::stoul(argv[7]);
   std::vector<std::pair<std::string, uint16_t>> servers;
-  for (int i = 7; i < argc; ++i) {
+  for (int i = 8; i < argc; ++i) {
     std::string s(argv[i]);
     auto pos = s.find(':');
     if (pos == std::string::npos) die("Failed to parse server address: " + s);
@@ -931,12 +937,11 @@ void BenchIncastMain(int argc, char **argv) {
     uint16_t port = std::stoul(s.substr(pos + 1));
     servers.push_back({ip, port});
   }
+  auto executor = BuildExecutor(argc, argv);
 
-  EpollExecutor executor;
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
   IncastHandler handler(options, executor, buf, servers.size());
-  RdmaManager manager(dev_name, &executor, PollerType::kEventLoop, &handler,
-                      &buf);
+  RdmaManager manager(dev_name, &executor, &handler, &buf);
   for (const auto &p : servers) {
     fprintf(stderr, "Connecting to %s:%u\n", p.first.c_str(), p.second);
     manager.ConnectTcp(p.first, p.second);
@@ -947,8 +952,8 @@ void BenchIncastMain(int argc, char **argv) {
 
 class TimerBencher {
  public:
-  TimerBencher(int duration_sec, int count)
-      : duration_sec_(duration_sec), count_(count) {}
+  TimerBencher(EpollExecutor *executor, int duration_sec, int count)
+      : executor_(*executor), duration_sec_(duration_sec), count_(count) {}
 
   void Bench() {
     executor_thread_ = std::thread(&EpollExecutor::RunEventLoop, &executor_);
@@ -1019,7 +1024,7 @@ class TimerBencher {
   int duration_sec_;
   int count_;
 
-  EpollExecutor executor_;
+  EpollExecutor &executor_;
   std::thread executor_thread_;
 
   std::atomic<int> cnt_warmup_ = 0;
@@ -1029,11 +1034,12 @@ class TimerBencher {
 };
 
 void BenchTimerMain(int argc, char **argv) {
-  if (argc != 4) DieUsage(argv[0]);
-  int duration_sec = std::stoi(argv[2]);
-  int count = std::stoi(argv[3]);
+  if (argc != 5) DieUsage(argv[0]);
+  int duration_sec = std::stoi(argv[3]);
+  int count = std::stoi(argv[4]);
+  auto executor = BuildExecutor(argc, argv);
 
-  TimerBencher bencher(duration_sec, count);
+  TimerBencher bencher(&executor, duration_sec, count);
   bencher.Bench();
 }
 

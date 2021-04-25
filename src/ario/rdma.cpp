@@ -8,14 +8,13 @@
 namespace ario {
 
 RdmaManager::RdmaManager(std::string dev_name, EpollExecutor *executor,
-                         PollerType poller_type, RdmaEventHandler *handler,
+                         RdmaEventHandler *handler,
                          MemoryBlockAllocator *recv_buf)
     : dev_name_(std::move(dev_name)),
-      executor_(executor),
-      poller_type_(poller_type),
+      executor_(*executor),
       handler_(handler),
       recv_buf_(recv_buf),
-      tcp_acceptor_(*executor_) {
+      tcp_acceptor_(executor_) {
   // TODO: RAII
   int ret;
   CreateContext();
@@ -26,46 +25,24 @@ RdmaManager::RdmaManager(std::string dev_name, EpollExecutor *executor,
 }
 
 void RdmaManager::StartPoller() {
-  switch (poller_type_) {
+  switch (executor_.poller_type()) {
     case PollerType::kBlocking:
-      comp_channel_pollfd_.fd = comp_channel_->fd;
-      comp_channel_pollfd_.events = POLLIN;
-      comp_channel_pollfd_.revents = 0;
-      cq_poller_thread_ =
-          std::thread(&RdmaManager::PollCompletionQueueBlocking, this);
+      comp_channel_handler_ = std::make_unique<CompletionChannelHandler>(this);
+      executor_.WatchFD(comp_channel_->fd, *comp_channel_handler_);
       break;
     case PollerType::kSpinning:
-      cq_poller_thread_ =
-          std::thread(&RdmaManager::PollCompletionQueueSpinning, this);
-      break;
-    case PollerType::kEventLoop:
-      cq_epoll_handler_ =
-          std::make_unique<CompletionQueueEpollEventHandler>(*this);
-      EpollExecutorAddEpollWatch(*executor_, comp_channel_->fd,
-                                 *cq_epoll_handler_.get());
-      break;
-  }
-}
-
-void RdmaManager::JoinPoller() {
-  poller_stop_ = true;
-  switch (poller_type_) {
-    case PollerType::kBlocking:
-    case PollerType::kSpinning:
-      cq_poller_thread_.join();
-      break;
-    case PollerType::kEventLoop:
-      // No need for background thread
+      cq_poller_ = std::make_unique<CompletionQueuePoller>(this);
+      executor_.AddPoller(*cq_poller_);
       break;
   }
 }
 
 void RdmaManager::Stop() {
   // TODO: unregister from the executor
-  if (poller_stop_) {
+  if (stop_) {
     return;
   }
-  JoinPoller();
+  stop_ = true;
   connections_.clear();
   if (ctx_) ibv_close_device(ctx_);
 }
@@ -82,9 +59,10 @@ void RdmaManager::CreateContext() {
     ibv_device_attr device_attr;
     ret = ibv_query_device(ctx, &device_attr);
     if (ret) die("ibv_query_device");
+    unsigned long long uuid = ibv_get_device_guid(devs[i]);
     fprintf(stderr,
             "Found ibv device: name=%s, guid=0x%016llx. Active ports:", name,
-            ibv_get_device_guid(devs[i]));
+            uuid);
     int dev_port = 0;
     for (int p = 1; p <= device_attr.phys_port_cnt; ++p) {
       ibv_port_attr port_attr;
@@ -134,7 +112,7 @@ void RdmaManager::TcpAccept() {
 
 void RdmaManager::ConnectTcp(const std::string &host, uint16_t port) {
   fprintf(stderr, "Connecting TCP to host %s port %u\n", host.c_str(), port);
-  tcp_socket_.Connect(*executor_, host, port);
+  tcp_socket_.Connect(executor_, host, port);
   fprintf(stderr, "TCP socket connected to %s:%d\n",
           tcp_socket_.peer_ip().c_str(), tcp_socket_.peer_port());
   AddConnection(std::move(tcp_socket_));
@@ -175,40 +153,27 @@ void RdmaManager::BuildProtectionDomain() {
 void RdmaManager::BuildCompletionQueue() {
   constexpr int kNumCompletionQueueEntries = 100;
 
-  switch (poller_type_) {
-    case PollerType::kBlocking:
-    case PollerType::kEventLoop: {
-      comp_channel_ = ibv_create_comp_channel(ctx_);
-      if (!comp_channel_) die_perror("ibv_create_comp_channel");
-      SetNonBlocking(comp_channel_->fd);
-      break;
-    }
-    case PollerType::kSpinning:
-      // Nothing to do
-      break;
+  if (executor_.poller_type() == PollerType::kBlocking) {
+    comp_channel_ = ibv_create_comp_channel(ctx_);
+    if (!comp_channel_) die_perror("ibv_create_comp_channel");
+    SetNonBlocking(comp_channel_->fd);
   }
 
   cq_ = ibv_create_cq(ctx_, kNumCompletionQueueEntries, nullptr, comp_channel_,
                       0);
   if (!cq_) die_perror("ibv_create_cq");
 
-  switch (poller_type_) {
-    case PollerType::kBlocking:
-    case PollerType::kEventLoop: {
-      int ret = ibv_req_notify_cq(cq_, 0);
-      if (ret) die("ibv_req_notify_cq");
-    }
-    case PollerType::kSpinning:
-      // Nothing to do
-      break;
+  if (executor_.poller_type() == PollerType::kBlocking) {
+    int ret = ibv_req_notify_cq(cq_, 0);
+    if (ret) die("ibv_req_notify_cq");
   }
 }
 
 void RdmaQueuePair::BuildQueuePair() {
-  constexpr uint32_t kMaxSendQueueSize = 1024;
-  constexpr uint32_t kMaxRecvQueueSize = 1024;
-  constexpr uint32_t kMaxSendScatterGatherElements = 16;
-  constexpr uint32_t kMaxRecvScatterGatherElements = 16;
+  constexpr uint32_t kMaxSendQueueSize = 15000;
+  constexpr uint32_t kMaxRecvQueueSize = 1000;
+  constexpr uint32_t kMaxSendScatterGatherElements = 1;
+  constexpr uint32_t kMaxRecvScatterGatherElements = 1;
 
   ibv_qp_init_attr attr;
   memset(&attr, 0, sizeof(attr));
@@ -495,60 +460,30 @@ WorkRequestID RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
   return WorkRequestID(wr.wr_id);
 }
 
-RdmaManager::CompletionQueueEpollEventHandler::CompletionQueueEpollEventHandler(
-    RdmaManager &outer)
-    : outer_(outer) {}
+RdmaManager::CompletionChannelHandler::CompletionChannelHandler(
+    RdmaManager *outer)
+    : outer_(*outer) {}
 
-void RdmaManager::CompletionQueueEpollEventHandler::HandleEpollEvent(
+void RdmaManager::CompletionChannelHandler::HandleEpollEvent(
     uint32_t epoll_events) {
-  outer_.PollCompletionQueueEventLoop();
+  outer_.PollCompletionQueueBlocking();
+}
+
+RdmaManager::CompletionQueuePoller::CompletionQueuePoller(RdmaManager *outer)
+    : outer_(*outer) {}
+
+void RdmaManager::CompletionQueuePoller::Poll() {
+  outer_.PollCompletionQueueSpinning();
 }
 
 void RdmaManager::PollCompletionQueueBlocking() {
-  constexpr int kPollTimeoutMills = 1;
-  struct ibv_cq *cq;
-  struct ibv_wc wc;
-  void *ev_ctx;
-  int ret;
-
-  for (;;) {
-    do {
-      ret = poll(&comp_channel_pollfd_, 1, kPollTimeoutMills);
-    } while (ret == 0 && !poller_stop_);
-    if (ret < 0) die("PollCompletionQueueBlocking: pool failed");
-    if (poller_stop_) {
-      break;
-    }
-
-    PollCompletionQueueWithChannelReady();
-  }
-}
-
-void RdmaManager::PollCompletionQueueSpinning() {
-  struct ibv_wc wc;
-  while (!poller_stop_) {
-    while (ibv_poll_cq(cq_, 1, &wc)) {
-      HandleWorkCompletion(&wc);
-    }
-    asm volatile("pause\n" : : : "memory");
-  }
-}
-
-void RdmaManager::PollCompletionQueueEventLoop() {
-  if (poller_stop_) {
+  if (stop_) {
     return;
   }
 
-  PollCompletionQueueWithChannelReady();
-}
-
-void RdmaManager::PollCompletionQueueWithChannelReady() {
   struct ibv_cq *cq;
-  struct ibv_wc wc;
   void *ev_ctx;
-  int ret;
-
-  ret = ibv_get_cq_event(comp_channel_, &cq, &ev_ctx);
+  int ret = ibv_get_cq_event(comp_channel_, &cq, &ev_ctx);
   if (ret < 0) {
     fprintf(stderr,
             "PollCompletionQueueEventLoop: ibv_get_cq_event returns %d\n", ret);
@@ -561,9 +496,28 @@ void RdmaManager::PollCompletionQueueWithChannelReady() {
     fprintf(stderr, "ibv_req_notify_cq\n");
     return;
   }
-  while (ibv_poll_cq(cq, 1, &wc)) {
-    HandleWorkCompletion(&wc);
+
+  PollCompletionQueue();
+}
+
+void RdmaManager::PollCompletionQueueSpinning() {
+  if (stop_) {
+    return;
   }
+  PollCompletionQueue();
+}
+
+void RdmaManager::PollCompletionQueue() {
+  constexpr size_t kPollBatch = 16;
+  struct ibv_wc wc[kPollBatch];
+
+  int n;
+  do {
+    n = ibv_poll_cq(cq_, kPollBatch, wc);
+    for (int i = 0; i < n; ++i) {
+      HandleWorkCompletion(&wc[i]);
+    }
+  } while (n > 0);
 }
 
 void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {

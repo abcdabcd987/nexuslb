@@ -16,15 +16,16 @@ DECLARE_int32(load_balance);
 namespace nexus {
 namespace app {
 
-Frontend::Frontend(std::string rdma_dev, uint16_t rdma_tcp_server_port,
-                   std::string nexus_server_port, std::string sch_addr)
+Frontend::Frontend(ario::PollerType poller_type, std::string rdma_dev,
+                   uint16_t rdma_tcp_server_port, std::string nexus_server_port,
+                   std::string sch_addr)
     : ServerBase(nexus_server_port),
+      executor_(poller_type),
       rdma_tcp_server_port_(rdma_tcp_server_port),
       rdma_handler_(*this),
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
       large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
-      rdma_(rdma_dev, &executor_, ario::PollerType::kBlocking, &rdma_handler_,
-            &small_buffers_),
+      rdma_(rdma_dev, &executor_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
       rd_(),
       rand_gen_(rd_()) {

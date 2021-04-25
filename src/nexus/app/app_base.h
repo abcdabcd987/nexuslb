@@ -12,8 +12,9 @@ namespace app {
 
 class AppBase : public Frontend {
  public:
-  AppBase(std::string rdma_dev, uint16_t rdma_tcp_server_port,
-          std::string nexus_server_port, std::string sch_addr, size_t nthreads);
+  AppBase(ario::PollerType poller_type, std::string rdma_dev,
+          uint16_t rdma_tcp_server_port, std::string nexus_server_port,
+          std::string sch_addr, size_t nthreads);
 
   ~AppBase() override;
 

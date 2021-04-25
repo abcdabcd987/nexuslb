@@ -3,10 +3,10 @@
 namespace nexus {
 namespace app {
 
-AppBase::AppBase(std::string rdma_dev, uint16_t rdma_tcp_server_port,
-                 std::string nexus_server_port, std::string sch_addr,
-                 size_t nthreads)
-    : Frontend(std::move(rdma_dev), rdma_tcp_server_port,
+AppBase::AppBase(ario::PollerType poller_type, std::string rdma_dev,
+                 uint16_t rdma_tcp_server_port, std::string nexus_server_port,
+                 std::string sch_addr, size_t nthreads)
+    : Frontend(poller_type, std::move(rdma_dev), rdma_tcp_server_port,
                std::move(nexus_server_port), std::move(sch_addr)),
       nthreads_(nthreads),
       qp_(nullptr),

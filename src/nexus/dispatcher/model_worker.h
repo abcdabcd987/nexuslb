@@ -18,8 +18,9 @@ namespace dispatcher {
 
 class ModelWorker {
  public:
-  ModelWorker(std::optional<int> pin_cpu, std::string rdma_dev,
-              uint16_t tcp_port, GlobalIdIssuer* global_id_issuer);
+  ModelWorker(ario::PollerType poller_type, std::optional<int> pin_cpu,
+              std::string rdma_dev, uint16_t tcp_port,
+              GlobalIdIssuer* global_id_issuer);
   ~ModelWorker();
   ario::EpollExecutor* executor() { return &executor_; }
   uint16_t tcp_port() const { return tcp_port_; }

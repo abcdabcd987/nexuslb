@@ -31,8 +31,9 @@ namespace app {
 
 class Frontend : public ServerBase, public MessageHandler {
  public:
-  Frontend(std::string rdma_dev, uint16_t rdma_tcp_server_port,
-           std::string nexus_server_port, std::string sch_addr);
+  Frontend(ario::PollerType poller_type, std::string rdma_dev,
+           uint16_t rdma_tcp_server_port, std::string nexus_server_port,
+           std::string sch_addr);
 
   virtual ~Frontend();
 

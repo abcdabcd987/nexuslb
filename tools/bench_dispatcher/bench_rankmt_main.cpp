@@ -266,9 +266,11 @@ class DispatcherBencher {
  public:
   explicit DispatcherBencher(Options options)
       : options_(std::move(options)), gen_(options_.seed) {
-    main_executor_ = std::make_shared<ario::EpollExecutor>();
+    main_executor_ =
+        std::make_shared<ario::EpollExecutor>(ario::PollerType::kSpinning);
     if (options_.multithread) {
-      rank_executor_ = std::make_shared<ario::EpollExecutor>();
+      rank_executor_ =
+          std::make_shared<ario::EpollExecutor>(ario::PollerType::kSpinning);
     } else {
       rank_executor_ = main_executor_;
     }
@@ -486,7 +488,8 @@ class DispatcherBencher {
       frontends_.push_back(frontend);
 
       if (options_.multithread) {
-        model_executors_.push_back(std::make_shared<ario::EpollExecutor>());
+        model_executors_.push_back(
+            std::make_shared<ario::EpollExecutor>(ario::PollerType::kSpinning));
       } else {
         model_executors_.push_back(main_executor_);
       }

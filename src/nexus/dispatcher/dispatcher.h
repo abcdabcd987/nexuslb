@@ -36,7 +36,8 @@ class ModelSessionContext;
 
 class Dispatcher {
  public:
-  Dispatcher(std::string rdma_dev, uint16_t port, std::vector<int> pin_cpus);
+  Dispatcher(ario::PollerType poller_type, std::string rdma_dev, uint16_t port,
+             std::vector<int> pin_cpus);
   virtual ~Dispatcher();
 
   void Run();

@@ -268,8 +268,7 @@ void TcpSocket::Connect(EpollExecutor &executor, const std::string &host,
 }
 
 void TcpSocket::AddEpollWatch() {
-  EpollExecutorAddEpollWatch(impl_->executor_, impl_->fd_,
-                             impl_->epoll_handler_);
+  impl_->executor_.WatchFD(impl_->fd_, impl_->epoll_handler_);
 }
 
 TcpAcceptor::EpollHandler::EpollHandler(TcpAcceptor &super) : super_(super) {}
@@ -311,7 +310,7 @@ void TcpAcceptor::BindAndListen(uint16_t port) {
 
   SetNonBlocking(listen_fd_);
 
-  EpollExecutorAddEpollWatch(executor_, listen_fd_, epoll_handler_);
+  executor_.WatchFD(listen_fd_, epoll_handler_);
 }
 
 void TcpAcceptor::AsyncAccept(

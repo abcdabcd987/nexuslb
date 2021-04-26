@@ -437,6 +437,8 @@ void ClientMain(int argc, char **argv) {
 
 class BenchHandler : public TestClientHandler {
  public:
+  explicit BenchHandler(EpollExecutor *executor) : executor_(*executor) {}
+
   void SetAllocator(MemoryBlockAllocator &allocator) {
     allocator_ = &allocator;
   }
@@ -479,9 +481,10 @@ class BenchHandler : public TestClientHandler {
     distrib_ = std::uniform_int_distribution<size_t>(
         0, remote_memory_size_ - read_size_ - 1);
 
-    SendMore();
+    executor_.Post([this](ario::ErrorCode) { SendMore(); },
+                   ario::ErrorCode::kOk);
     std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] { return cnt_recv_.load() == num_packets_; });
+    cv_.wait(lock, [this] { return cnt_recv_ == num_packets_; });
     ReportProgress(true);
   }
 
@@ -532,11 +535,15 @@ class BenchHandler : public TestClientHandler {
     distrib_ = std::uniform_int_distribution<size_t>(
         0, remote_memory_size_ - read_size_ - 1);
 
-    for (size_t i = 0; i < max_flying_; ++i) {
-      ReadOneMore();
-    }
+    executor_.Post(
+        [this](ario::ErrorCode) {
+          for (size_t i = 0; i < max_flying_; ++i) {
+            ReadOneMore();
+          }
+        },
+        ario::ErrorCode::kOk);
     std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait(lock, [this] { return cnt_recv_.load() == num_packets_; });
+    cv_.wait(lock, [this] { return cnt_recv_ == num_packets_; });
     ReportProgress(true);
   }
 
@@ -561,8 +568,8 @@ class BenchHandler : public TestClientHandler {
     }
 
     double elapse_s = (finish_time_ - start_time_).count() / 1e9;
-    double recv_packet_size = recv_bytes_.load() * 1.0 / num_packets_;
-    double recv_bandwidth_gbps = recv_bytes_.load() * 8 / 1e9 / elapse_s;
+    double recv_packet_size = recv_bytes_ * 1.0 / num_packets_;
+    double recv_bandwidth_gbps = recv_bytes_ * 8 / 1e9 / elapse_s;
     printf("max_flying: %lu\n", max_flying_);
     printf("num_packets: %lu\n", num_packets_);
     printf("read_size: %lu\n", read_size_);
@@ -572,8 +579,8 @@ class BenchHandler : public TestClientHandler {
       printf("avg READ size: %.0f\n", recv_packet_size);
       printf("avg READ bandwidth: %.3f Gbps\n", recv_bandwidth_gbps);
     } else {
-      double send_packet_size = sent_bytes_.load() * 1.0 / num_packets_;
-      double send_bandwidth_gbps = sent_bytes_.load() * 8 / 1e9 / elapse_s;
+      double send_packet_size = sent_bytes_ * 1.0 / num_packets_;
+      double send_bandwidth_gbps = sent_bytes_ * 8 / 1e9 / elapse_s;
       printf("mode: SEND/RECV\n");
       printf("avg SEND size: %.0f\n", send_packet_size);
       printf("avg SEND bandwidth: %.3f Gbps\n", send_bandwidth_gbps);
@@ -602,7 +609,7 @@ class BenchHandler : public TestClientHandler {
 
  private:
   void SendMore() {
-    auto last_send = cnt_sent_.load();
+    auto last_send = cnt_sent_;
     while (cnt_flying_ < max_flying_ && cnt_sent_ < num_packets_) {
       auto send_buf = allocator_->Allocate();
       auto send_view = send_buf.AsMessageView();
@@ -658,7 +665,7 @@ class BenchHandler : public TestClientHandler {
     }
     auto nanos = (now - start_time_).count();
     auto seconds = nanos / 1e9;
-    auto cnt_sent = cnt_sent_.load();
+    auto cnt_sent = cnt_sent_;
     fprintf(stderr, "[%3lu%%] Sent %lu/%lu requests in %.6fs. (avg %.3f rps)\n",
             cnt_sent * 100 / num_packets_, cnt_sent, num_packets_, seconds,
             cnt_sent / seconds);
@@ -673,6 +680,7 @@ class BenchHandler : public TestClientHandler {
   using Clock = std::chrono::high_resolution_clock;
   using TimePoint = std::chrono::time_point<Clock, std::chrono::nanoseconds>;
 
+  EpollExecutor &executor_;
   MemoryBlockAllocator *allocator_;
   std::mutex mutex_;
   std::condition_variable cv_;
@@ -682,11 +690,11 @@ class BenchHandler : public TestClientHandler {
   size_t num_packets_ = 0;
   size_t remote_memory_size_ = 0;
   size_t read_size_ = 0;
-  std::atomic<size_t> cnt_flying_;
-  std::atomic<size_t> cnt_sent_;
-  std::atomic<size_t> cnt_recv_;
-  std::atomic<size_t> sent_bytes_;
-  std::atomic<size_t> recv_bytes_;
+  size_t cnt_flying_ = 0;
+  size_t cnt_sent_ = 0;
+  size_t cnt_recv_ = 0;
+  size_t sent_bytes_ = 0;
+  size_t recv_bytes_ = 0;
   TimePoint start_time_;
   TimePoint finish_time_;
   TimePoint last_report_time_;
@@ -708,7 +716,7 @@ void BenchSendMain(int argc, char **argv) {
   std::string logfilename = argv[9];
   auto executor = BuildExecutor(argc, argv);
 
-  auto handler = std::make_unique<BenchHandler>();
+  auto handler = std::make_unique<BenchHandler>(&executor);
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
   RdmaManager manager(dev_name, &executor, handler.get(), &buf);
   handler->SetAllocator(buf);
@@ -740,7 +748,7 @@ void BenchReadMain(int argc, char **argv) {
   std::string logfilename = argv[9];
   auto executor = BuildExecutor(argc, argv);
 
-  auto handler = std::make_unique<BenchHandler>();
+  auto handler = std::make_unique<BenchHandler>(&executor);
   MemoryBlockAllocator buf(kRdmaBufPoolBits, kRdmaBufBlockBits);
   RdmaManager manager(dev_name, &executor, handler.get(), &buf);
   handler->SetAllocator(buf);

@@ -42,6 +42,7 @@ find_package(Threads REQUIRED)
 add_library(ario
         src/ario/callback_queue.cpp
         src/ario/epoll.cpp
+        src/ario/interrupter.cpp
         src/ario/memory.cpp
         src/ario/rdma.cpp
         src/ario/tcp.cpp

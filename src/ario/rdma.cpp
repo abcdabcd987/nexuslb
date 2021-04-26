@@ -7,6 +7,28 @@
 
 namespace ario {
 
+namespace {
+
+struct InternalWrid {
+  uint64_t seqnum;
+  size_t qp_idx;
+  bool is_out;
+
+  static InternalWrid Decode(uint64_t wrid) {
+    InternalWrid e;
+    e.is_out = wrid & 1;
+    wrid >>= 1;
+    e.qp_idx = wrid & ((1ULL << 20) - 1);
+    wrid >>= 20;
+    e.seqnum = wrid;
+    return e;
+  }
+
+  uint64_t Encode() const { return (seqnum << 21) | (qp_idx << 1) | is_out; }
+};
+
+}  // namespace
+
 RdmaManager::RdmaManager(std::string dev_name, EpollExecutor *executor,
                          RdmaEventHandler *handler,
                          MemoryBlockAllocator *recv_buf)
@@ -119,12 +141,14 @@ void RdmaManager::ConnectTcp(const std::string &host, uint16_t port) {
 }
 
 void RdmaManager::AddConnection(TcpSocket tcp) {
-  auto conn = new RdmaQueuePair(RdmaManagerAccessor(*this), std::move(tcp));
+  auto conn = new RdmaQueuePair(RdmaManagerAccessor(*this), std::move(tcp),
+                                connections_.size());
   connections_.emplace_back(conn);
 }
 
-RdmaQueuePair::RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp)
-    : manager_(manager), tcp_(std::move(tcp)) {
+RdmaQueuePair::RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp,
+                             size_t index)
+    : manager_(manager), tcp_(std::move(tcp)), index_(index) {
   int ret;
   is_connected_ = false;
 
@@ -375,7 +399,6 @@ void RdmaManager::PostReceive(RdmaQueuePair &conn) {
   ibv_recv_wr wr, *bad_wr = nullptr;
   ibv_sge sge;
 
-  wr.wr_id = next_wr_id_.fetch_add(1);
   wr.next = nullptr;
   wr.sg_list = &sge;
   wr.num_sge = 1;
@@ -384,11 +407,12 @@ void RdmaManager::PostReceive(RdmaQueuePair &conn) {
   sge.addr = reinterpret_cast<uint64_t>(buf.data());
   sge.length = buf.size();
   sge.lkey = buf.rdma_lkey();
+  uint64_t seqnum;
   {
-    std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
-    wr_ctx_[wr.wr_id] =
-        std::make_unique<WorkRequestContext>(conn, std::move(buf));
+    std::lock_guard<std::mutex> lock(conn.wr_ctx_mutex_);
+    seqnum = conn.recv_wr_ctx_.Enqueue(std::move(buf));
   }
+  wr.wr_id = InternalWrid{seqnum, conn.index_, false}.Encode();
 
   int ret = ibv_post_recv(conn.qp_, &wr, &bad_wr);
   if (ret) die("ibv_post_recv");
@@ -404,7 +428,6 @@ void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
   ibv_sge sge;
 
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = next_wr_id_.fetch_add(1);
   wr.opcode = IBV_WR_SEND;
   wr.sg_list = &sge;
   wr.num_sge = 1;
@@ -415,11 +438,12 @@ void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
   sge.length = msg.total_length();
   sge.lkey = buf.rdma_lkey();
 
+  uint64_t seqnum;
   {
-    std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
-    wr_ctx_[wr.wr_id] =
-        std::make_unique<WorkRequestContext>(conn, std::move(buf));
+    std::lock_guard<std::mutex> lock(conn.wr_ctx_mutex_);
+    seqnum = conn.out_wr_ctx_.Enqueue(std::move(buf));
   }
+  wr.wr_id = InternalWrid{seqnum, conn.index_, true}.Encode();
 
   int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die_perror("Connection::Send: ibv_post_send");
@@ -436,7 +460,6 @@ WorkRequestID RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
   ibv_sge sge;
 
   memset(&wr, 0, sizeof(wr));
-  wr.wr_id = next_wr_id_.fetch_add(1);
   wr.opcode = IBV_WR_RDMA_READ;
   wr.sg_list = &sge;
   wr.num_sge = 1;
@@ -449,11 +472,13 @@ WorkRequestID RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
   sge.length = length;
   sge.lkey = buf.rdma_lkey();
   msg.set_bytes_length(length);
+
+  uint64_t seqnum;
   {
-    std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
-    wr_ctx_[wr.wr_id] =
-        std::make_unique<WorkRequestContext>(conn, std::move(buf));
+    std::lock_guard<std::mutex> lock(conn.wr_ctx_mutex_);
+    seqnum = conn.out_wr_ctx_.Enqueue(std::move(buf));
   }
+  wr.wr_id = InternalWrid{seqnum, conn.index_, true}.Encode();
 
   int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die("Connection::PostRead: ibv_post_send");
@@ -527,30 +552,30 @@ void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {
             ibv_wc_status_str(wc->status));
     die("wc->status != IBV_WC_SUCCESS");
   }
-  std::unique_ptr<WorkRequestContext> wr_ctx;
+  auto encoding = InternalWrid::Decode(wc->wr_id);
+  auto *conn = connections_.at(encoding.qp_idx).get();
+  OwnedMemoryBlock buf;
   {
-    std::lock_guard<std::mutex> lock(wr_ctx_mutex_);
-    auto iter = wr_ctx_.find(wc->wr_id);
-    if (iter == wr_ctx_.end()) {
-      fprintf(stderr, "Cannot find context for wr_id #%lu\n", wc->wr_id);
-      die("wc->wr_id not in wr_ctx_");
+    std::lock_guard<std::mutex> lock(conn->wr_ctx_mutex_);
+    if ((wc->wr_id & 1) == 0) {
+      buf = std::move(conn->recv_wr_ctx_.Dequeue(encoding.seqnum));
+    } else {
+      buf = std::move(conn->out_wr_ctx_.Dequeue(encoding.seqnum));
     }
-    wr_ctx = std::move(iter->second);
-    wr_ctx_.erase(iter);
   }
   if (wc->opcode & IBV_WC_RECV) {
-    PostReceive(wr_ctx->conn);
-    handler_->OnRecv(&wr_ctx->conn, std::move(wr_ctx->buf));
+    PostReceive(*conn);
+    handler_->OnRecv(conn, std::move(buf));
     return;
   }
   switch (wc->opcode) {
     case IBV_WC_SEND: {
-      handler_->OnSent(&wr_ctx->conn, std::move(wr_ctx->buf));
+      handler_->OnSent(conn, std::move(buf));
       return;
     }
     case IBV_WC_RDMA_READ: {
-      handler_->OnRdmaReadComplete(&wr_ctx->conn, WorkRequestID(wc->wr_id),
-                                   std::move(wr_ctx->buf));
+      handler_->OnRdmaReadComplete(conn, WorkRequestID(wc->wr_id),
+                                   std::move(buf));
       return;
     }
     // TODO: handle all opcode
@@ -562,7 +587,7 @@ void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {
 }
 
 void RdmaQueuePair::MarkConnected() {
-  static constexpr size_t kRecvBacklog = 20;
+  static constexpr size_t kRecvBacklog = 512;
   for (size_t i = 0; i < kRecvBacklog; ++i) {
     PostReceive();
   }

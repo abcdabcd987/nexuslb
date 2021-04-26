@@ -47,12 +47,6 @@ MemoryBlockAllocator &MemoryBlockAllocator::operator=(
   return *this;
 }
 
-void MemoryBlockAllocator::EnsureNonEmpty() const {
-  if (empty()) {
-    throw std::out_of_range("OwnedMemoryBlock is empty");
-  }
-}
-
 OwnedMemoryBlock MemoryBlockAllocator::Allocate() {
   EnsureNonEmpty();
   std::lock_guard<std::mutex> lock(mutex_);
@@ -78,7 +72,7 @@ void MemoryBlockAllocator::Free(OwnedMemoryBlock &&block) {
   if (offset > pool_size_) {
     throw std::out_of_range("offset > pool_size_");
   }
-  if (offset % (1 << block_bits_) != 0) {
+  if (offset % (1ULL << block_bits_) != 0) {
     throw std::invalid_argument("offset not aligned with block size");
   }
   auto index = offset >> block_bits_;

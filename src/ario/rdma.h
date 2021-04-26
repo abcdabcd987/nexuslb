@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "ario/circular_completion_queue.h"
 #include "ario/epoll.h"
 #include "ario/memory.h"
 #include "ario/tcp.h"
@@ -84,14 +85,6 @@ class RdmaEventHandler {
   virtual void OnError(RdmaQueuePair *conn, RdmaError error) = 0;
 };
 
-struct WorkRequestContext {
-  RdmaQueuePair &conn;
-  OwnedMemoryBlock buf;
-
-  WorkRequestContext(RdmaQueuePair &conn, OwnedMemoryBlock buf)
-      : conn(conn), buf(std::move(buf)) {}
-};
-
 class RdmaManager {
  public:
   RdmaManager(std::string dev_name, EpollExecutor *executor,
@@ -160,11 +153,6 @@ class RdmaManager {
 
   std::atomic<bool> stop_{false};
 
-  std::atomic<uint64_t> next_wr_id_{1};
-  std::mutex wr_ctx_mutex_;
-  std::unordered_map<uint64_t, std::unique_ptr<WorkRequestContext>>
-      wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;
-
   std::vector<std::unique_ptr<RdmaQueuePair>> connections_;
 
   TcpAcceptor tcp_acceptor_;
@@ -215,7 +203,7 @@ class RdmaQueuePair {
  private:
   friend class RdmaManager;
 
-  RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp);
+  RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp, size_t index);
   void MarkConnected();
   void SendMemoryRegions();
   void BuildQueuePair();
@@ -231,10 +219,17 @@ class RdmaQueuePair {
 
   RdmaManagerAccessor manager_;
   TcpSocket tcp_;
+  size_t index_;
   bool is_connected_ = false;
   ibv_qp *qp_ = nullptr;
   RemoteMemoryRegion remote_mr_{};
   uint64_t tag_ = 0;
+
+  std::mutex wr_ctx_mutex_;
+  CircularCompletionQueue<OwnedMemoryBlock, 4096>
+      recv_wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;
+  CircularCompletionQueue<OwnedMemoryBlock, 4096>
+      out_wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;
 };
 
 }  // namespace ario

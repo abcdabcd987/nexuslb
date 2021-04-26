@@ -47,7 +47,12 @@ class MemoryBlockAllocator {
   void Free(OwnedMemoryBlock &&block) /* REQUIRES(mutex_) */;
 
  private:
-  void EnsureNonEmpty() const;
+  void EnsureNonEmpty() const {
+    if (empty()) {
+      throw std::out_of_range("MemoryBlockAllocator is empty");
+    }
+  }
+
   size_t pool_bits_ = 0;
   size_t block_bits_ = 0;
   size_t pool_size_ = 0;

@@ -36,7 +36,7 @@ namespace {
 
 constexpr size_t kRpsMeterHistoryLength = 32;
 constexpr uint32_t kCtrlPlaneLatencyUs = 2000;
-constexpr uint32_t kDataPlaneLatencyUs = 5000;
+constexpr uint32_t kDataPlaneLatencyUs = 2000;
 
 std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
                                             uint32_t batch_size) {
@@ -168,11 +168,11 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
 
 void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   if (rps.has_value()) {
-    double time_budget_ms = model_session_.latency_sla();
-    time_budget_ms -= kCtrlPlaneLatencyUs;
-    time_budget_ms -= kDataPlaneLatencyUs;
+    double time_budget = model_session_.latency_sla() * 1e-3;
+    time_budget -= kCtrlPlaneLatencyUs * 1e-6;
+    time_budget -= kDataPlaneLatencyUs * 1e-6;
     target_batch_size_ =
-        bse_.Estimate(profile_, time_budget_ms * 1e-3, rps->avg, rps->std);
+        bse_.Estimate(profile_, time_budget, rps->avg, rps->std);
   } else {
     double time_budget_ms = model_session_.latency_sla() / 2.0;
     target_batch_size_ = profile_.GetMaxBatchWithFullBudget(time_budget_ms);
@@ -299,6 +299,9 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
     qctx->request.Clear();
     *proto.add_queries() = std::move(query);
   }
+  VLOG(1) << "ModelThread BatchPlanProto: batch_size=" << proto.queries_size()
+          << " elapse=" << exec_elapse.count() / 1e6 << "ms"
+          << " target_batch_size=" << target_batch_size_;
   // Update punch clock
   auto dispatcher_dispatch_ns =
       duration_cast<nanoseconds>(Clock::now().time_since_epoch()).count();
@@ -550,15 +553,12 @@ void RankThread::OnBackendAvailableSoon(NodeId backend_id) {
 
 void RankThread::OnPlanTimer(PlanId plan_id) {
   using namespace std::chrono;
-  VLOG(1) << "OnPlanTimer: start. plan_id=" << plan_id.t;
   TimePoint now = Clock::now();
   std::shared_ptr<ActivePlan> plan;
   {
     auto iter = plans_.find(plan_id);
     if (iter == plans_.end()) {
       // Cancelled plan. Do nothing.
-      VLOG(1) << "OnPlanTimer: return early. Plan cancelled. plan_id="
-              << plan_id.t;
       return;
     }
     plan = iter->second;

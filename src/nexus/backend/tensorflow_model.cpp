@@ -26,7 +26,9 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
   gpu_opt->set_visible_device_list(std::to_string(gpu_id));
   gpu_opt->set_allocator_type("BFC");
   LOG(INFO) << "model memory usage: " << config.memory_usage() << " B";
-  if (config.memory_usage() > 0) {
+  // TODO: Figure out why TensorFlow doesn't when GPU memory limit is set.
+  // if (config.memory_usage() > 0) {
+  if (false) {
     double memory_usage = config.memory_usage();
     gpu_opt->set_per_process_gpu_memory_fraction(memory_usage /
                                                  gpu_device_->TotalMemory());

@@ -37,11 +37,13 @@ void GetBatchByExpandedWindow(
   // See if there is any free lunch
   while (!queries.empty()) {
     if (inputs.size() < target_batch_size) {
+      auto bs =
+          std::min((size_t)target_batch_size, inputs.size() + queries.size());
       inputs.insert(*queries.begin());
       queries.erase(queries.begin());
       auto deadline = (*inputs.begin())->deadline;
-      auto fwd_elapse = nanoseconds(
-          static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
+      auto fwd_elapse =
+          nanoseconds(static_cast<long>(profile.GetForwardLatency(bs) * 1e3));
       auto finish_time = exec_time + fwd_elapse + proc_elapse;
       if (deadline < finish_time) {
         drops.push_back(*inputs.begin());

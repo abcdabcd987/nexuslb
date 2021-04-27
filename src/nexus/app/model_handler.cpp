@@ -189,7 +189,7 @@ void ModelHandler::HandleBackendReply(const QueryResultProto& result) {
   }
   auto ctx = iter->second;
   ctx->HandleQueryResult(result);
-  query_ctx_.erase(qid);
+  query_ctx_.erase(iter);
 }
 
 void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
@@ -197,18 +197,6 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
   VLOG(1) << "HandleDispatcherReply. model_session=" << model_session_id_
           << ", query_id=" << reply.query_id()
           << ", reply.status()=" << CtrlStatus_Name(reply.status());
-  std::shared_ptr<RequestContext> ctx;
-  {
-    std::lock_guard<std::mutex> lock(query_ctx_mu_);
-    auto iter = query_ctx_.find(qid);
-    if (iter == query_ctx_.end()) {
-      // Ignore dispatcher RPC replies that take too long time to return.
-      VLOG(1) << "HandleDispatcherReply cannot find query. model_session="
-              << model_session_id_ << ", query_id=" << reply.query_id();
-      return;
-    }
-    ctx = iter->second;
-  }
 
   if (reply.status() == CtrlStatus::CTRL_OK) {
     // Do nothing. Dispatcher will send the query to the backend.

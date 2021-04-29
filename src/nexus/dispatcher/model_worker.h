@@ -11,7 +11,7 @@
 #include "ario/ario.h"
 #include "nexus/common/rdma_sender.h"
 #include "nexus/dispatcher/global_id_issuer.h"
-#include "nexus/dispatcher/rankmt_scheduler.h"
+#include "nexus/dispatcher/rankmt/scheduler.h"
 
 namespace nexus {
 namespace dispatcher {

@@ -25,7 +25,7 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/util.h"
-#include "nexus/dispatcher/rankmt_scheduler.h"
+#include "nexus/dispatcher/rankmt/scheduler.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 

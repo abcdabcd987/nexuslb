@@ -23,7 +23,7 @@
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/global_id_issuer.h"
 #include "nexus/dispatcher/model_worker.h"
-#include "nexus/dispatcher/rankmt_scheduler.h"
+#include "nexus/dispatcher/rankmt/scheduler.h"
 #include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
 

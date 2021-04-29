@@ -142,7 +142,10 @@ add_library(dispatcher_obj
     src/nexus/dispatcher/model_worker.cpp
     src/nexus/dispatcher/query_context.cpp
 #     src/nexus/dispatcher/rank_scheduler.cpp
-    src/nexus/dispatcher/rankmt_scheduler.cpp
+    src/nexus/dispatcher/rankmt/common.cpp
+    src/nexus/dispatcher/rankmt/model_thread.cpp
+    src/nexus/dispatcher/rankmt/rank_thread.cpp
+    src/nexus/dispatcher/rankmt/scheduler.cpp
 #     src/nexus/dispatcher/round_robin_scheduler.cpp
     src/nexus/dispatcher/session_context.cpp
 )

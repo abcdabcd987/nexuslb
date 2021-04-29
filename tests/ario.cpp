@@ -481,8 +481,7 @@ class BenchHandler : public TestClientHandler {
     distrib_ = std::uniform_int_distribution<size_t>(
         0, remote_memory_size_ - read_size_ - 1);
 
-    executor_.Post([this](ario::ErrorCode) { SendMore(); },
-                   ario::ErrorCode::kOk);
+    executor_.PostOk([this](ario::ErrorCode) { SendMore(); });
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait(lock, [this] { return cnt_recv_ == num_packets_; });
     ReportProgress(true);
@@ -535,13 +534,11 @@ class BenchHandler : public TestClientHandler {
     distrib_ = std::uniform_int_distribution<size_t>(
         0, remote_memory_size_ - read_size_ - 1);
 
-    executor_.Post(
-        [this](ario::ErrorCode) {
-          for (size_t i = 0; i < max_flying_; ++i) {
-            ReadOneMore();
-          }
-        },
-        ario::ErrorCode::kOk);
+    executor_.PostOk([this](ario::ErrorCode) {
+      for (size_t i = 0; i < max_flying_; ++i) {
+        ReadOneMore();
+      }
+    });
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait(lock, [this] { return cnt_recv_ == num_packets_; });
     ReportProgress(true);
@@ -806,8 +803,7 @@ class IncastHandler : public ario::RdmaEventHandler {
     size_t rand_upper = size - options_.read_size + 1;
     servers_.push_back({conn, size, rand_upper});
     if (servers_.size() == num_servers_) {
-      executor_.Post([this](ario::ErrorCode) { StartBench(); },
-                     ario::ErrorCode::kOk);
+      executor_.PostOk([this](ario::ErrorCode) { StartBench(); });
     }
   }
 
@@ -815,9 +811,8 @@ class IncastHandler : public ario::RdmaEventHandler {
                           OwnedMemoryBlock buf) override {
     ++cnt_complete_;
     if (cnt_complete_ == target_complete_) {
-      executor_.Post(
-          [this, now = Clock::now()](ario::ErrorCode) { TestDone(now); },
-          ario::ErrorCode::kOk);
+      executor_.PostOk(
+          [this, now = Clock::now()](ario::ErrorCode) { TestDone(now); });
     }
   }
 
@@ -1001,7 +996,8 @@ class TimerBencher {
     fprintf(stderr, "BenchTimerMain: wait for %.0f ms before benching...\n",
             wait_ms);
 
-    Timer wait_timer(executor_, begin, [this, timeout_interval_ns](ErrorCode) {
+    Timer wait_timer(executor_, begin);
+    wait_timer.AsyncWaitBigCallback([this, timeout_interval_ns](ErrorCode) {
       fprintf(stderr, "BenchTimerMain: benching... timeout_interval: %f us\n",
               timeout_interval_ns / 1e3);
     });

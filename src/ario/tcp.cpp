@@ -214,9 +214,8 @@ void TcpSocket::AsyncRead(MutableBuffer buffer,
     die("Another AsyncRead is in progress.");
   impl_->read_context_.emplace(buffer, std::move(handler));
   if (impl_->read_state_ == TcpAsyncStreamState::kAvailable) {
-    impl_->executor_.Post(
-        [impl = impl_.get()](ErrorCode) { impl->OnReadAvailable(); },
-        ErrorCode::kOk);
+    impl_->executor_.PostOk(
+        [impl = impl_.get()](ErrorCode) { impl->OnReadAvailable(); });
   }
 }
 
@@ -227,9 +226,8 @@ void TcpSocket::AsyncWrite(ConstBuffer buffer,
     die("Another AsyncWrite is in progress.");
   impl_->write_context_.emplace(buffer, std::move(handler));
   if (impl_->write_state_ == TcpAsyncStreamState::kAvailable) {
-    impl_->executor_.Post(
-        [impl = impl_.get()](ErrorCode) { impl->OnWriteAvailable(); },
-        ErrorCode::kOk);
+    impl_->executor_.PostOk(
+        [impl = impl_.get()](ErrorCode) { impl->OnWriteAvailable(); });
   }
 }
 

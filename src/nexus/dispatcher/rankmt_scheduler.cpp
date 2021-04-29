@@ -81,7 +81,7 @@ ModelThread::~ModelThread() {
 void ModelThread::Stop(std::mutex& mutex, size_t& cnt,
                        std::condition_variable& cv) {
   // TODO
-  executor_.Post(
+  executor_.PostBigCallback(
       [this, &mutex, &cnt, &cv](ario::ErrorCode) {
         stop_flag_ = true;
         drop_timer_.CancelAll();
@@ -96,33 +96,34 @@ void ModelThread::Stop(std::mutex& mutex, size_t& cnt,
 
 void ModelThread::PostAddBackend(NodeId backend_id,
                                  std::shared_ptr<BackendDelegate> delegate) {
-  executor_.Post([this, backend_id, delegate = std::move(delegate)](
-                     ario::ErrorCode) { backends_[backend_id] = delegate; },
-                 ario::ErrorCode::kOk);
+  executor_.PostBigCallback(
+      [this, backend_id, delegate = std::move(delegate)](ario::ErrorCode) {
+        backends_[backend_id] = delegate;
+      },
+      ario::ErrorCode::kOk);
 }
 
 void ModelThread::PostAddFrontend(NodeId frontend_id,
                                   std::shared_ptr<FrontendDelegate> delegate) {
-  executor_.Post([this, frontend_id, delegate = std::move(delegate)](
-                     ario::ErrorCode) { frontends_[frontend_id] = delegate; },
-                 ario::ErrorCode::kOk);
+  executor_.PostBigCallback(
+      [this, frontend_id, delegate = std::move(delegate)](ario::ErrorCode) {
+        frontends_[frontend_id] = delegate;
+      },
+      ario::ErrorCode::kOk);
 }
 
 void ModelThread::PostRemoveBackend(NodeId backend_id) {
-  executor_.Post(
-      [this, backend_id](ario::ErrorCode) { backends_.erase(backend_id); },
-      ario::ErrorCode::kOk);
+  executor_.PostOk(
+      [this, backend_id](ario::ErrorCode) { backends_.erase(backend_id); });
 }
 
 void ModelThread::PostRemoveFrontend(NodeId frontend_id) {
-  executor_.Post(
-      [this, frontend_id](ario::ErrorCode) { frontends_.erase(frontend_id); },
-      ario::ErrorCode::kOk);
+  executor_.PostOk(
+      [this, frontend_id](ario::ErrorCode) { frontends_.erase(frontend_id); });
 }
 
 void ModelThread::PostCommand() {
-  executor_.Post([this](ario::ErrorCode) { ExecuteCommand(); },
-                 ario::ErrorCode::kOk);
+  executor_.PostOk([this](ario::ErrorCode) { ExecuteCommand(); });
 }
 
 CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
@@ -334,10 +335,12 @@ RankThread::ActivePlan::ActivePlan(ario::EpollExecutor& executor)
     : send_timer(executor) {}
 
 RankThread::BackendContext::BackendContext(
-    NodeId backend_id, std::shared_ptr<BackendDelegate> delegate)
+    ario::EpollExecutor* executor, NodeId backend_id,
+    std::shared_ptr<BackendDelegate> delegate)
     : backend_id(backend_id),
       delegate(std::move(delegate)),
-      next_available_time(std::chrono::nanoseconds(0)) {}
+      next_available_time(std::chrono::nanoseconds(0)),
+      schedule_timer(*CHECK_NOTNULL(executor)) {}
 
 RankThread::RankThread(ario::EpollExecutor* executor)
     : executor_(*CHECK_NOTNULL(executor)), stop_flag_(false) {}
@@ -350,7 +353,7 @@ RankThread::~RankThread() {
 void RankThread::Stop(std::mutex& mutex, size_t& cnt,
                       std::condition_variable& cv) {
   // TODO
-  executor_.Post(
+  executor_.PostBigCallback(
       [this, &mutex, &cnt, &cv](ario::ErrorCode) {
         stop_flag_ = true;
         plans_.clear();
@@ -368,9 +371,9 @@ PlanId RankThread::NextPlanId() { return PlanId(next_plan_id_.t++); }
 
 void RankThread::PostCommandFromModelThread(
     const std::string* ptr_model_session_id) {
-  executor_.Post([this, ptr_model_session_id](
-                     ario::ErrorCode) { ExecuteCommand(ptr_model_session_id); },
-                 ario::ErrorCode::kOk);
+  executor_.PostOk([this, ptr_model_session_id](ario::ErrorCode) {
+    ExecuteCommand(ptr_model_session_id);
+  });
 }
 
 void RankThread::ExecuteCommand(const std::string* ptr_model_session_id) {
@@ -410,7 +413,7 @@ void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
 
 void RankThread::PostAddModelThread(ModelSession model_session,
                                     ModelThread* model_thread) {
-  executor_.Post(
+  executor_.PostBigCallback(
       [this, model_session = std::move(model_session),
        model_thread](ario::ErrorCode) {
         auto model_session_id = ModelSessionToString(model_session);
@@ -436,9 +439,10 @@ void RankThread::PostAddModelThread(ModelSession model_session,
 
 void RankThread::PostAddBackend(NodeId backend_id,
                                 std::shared_ptr<BackendDelegate> delegate) {
-  executor_.Post(
+  executor_.PostBigCallback(
       [this, backend_id, delegate = std::move(delegate)](ario::ErrorCode) {
-        auto bctx = std::make_shared<BackendContext>(backend_id, delegate);
+        auto bctx =
+            std::make_shared<BackendContext>(&executor_, backend_id, delegate);
         if (backends_.count(bctx->backend_id)) {
           LOG(ERROR) << "Backend already exists. backend_id=" << backend_id;
           return;
@@ -451,12 +455,10 @@ void RankThread::PostAddBackend(NodeId backend_id,
 }
 
 void RankThread::PostRemoveBackend(NodeId backend_id) {
-  executor_.Post(
-      [this, backend_id](ario::ErrorCode) {
-        backend_availability_pool_.Remove(backend_id);
-        backends_.erase(backend_id);
-      },
-      ario::ErrorCode::kOk);
+  executor_.PostOk([this, backend_id](ario::ErrorCode) {
+    backend_availability_pool_.Remove(backend_id);
+    backends_.erase(backend_id);
+  });
 }
 
 void RankThread::UpdateActivePlans(TimePoint earliest_exec_time,

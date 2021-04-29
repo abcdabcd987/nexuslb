@@ -11,7 +11,7 @@
 
 namespace nexus {
 
-using Clock = std::chrono::high_resolution_clock;
+using Clock = std::chrono::system_clock;
 using TimePoint = std::chrono::time_point<Clock, std::chrono::nanoseconds>;
 
 /*! \brief Timer helps to record time and count duration between two time

@@ -17,16 +17,15 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ario/epoll.h"
-#include "ario/error.h"
-#include "ario/timer.h"
+#include "ario/ario.h"
 #include "bench_dispatcher/fake_accessor.h"
+#include "bench_dispatcher/fake_backend.h"
+#include "bench_dispatcher/fake_frontend.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
+#include "nexus/common/time_util.h"
 #include "nexus/common/util.h"
-#include "nexus/dispatcher/rank_scheduler.h"
-#include "nexus/dispatcher/round_robin_scheduler.h"
-#include "nexus/dispatcher/scheduler.h"
+#include "nexus/dispatcher/rankmt_scheduler.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -34,7 +33,8 @@ DEFINE_int64(seed, 0xabcdabcd987LL, "Random seed");
 DEFINE_int32(warmup, 3, "Warmup duration in seconds");
 DEFINE_int32(duration, 60, "Benchmark duration in seconds");
 DEFINE_double(multiplier, 1.0, "Multiplier for avg_rps and num_backends");
-DEFINE_int32(threads, 1, "Scheduler worker threads");
+DEFINE_bool(multithread, false, "Whether to enable multithreading");
+DEFINE_int32(num_backends, 1, "Number of backends");
 
 using namespace nexus;
 using namespace nexus::dispatcher;
@@ -44,29 +44,33 @@ struct Options {
   int warmup;
   int duration;
   double multiplier;
-  int threads;
+  bool multithread;
+  int num_backends;
   std::vector<char*> workloads;
 
   static Options FromArgs(int argc, char** argv, int argp) {
     if (argp == argc) {
       LOG(FATAL) << "Please provide a list of workloads. Example: \""
-                    "sleep#6817,23431,999,0:resnet_01:1:100"
-                    "@avg_rps=1953,num_backends=29\"";
+                    "sleep#6817,23431,0,0:resnet_01:1:100"
+                    "@avg_rps=1953\"";
     }
-    return Options{FLAGS_seed,       FLAGS_warmup,  FLAGS_duration,
-                   FLAGS_multiplier, FLAGS_threads, {argv + argp, argv + argc}};
+    return Options{FLAGS_seed,
+                   FLAGS_warmup,
+                   FLAGS_duration,
+                   FLAGS_multiplier,
+                   FLAGS_multithread,
+                   FLAGS_num_backends,
+                   {argv + argp, argv + argc}};
   }
 };
 
 struct Workload {
   ModelSession model_session;
   int avg_rps;
-  int num_backends;
 
   std::string ToString() const {
     std::stringstream ss;
-    ss << ModelSessionToString(model_session) << '@' << "avg_rps=" << avg_rps
-       << ",num_backends=" << num_backends;
+    ss << ModelSessionToString(model_session) << '@' << "avg_rps=" << avg_rps;
     return ss.str();
   }
 };
@@ -90,7 +94,7 @@ int ParseIntAttribute(std::unordered_map<std::string, std::string>& kvs,
 }
 
 Workload ParseWorkload(const std::string& str) {
-  // e.g. sleep#6817,23431,999,0:resnet_01:1:100@avg_rps=1953,num_backends=29
+  // e.g. sleep#6817,23431,0,0:resnet_01:1:100@avg_rps=1953
   Workload ret;
   auto pos_at = str.find('@');
   if (pos_at == std::string::npos) {
@@ -118,172 +122,33 @@ Workload ParseWorkload(const std::string& str) {
     }
   }
   ret.avg_rps = ParseIntAttribute(kvs, "avg_rps", str);
-  ret.num_backends = ParseIntAttribute(kvs, "num_backends", str);
   return ret;
 }
 
-class FakeFrontendDelegate : public FrontendDelegate {
- public:
-  enum class QueryStatus {
-    kPending,
-    kDropped,
-    kTimeout,
-    kSuccess,
-  };
-
-  struct QueryContext {
-    QueryStatus status;
-    int64_t frontend_recv_ns;
-  };
-
-  FakeFrontendDelegate(uint32_t node_id, ModelSession model_session)
-      : FrontendDelegate(node_id), model_session_(std::move(model_session)) {}
-
-  void Tick() override {
-    // Ignore
-  }
-
-  void UpdateBackendList(BackendListUpdates&& request) override {
-    // Ignore
-  }
-
-  void MarkQueryDroppedByDispatcher(DispatchReply&& request) override {
-    auto& qctx = queries_[request.query_id()];
-    qctx.status = QueryStatus::kDropped;
-  }
-
-  void Reserve(size_t max_queries) {
-    reserved_size_ = max_queries;
-    queries_.reset(new QueryContext[max_queries]);
-  }
-
-  void ReceivedQuery(uint64_t query_id, int64_t frontend_recv_ns) {
-    auto& qctx = queries_[query_id];
-    qctx.status = QueryStatus::kPending;
-    qctx.frontend_recv_ns = frontend_recv_ns;
-  }
-
-  void GotBatchReply(const BatchPlanProto& plan) {
-    for (const auto& query : plan.queries()) {
-      auto query_id = query.query_without_input().query_id();
-      auto& qctx = queries_[query_id];
-      auto deadline_ns =
-          qctx.frontend_recv_ns + model_session_.latency_sla() * 1000 * 1000;
-      if (plan.expected_finish_time_ns() < deadline_ns) {
-        qctx.status = QueryStatus::kSuccess;
-      } else {
-        qctx.status = QueryStatus::kTimeout;
-      }
-    }
-  }
-
-  const ModelSession& model_session() const { return model_session_; }
-  QueryContext* queries() const { return queries_.get(); }
-  size_t total_queries() const { return total_queries_; }
-  void set_total_queries(size_t total_queries) {
-    total_queries_ = total_queries;
-  }
-
- private:
-  ModelSession model_session_;
-  size_t reserved_size_ = 0;
-  std::unique_ptr<QueryContext[]> queries_;
-  size_t total_queries_ = 0;
-};
-
-struct OrderBatchPlanByExecTimeASC {
-  bool operator()(const BatchPlanProto& lhs, const BatchPlanProto& rhs) const {
-    return lhs.exec_time_ns() < rhs.exec_time_ns();
-  }
-};
-
-bool BatchPlanIntersects(const BatchPlanProto& a, const BatchPlanProto& b) {
-  if (a.expected_finish_time_ns() <= b.exec_time_ns()) return false;
-  if (b.expected_finish_time_ns() <= a.exec_time_ns()) return false;
-  return true;
-}
-
-class FakeBackendDelegate : public BackendDelegate {
- public:
-  FakeBackendDelegate(uint32_t node_id, FakeDispatcherAccessor* accessor)
-      : BackendDelegate(node_id, "FakeGPU", "FakeUUID", 0),
-        accessor_(accessor) {}
-
-  void Tick() override {
-    // Ignore
-  }
-
-  void SendLoadModelCommand(const ModelSession& model_session,
-                            uint32_t max_batch) override {
-    // Ignore
-  }
-
-  void EnqueueBatchPlan(BatchPlanProto&& request) override {
-    TimePoint now = Clock::now();
-    auto now_ns = now.time_since_epoch().count();
-
-    CHECK_LT(request.exec_time_ns(), request.expected_finish_time_ns())
-        << "Incorrect finish time. " << request.DebugString();
-    LOG_IF(ERROR, now_ns > request.exec_time_ns())
-        << "BatchPlan too late. " << request.DebugString();
-
-    std::vector<BatchPlanProto> finished_plans;
-    std::unique_lock lock(mutex_);
-    for (auto iter = batchplans_.begin(); iter != batchplans_.end();) {
-      if (iter->expected_finish_time_ns() > now_ns) {
-        finished_plans.emplace_back(std::move(*iter));
-        iter = batchplans_.erase(iter);
-      } else {
-        CHECK(!BatchPlanIntersects(*iter, request))
-            << "Batchplan intersects. iter: " << iter->DebugString()
-            << " request: " << request.DebugString();
-        ++iter;
-      }
-    }
-    batchplans_.emplace(std::move(request));
-    lock.unlock();
-    for (const auto& plan : finished_plans) {
-      OnBatchFinish(plan);
-    }
-  }
-
-  void DrainBatchPlans() {
-    for (const auto& plan : batchplans_) {
-      OnBatchFinish(plan);
-    }
-    batchplans_.clear();
-  }
-
- private:
-  void OnBatchFinish(const BatchPlanProto& plan) {
-    auto frontend_id = plan.queries(0).query_without_input().frontend_id();
-    auto* frontend = accessor_->GetFrontend(NodeId(frontend_id)).get();
-    auto* fake = static_cast<FakeFrontendDelegate*>(frontend);
-    fake->GotBatchReply(plan);
-  }
-
-  FakeDispatcherAccessor* accessor_;
-  std::mutex mutex_;
-  std::set<BatchPlanProto, OrderBatchPlanByExecTimeASC> batchplans_;
-};
-
 class DispatcherRunner {
  public:
-  explicit DispatcherRunner(Options options) : options_(std::move(options)) {
+  explicit DispatcherRunner(Options options)
+      : options_(std::move(options)), gen_(options_.seed) {
+    main_executor_ =
+        std::make_shared<ario::EpollExecutor>(ario::PollerType::kSpinning);
+    if (options_.multithread) {
+      rank_executor_ =
+          std::make_shared<ario::EpollExecutor>(ario::PollerType::kSpinning);
+    } else {
+      rank_executor_ = main_executor_;
+    }
+
     BuildWorkloads();
     LOG(INFO) << "Preparing the benchmark";
-    // BuildRoundRobinScheduler();
-    BuildRankScheduler();
+    BuildMultiThreadRankScheduler();
     BuildFakeServers();
   }
 
-  void Run() {
+  int Run() {
     TimePoint now = Clock::now();
     warmup_time_ = now + std::chrono::seconds(2);
     serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
     stop_time_ = serious_time_ + std::chrono::seconds(options_.duration);
-    cnt_stopped_ = 0;
-    should_join_ = false;
 
     loadgen_contexts_.resize(workloads_.size());
     for (size_t i = 0; i < workloads_.size(); ++i) {
@@ -291,40 +156,61 @@ class DispatcherRunner {
       PrepareNextRequest(i);
       auto& l = loadgen_contexts_[i];
       l.timer = ario::Timer(
-          executor_, l.next_time,
+          *model_executors_[i], l.next_time,
           [this, i](ario::ErrorCode error) { ContinueLoadGen(error, i); });
     }
-    for (int i = 0; i < options_.threads; ++i) {
-      threads_.emplace_back(&ario::EpollExecutor::RunEventLoop, &executor_);
+    threads_.emplace_back(&ario::EpollExecutor::RunEventLoop,
+                          main_executor_.get());
+    if (options_.multithread) {
+      threads_.emplace_back(&ario::EpollExecutor::RunEventLoop,
+                            rank_executor_.get());
+      for (auto& e : model_executors_) {
+        threads_.emplace_back(&ario::EpollExecutor::RunEventLoop, e.get());
+      }
     }
 
-    ario::Timer wait_warmup(executor_, warmup_time_, [this](ario::ErrorCode) {
-      LOG(INFO) << "Start warming up...";
-    });
-    ario::Timer wait_serious(executor_, serious_time_, [this](ario::ErrorCode) {
-      LOG(INFO) << "Start benchmarking...";
+    ario::Timer wait_warmup(
+        *main_executor_, warmup_time_,
+        [this](ario::ErrorCode) { LOG(INFO) << "Start warming up..."; });
+    ario::Timer wait_serious(
+        *main_executor_, serious_time_,
+        [this](ario::ErrorCode) { LOG(INFO) << "Start benchmarking..."; });
+    ario::Timer wait_stop(*main_executor_, stop_time_, [this](ario::ErrorCode) {
+      LOG(INFO) << "Stopped sending more requests";
     });
 
-    {
-      std::unique_lock lock(mutex_);
-      cv_.wait(lock, [this] { return cnt_stopped_ == workloads_.size(); });
+    uint32_t max_slo = 0;
+    for (auto& w : workloads_) {
+      max_slo = std::max(max_slo, w.model_session.latency_sla());
     }
-    LOG(INFO) << "Stopped sending more requests";
-
-    ario::Timer wait_finish(executor_, stop_time_ + std::chrono::seconds(1),
-                            [this](ario::ErrorCode) {
-                              std::unique_lock lock(mutex_);
-                              should_join_ = true;
-                              lock.unlock();
-                              cv_.notify_all();
-                            });
+    uint32_t cooldown_ms = max_slo * 1.5;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool should_join = false;
+    ario::Timer wait_finish(
+        *main_executor_, stop_time_ + std::chrono::milliseconds(cooldown_ms));
+    wait_finish.AsyncWaitBigCallback(
+        [this, &mutex, &cv, &should_join](ario::ErrorCode) {
+          std::unique_lock lock(mutex);
+          should_join = true;
+          lock.unlock();
+          cv.notify_all();
+        });
     {
-      std::unique_lock lock(mutex_);
-      cv_.wait(lock, [this] { return should_join_; });
+      std::unique_lock lock(mutex);
+      cv.wait(lock, [&should_join] { return should_join; });
     }
 
     scheduler_->Stop();
-    executor_.StopEventLoop();
+
+    if (options_.multithread) {
+      for (auto& e : model_executors_) {
+        e->StopEventLoop();
+      }
+      rank_executor_->StopEventLoop();
+    }
+    main_executor_->StopEventLoop();
+
     for (auto iter = threads_.rbegin(); iter != threads_.rend(); ++iter) {
       iter->join();
     }
@@ -341,11 +227,12 @@ class DispatcherRunner {
     auto serious_time_ns = serious_time_.time_since_epoch().count();
     int sum_noreply = 0, sum_dropped = 0, sum_timeout = 0, sum_success = 0;
     double worst_badrate = 0.0;
-    for (auto& frontend : frontends_) {
+    for (size_t i = 0; i < options_.workloads.size(); ++i) {
+      auto& frontend = frontends_[i];
       int cnt_noreply = 0, cnt_dropped = 0, cnt_timeout = 0, cnt_success = 0;
-      auto n = frontend->total_queries();
-      for (size_t i = 1; i <= n; ++i) {
-        const auto& qctx = frontend->queries()[i];
+      auto n = loadgen_contexts_[i].last_query_id - 1;
+      for (size_t j = 1; j <= n; ++j) {
+        const auto& qctx = frontend->queries()[j];
         if (qctx.frontend_recv_ns < serious_time_ns) {
           continue;
         }
@@ -391,9 +278,11 @@ class DispatcherRunner {
               << "Throughput: " << throughput << " rps";
 
     if (sum_noreply) {
-      LOG(FATAL) << "Buggy scheduler. There are " << sum_noreply
+      LOG(ERROR) << "Buggy scheduler. There are " << sum_noreply
                  << " queries having no reply.";
+      return 1;
     }
+    return 0;
   }
 
  private:
@@ -401,8 +290,6 @@ class DispatcherRunner {
     for (auto& arg : options_.workloads) {
       auto w = ParseWorkload(arg);
       w.avg_rps = static_cast<int>(w.avg_rps * options_.multiplier);
-      w.num_backends =
-          static_cast<int>(std::round(w.num_backends * options_.multiplier));
       workloads_.push_back(std::move(w));
     }
 
@@ -412,48 +299,42 @@ class DispatcherRunner {
     }
   }
 
-  void BuildRoundRobinScheduler() {
-    YAML::Node static_config;
-    for (const auto& w : workloads_) {
-      const auto& model_name = w.model_session.model_name();
-      static_config[model_name] = w.num_backends;
-    }
-
-    auto accessor = std::make_unique<FakeDispatcherAccessor>();
-    accessor_ = accessor.get();
-    RoundRobinScheduler::Builder builder(&ModelDatabase::Singleton(),
-                                         std::move(static_config));
-    scheduler_ = builder.Build(std::move(accessor));
-  }
-
-  void BuildRankScheduler() {
-    auto accessor = std::make_unique<FakeDispatcherAccessor>();
-    accessor_ = accessor.get();
-    RankScheduler::Builder builder(executor_);
-    scheduler_ = builder.Build(std::move(accessor));
+  void BuildMultiThreadRankScheduler() {
+    MultiThreadRankScheduler::Builder builder(main_executor_.get(),
+                                              rank_executor_.get());
+    scheduler_ = builder.Build();
   }
 
   void BuildFakeServers() {
     uint32_t next_backend_id = 10001;
-    for (const auto& w : workloads_) {
-      for (int j = 0; j < w.num_backends; ++j) {
-        auto backend_id = next_backend_id++;
-        auto backend =
-            std::make_shared<FakeBackendDelegate>(backend_id, accessor_);
-        accessor_->AddBackend(NodeId(backend_id), backend);
-        backends_.push_back(backend);
-        scheduler_->AddBackend(NodeId(backend_id));
-      }
+    for (int i = 0; i < options_.num_backends; ++i) {
+      auto backend_id = next_backend_id++;
+      auto backend = std::make_shared<FakeBackendDelegate>(
+          main_executor_.get(), backend_id, &accessor_);
+      accessor_.AddBackend(NodeId(backend_id), backend);
+      scheduler_->AddBackend(NodeId(backend_id), backend);
+      backends_.push_back(backend);
     }
 
     for (size_t i = 0; i < workloads_.size(); ++i) {
       const auto& w = workloads_[i];
       uint32_t frontend_id = 60001 + i;
-      auto frontend =
-          std::make_shared<FakeFrontendDelegate>(frontend_id, w.model_session);
-      accessor_->AddFrontend(NodeId(frontend_id), frontend);
+      auto frontend = std::make_shared<FakeFrontendDelegate>(
+          [this](size_t cnt_done, size_t workload_idx) {}, frontend_id,
+          w.model_session, i);
+      accessor_.AddFrontend(NodeId(frontend_id), frontend);
+      scheduler_->AddFrontend(NodeId(frontend_id), frontend);
       frontends_.push_back(frontend);
-      scheduler_->AddModelSession(w.model_session);
+
+      if (options_.multithread) {
+        model_executors_.push_back(
+            std::make_shared<ario::EpollExecutor>(ario::PollerType::kSpinning));
+      } else {
+        model_executors_.push_back(main_executor_);
+      }
+      auto entrance = scheduler_->AddModelSession(model_executors_.back().get(),
+                                                  w.model_session);
+      request_entrances_.push_back(entrance);
     }
   }
 
@@ -506,7 +387,8 @@ class DispatcherRunner {
     auto& l = loadgen_contexts_[workload_idx];
     TimePoint now = Clock::now();
     while (l.next_time < now && l.next_time <= stop_time_) {
-      scheduler_->EnqueueQuery(std::move(l.request));
+      auto& entrance = request_entrances_[workload_idx];
+      entrance.EnqueueQuery(std::move(l.request));
       l.last_time = l.next_time;
       PrepareNextRequest(workload_idx);
     }
@@ -515,19 +397,8 @@ class DispatcherRunner {
       l.timer.AsyncWait([this, workload_idx](ario::ErrorCode error) {
         ContinueLoadGen(error, workload_idx);
       });
-    } else {
-      l.frontend->set_total_queries(l.last_query_id);
-      std::unique_lock lock(mutex_);
-      ++cnt_stopped_;
-      if (cnt_stopped_ == workloads_.size()) {
-        lock.unlock();
-        cv_.notify_all();
-      }
     }
   }
-
-  using Clock = std::chrono::high_resolution_clock;
-  using TimePoint = std::chrono::time_point<Clock, std::chrono::nanoseconds>;
 
   struct LoadGenContext {
     ario::Timer timer;
@@ -546,23 +417,22 @@ class DispatcherRunner {
   };
 
   Options options_;
+  std::mt19937 gen_;
   std::vector<Workload> workloads_;
   std::vector<LoadGenContext> loadgen_contexts_;
-  ario::EpollExecutor executor_;
-  std::mutex scheduler_mutex_;
-  std::unique_ptr<Scheduler> scheduler_;
-  FakeDispatcherAccessor* accessor_;  // Owned by scheduler_
+  std::shared_ptr<ario::EpollExecutor> main_executor_;
+  std::shared_ptr<ario::EpollExecutor> rank_executor_;
+  std::vector<std::shared_ptr<ario::EpollExecutor>> model_executors_;
+  std::unique_ptr<MultiThreadRankScheduler> scheduler_;
+  std::vector<MultiThreadRankScheduler::RequestEntrance> request_entrances_;
+  FakeDispatcherAccessor accessor_;
   std::vector<std::shared_ptr<FakeBackendDelegate>> backends_;
   std::vector<std::shared_ptr<FakeFrontendDelegate>> frontends_;
 
   std::vector<std::thread> threads_;
-  std::mutex mutex_;
-  std::condition_variable cv_;
   TimePoint warmup_time_;
   TimePoint serious_time_;
   TimePoint stop_time_;
-  size_t cnt_stopped_;
-  bool should_join_;
 };
 
 int main(int argc, char** argv) {
@@ -573,5 +443,5 @@ int main(int argc, char** argv) {
 
   auto options = Options::FromArgs(argc, argv, argp);
   DispatcherRunner bencher(std::move(options));
-  bencher.Run();
+  return bencher.Run();
 }

@@ -16,11 +16,12 @@ class CallbackQueue {
   };
 
   bool IsEmpty() const;
-  void PushBack(std::function<void(ErrorCode)> &&callback, ErrorCode error);
-  std::unique_ptr<CallbackBind> PopFront();
+  void PushBack(std::function<void(ErrorCode)>&& callback, ErrorCode error);
+  CallbackQueue::CallbackBind PopFront();
+  void PopAll(std::list<CallbackBind>& out);
 
  private:
-  std::list<std::unique_ptr<CallbackBind>> queue_;
+  std::list<CallbackBind> queue_;
 };
 
 }  // namespace ario

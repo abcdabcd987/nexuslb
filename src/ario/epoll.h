@@ -11,6 +11,7 @@
 #include "ario/chrono.h"
 #include "ario/error.h"
 #include "ario/interrupter.h"
+#include "ario/small_function.h"
 #include "ario/timerfd.h"
 
 namespace ario {
@@ -52,7 +53,11 @@ class EpollExecutor {
 
   void RunEventLoop();
   void StopEventLoop();
-  void Post(std::function<void(ErrorCode)> &&func, ErrorCode error);
+  void PostBigCallback(std::function<void(ErrorCode)> &&func, ErrorCode error);
+  void PostOk(SmallFunction<void(ErrorCode)> &&func) {
+    PostBigCallback(func.Release(), ErrorCode::kOk);
+  }
+
   void ScheduleTimer(TimerData &data, TimePoint timeout,
                      std::function<void(ErrorCode)> &&callback);
   size_t CancelTimer(TimerData &data);
@@ -75,8 +80,11 @@ class EpollExecutor {
 
   std::mutex mutex_;
   TimerFD timerfd_ /* GUARDED_BY(mutex_) */;
-  std::vector<EventPoller *> event_pollers_ /* GUARDED_BY(mutex_) */;
   CallbackQueue callback_queue_ /* GUARDED_BY(mutex_) */;
+
+  std::mutex event_pollers_write_mutex_;
+  size_t event_pollers_size_;
+  std::vector<EventPoller *> event_pollers_;
 };
 
 }  // namespace ario

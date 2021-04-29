@@ -122,7 +122,7 @@ void ModelWorker::Join() { ev_thread_.join(); }
 void ModelWorker::AddModelSession(
     std::string model_session_id,
     MultiThreadRankScheduler::RequestEntrance entrance) {
-  executor_.Post(
+  executor_.PostBigCallback(
       [this, m = std::move(model_session_id), entrance](ario::ErrorCode) {
         model_session_entrance_table_.erase(m);
         model_session_entrance_table_.try_emplace(m, std::move(entrance));

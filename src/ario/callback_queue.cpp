@@ -6,14 +6,17 @@ bool CallbackQueue::IsEmpty() const { return queue_.empty(); }
 
 void CallbackQueue::PushBack(std::function<void(ErrorCode)>&& callback,
                              ErrorCode error) {
-  auto* bind = new CallbackBind{std::move(callback), error};
-  queue_.emplace_back(bind);
+  queue_.push_back({std::move(callback), error});
 }
 
-std::unique_ptr<CallbackQueue::CallbackBind> CallbackQueue::PopFront() {
+CallbackQueue::CallbackBind CallbackQueue::PopFront() {
   auto bind = std::move(queue_.front());
   queue_.pop_front();
   return bind;
+}
+
+void CallbackQueue::PopAll(std::list<CallbackBind>& out) {
+  out.splice(out.end(), queue_);
 }
 
 }  // namespace ario

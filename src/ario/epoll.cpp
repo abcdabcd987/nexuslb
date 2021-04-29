@@ -8,17 +8,24 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 
 #include "ario/error.h"
 #include "ario/utils.h"
 
 namespace ario {
 
+namespace {
+constexpr size_t kMaxEventPollers = 128;
+}
+
 thread_local EpollExecutor *EpollExecutor::this_thread_executor_ = nullptr;
 
 EpollExecutor::EpollExecutor(PollerType poller_type)
     : poller_type_(poller_type), epoll_fd_(epoll_create1(0)) {
   if (epoll_fd_ < 0) die_perror("epoll_create1");
+
+  event_pollers_.reserve(kMaxEventPollers);
 
   if (poller_type == PollerType::kBlocking) {
     epoll_event event;
@@ -81,7 +88,7 @@ void EpollExecutor::LoopBlocking() {
       }
     }
 
-    for (std::unique_ptr<CallbackQueue::CallbackBind> bind;;) {
+    for (CallbackQueue::CallbackBind bind;;) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
         if (callback_queue_.IsEmpty()) {
@@ -89,7 +96,7 @@ void EpollExecutor::LoopBlocking() {
         }
         bind = std::move(callback_queue_.PopFront());
       }
-      bind->callback(bind->error);
+      bind.callback(bind.error);
     }
   }
 }
@@ -109,6 +116,7 @@ void EpollExecutor::LoopSpinning() {
   struct epoll_event events[kMaxEvents];
   memset(&events, 0, sizeof(events));
 
+  std::list<CallbackQueue::CallbackBind> binds;
   while (!stop_event_loop_) {
     // File descriptors
     int n = epoll_wait(epoll_fd_, events, kMaxEvents, 0);
@@ -119,17 +127,27 @@ void EpollExecutor::LoopSpinning() {
     }
 
     // Custom poller (RDMA)
-    for (auto *poller : event_pollers_) {
+    // SAFTY: event_pollers_ doesn't reallocate.
+    // SAFTY: event_pollers_size_ <= event_pollers_.size()
+    //        because elements won't ever be removed from event_pollers_.
+    for (size_t i = 0; i < event_pollers_size_; ++i) {
+      auto *poller = event_pollers_[i];
       poller->Poll();
     }
 
-    // Timer
-    timerfd_.PopReadyTimerItems(callback_queue_);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
 
-    // Posted events
-    while (!callback_queue_.IsEmpty()) {
-      auto bind = callback_queue_.PopFront();
-      bind->callback(bind->error);
+      // Timer
+      timerfd_.PopReadyTimerItems(callback_queue_);
+
+      // Posted events
+      callback_queue_.PopAll(binds);
+    }
+
+    // Run callbacks
+    for (auto &bind : binds) {
+      bind.callback(bind.error);
     }
 
     _mm_pause();
@@ -150,8 +168,8 @@ void EpollExecutor::StopEventLoop() {
   });
 }
 
-void EpollExecutor::Post(std::function<void(ErrorCode)> &&func,
-                         ErrorCode error) {
+void EpollExecutor::PostBigCallback(std::function<void(ErrorCode)> &&func,
+                                    ErrorCode error) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     callback_queue_.PushBack(std::move(func), error);
@@ -203,8 +221,17 @@ void EpollExecutor::WatchFD(int fd, EpollEventHandler &handler) {
 }
 
 void EpollExecutor::AddPoller(EventPoller &poller) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  if (poller_type_ == PollerType::kBlocking) {
+    throw std::invalid_argument("poller_type_ == PollerType::kBlocking");
+  }
+
+  std::lock_guard<std::mutex> lock(event_pollers_write_mutex_);
+  if (event_pollers_.size() == event_pollers_.capacity()) {
+    throw std::invalid_argument(
+        "event_pollers_.size() == event_pollers_.capacity()");
+  }
   event_pollers_.push_back(&poller);
+  event_pollers_size_ = event_pollers_.size();
 }
 
 }  // namespace ario

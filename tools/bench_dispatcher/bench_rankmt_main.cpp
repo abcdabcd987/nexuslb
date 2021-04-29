@@ -17,15 +17,15 @@
 #include <unordered_map>
 #include <vector>
 
-#include "ario/epoll.h"
-#include "ario/error.h"
-#include "ario/timer.h"
+#include "ario/ario.h"
 #include "bench_dispatcher/fake_accessor.h"
+#include "bench_dispatcher/fake_backend.h"
+#include "bench_dispatcher/fake_frontend.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
+#include "nexus/common/time_util.h"
 #include "nexus/common/util.h"
 #include "nexus/dispatcher/rankmt_scheduler.h"
-#include "nexus/dispatcher/scheduler.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -83,185 +83,6 @@ struct Workload {
   std::string ToString() const { return ModelSessionToString(model_session); }
 };
 
-class DispatcherBencher;
-
-class FakeFrontendDelegate : public FrontendDelegate {
- public:
-  enum class QueryStatus {
-    kPending,
-    kDropped,
-    kTimeout,
-    kSuccess,
-  };
-
-  struct QueryContext {
-    QueryStatus status;
-    int64_t frontend_recv_ns;
-  };
-
-  FakeFrontendDelegate(DispatcherBencher& bencher, uint32_t node_id,
-                       ModelSession model_session, size_t workload_idx)
-      : FrontendDelegate(node_id),
-        bencher_(&bencher),
-        model_session_(std::move(model_session)),
-        workload_idx_(workload_idx) {}
-
-  void Tick() override {
-    // Ignore
-  }
-
-  void UpdateBackendList(BackendListUpdates&& request) override {
-    // Ignore
-  }
-
-  void ReportRequestDone(size_t cnt_done);
-
-  void MarkQueryDroppedByDispatcher(DispatchReply&& request) override {
-    auto& qctx = queries_[request.query_id()];
-    qctx.status = QueryStatus::kDropped;
-    ReportRequestDone(1);
-  }
-
-  void Reserve(size_t max_queries) {
-    reserved_size_ = max_queries;
-    queries_.reset(new QueryContext[max_queries]);
-  }
-
-  void ReceivedQuery(uint64_t query_id, int64_t frontend_recv_ns) {
-    auto& qctx = queries_[query_id];
-    qctx.status = QueryStatus::kPending;
-    qctx.frontend_recv_ns = frontend_recv_ns;
-  }
-
-  void GotBatchReply(const BatchPlanProto& plan) {
-    for (const auto& query : plan.queries()) {
-      auto query_id = query.query_without_input().query_id();
-      auto& qctx = queries_[query_id];
-      auto deadline_ns =
-          qctx.frontend_recv_ns + model_session_.latency_sla() * 1000 * 1000;
-      if (plan.expected_finish_time_ns() < deadline_ns) {
-        qctx.status = QueryStatus::kSuccess;
-      } else {
-        qctx.status = QueryStatus::kTimeout;
-      }
-    }
-    ReportRequestDone(plan.queries_size());
-  }
-
-  const ModelSession& model_session() const { return model_session_; }
-  const QueryContext* queries() const { return queries_.get(); }
-
- private:
-  DispatcherBencher* bencher_;
-  ModelSession model_session_;
-  size_t workload_idx_;
-  size_t reserved_size_ = 0;
-  std::unique_ptr<QueryContext[]> queries_;
-};
-
-bool HeapOrderBatchPlanByExecTimeASC(const BatchPlanProto& lhs,
-                                     const BatchPlanProto& rhs) {
-  return lhs.exec_time_ns() > rhs.exec_time_ns();
-}
-
-bool BatchPlanIntersects(const BatchPlanProto& a, const BatchPlanProto& b) {
-  if (a.expected_finish_time_ns() <= b.exec_time_ns()) return false;
-  if (b.expected_finish_time_ns() <= a.exec_time_ns()) return false;
-  return true;
-}
-
-class FakeBackendDelegate : public BackendDelegate {
- public:
-  FakeBackendDelegate(ario::EpollExecutor& executor, uint32_t node_id,
-                      FakeDispatcherAccessor* accessor)
-      : BackendDelegate(node_id, "FakeGPU", "FakeUUID", 0),
-        executor_(&executor),
-        accessor_(accessor),
-        timer_(*executor_) {}
-
-  void Tick() override {
-    // Ignore
-  }
-
-  void SendLoadModelCommand(const ModelSession& model_session,
-                            uint32_t max_batch) override {
-    // Ignore
-  }
-
-  void EnqueueBatchPlan(BatchPlanProto&& request) override {
-    TimePoint now = Clock::now();
-    auto now_ns = now.time_since_epoch().count();
-
-    CHECK_LT(request.exec_time_ns(), request.expected_finish_time_ns())
-        << "Incorrect finish time. " << request.DebugString();
-    LOG_IF(ERROR, now_ns > request.exec_time_ns())
-        << "BatchPlan too late. " << request.DebugString();
-
-    std::lock_guard lock(mutex_);
-    for (const auto& plan : batchplans_) {
-      CHECK(!BatchPlanIntersects(plan, request))
-          << "Batchplan intersects.\n"
-          << "existing plan: exec_time=base"
-          << " finish_time=base+"
-          << (plan.expected_finish_time_ns() - plan.exec_time_ns()) << "\n"
-          << "new plan: exec_time=base+"
-          << (request.exec_time_ns() - plan.exec_time_ns())
-          << " finish_time=base+"
-          << (request.expected_finish_time_ns() - plan.exec_time_ns());
-    }
-    batchplans_.emplace_back(std::move(request));
-    std::push_heap(batchplans_.begin(), batchplans_.end(),
-                   HeapOrderBatchPlanByExecTimeASC);
-    TimePoint finish_time(
-        std::chrono::nanoseconds(batchplans_[0].expected_finish_time_ns()));
-    if (timer_.timeout() != finish_time) {
-      timer_.SetTimeout(finish_time);
-      timer_.AsyncWait([this](ario::ErrorCode error) { OnTimer(error); });
-    }
-  }
-
-  void DrainBatchPlans() {
-    for (const auto& plan : batchplans_) {
-      OnBatchFinish(plan);
-    }
-    batchplans_.clear();
-  }
-
- private:
-  void OnBatchFinish(const BatchPlanProto& plan) {
-    auto frontend_id = plan.queries(0).query_without_input().frontend_id();
-    auto* frontend = accessor_->GetFrontend(NodeId(frontend_id)).get();
-    auto* fake = static_cast<FakeFrontendDelegate*>(frontend);
-    fake->GotBatchReply(plan);
-  }
-
-  void OnTimer(ario::ErrorCode) {
-    TimePoint now = Clock::now();
-    auto now_ns = now.time_since_epoch().count();
-    std::vector<BatchPlanProto> finished_plans;
-    std::unique_lock lock(mutex_);
-    while (!batchplans_.empty()) {
-      if (batchplans_[0].expected_finish_time_ns() > now_ns) {
-        break;
-      }
-      finished_plans.emplace_back(std::move(batchplans_[0]));
-      std::pop_heap(batchplans_.begin(), batchplans_.end(),
-                    HeapOrderBatchPlanByExecTimeASC);
-      batchplans_.pop_back();
-    }
-    lock.unlock();
-    for (const auto& plan : finished_plans) {
-      OnBatchFinish(plan);
-    }
-  }
-
-  ario::EpollExecutor* executor_;
-  FakeDispatcherAccessor* accessor_;
-  ario::Timer timer_;
-  std::mutex mutex_;
-  std::vector<BatchPlanProto> batchplans_;
-};
-
 class DispatcherBencher {
  public:
   explicit DispatcherBencher(Options options)
@@ -286,7 +107,6 @@ class DispatcherBencher {
     warmup_time_ = now + std::chrono::seconds(2);
     serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
     stop_time_ = serious_time_ + std::chrono::seconds(options_.duration);
-    should_join_ = false;
 
     loadgen_contexts_.resize(workloads_.size());
     for (size_t i = 0; i < workloads_.size(); ++i) {
@@ -308,11 +128,10 @@ class DispatcherBencher {
                             [this](ario::ErrorCode) {
                               LOG(INFO) << "Start warming up...";
                               for (size_t i = 0; i < workloads_.size(); ++i) {
-                                model_executors_[i]->Post(
+                                model_executors_[i]->PostOk(
                                     [this, workload_idx = i](ario::ErrorCode) {
                                       SendMore(workload_idx);
-                                    },
-                                    ario::ErrorCode::kOk);
+                                    });
                               }
                             });
     ario::Timer wait_serious(
@@ -329,17 +148,19 @@ class DispatcherBencher {
     uint32_t cooldown_ms = max_slo * 1.5;
     std::mutex mutex;
     std::condition_variable cv;
-    ario::Timer wait_finish(*main_executor_,
-                            stop_time_ + std::chrono::milliseconds(cooldown_ms),
-                            [this, &mutex, &cv](ario::ErrorCode) {
-                              std::unique_lock lock(mutex);
-                              should_join_ = true;
-                              lock.unlock();
-                              cv.notify_all();
-                            });
+    bool should_join = false;
+    ario::Timer wait_finish(
+        *main_executor_, stop_time_ + std::chrono::milliseconds(cooldown_ms));
+    wait_finish.AsyncWaitBigCallback(
+        [this, &mutex, &cv, &should_join](ario::ErrorCode) {
+          std::unique_lock lock(mutex);
+          should_join = true;
+          lock.unlock();
+          cv.notify_all();
+        });
     {
       std::unique_lock lock(mutex);
-      cv.wait(lock, [this] { return should_join_; });
+      cv.wait(lock, [&should_join] { return should_join; });
     }
 
     scheduler_->Stop();
@@ -372,8 +193,8 @@ class DispatcherBencher {
       auto& frontend = frontends_[i];
       int cnt_noreply = 0, cnt_dropped = 0, cnt_timeout = 0, cnt_success = 0;
       auto n = loadgen_contexts_[i].last_query_id - 1;
-      for (size_t i = 1; i <= n; ++i) {
-        const auto& qctx = frontend->queries()[i];
+      for (size_t j = 1; j <= n; ++j) {
+        const auto& qctx = frontend->queries()[j];
         if (qctx.frontend_recv_ns < serious_time_ns) {
           continue;
         }
@@ -426,15 +247,14 @@ class DispatcherBencher {
     return 0;
   }
 
+ private:
   void OnRequestDone(size_t cnt_done, size_t workload_idx) {
     auto& l = loadgen_contexts_[workload_idx];
     l.cnt_flying -= cnt_done;
-    model_executors_[workload_idx]->Post(
-        [this, workload_idx](ario::ErrorCode) { SendMore(workload_idx); },
-        ario::ErrorCode::kOk);
+    model_executors_[workload_idx]->PostOk(
+        [this, workload_idx](ario::ErrorCode) { SendMore(workload_idx); });
   }
 
- private:
   void BuildWorkloads() {
     char buf[100];
     std::normal_distribution<double> normal;
@@ -472,7 +292,7 @@ class DispatcherBencher {
     for (int i = 0; i < options_.num_backends; ++i) {
       auto backend_id = next_backend_id++;
       auto backend = std::make_shared<FakeBackendDelegate>(
-          *main_executor_, backend_id, &accessor_);
+          main_executor_.get(), backend_id, &accessor_);
       accessor_.AddBackend(NodeId(backend_id), backend);
       scheduler_->AddBackend(NodeId(backend_id), backend);
       backends_.push_back(backend);
@@ -482,7 +302,10 @@ class DispatcherBencher {
       const auto& w = workloads_[i];
       uint32_t frontend_id = 60001 + i;
       auto frontend = std::make_shared<FakeFrontendDelegate>(
-          *this, frontend_id, w.model_session, i);
+          [this](size_t cnt_done, size_t workload_idx) {
+            OnRequestDone(cnt_done, workload_idx);
+          },
+          frontend_id, w.model_session, i);
       accessor_.AddFrontend(NodeId(frontend_id), frontend);
       scheduler_->AddFrontend(NodeId(frontend_id), frontend);
       frontends_.push_back(frontend);
@@ -556,9 +379,6 @@ class DispatcherBencher {
     }
   }
 
-  using Clock = std::chrono::high_resolution_clock;
-  using TimePoint = std::chrono::time_point<Clock, std::chrono::nanoseconds>;
-
   struct LoadGenContext {
     uint64_t last_global_id;
     uint64_t last_query_id;
@@ -587,12 +407,7 @@ class DispatcherBencher {
   TimePoint warmup_time_;
   TimePoint serious_time_;
   TimePoint stop_time_;
-  bool should_join_;
 };
-
-void FakeFrontendDelegate::ReportRequestDone(size_t cnt_done) {
-  bencher_->OnRequestDone(cnt_done, workload_idx_);
-}
 
 int main(int argc, char** argv) {
   FLAGS_logtostderr = 1;

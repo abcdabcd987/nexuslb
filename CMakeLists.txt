@@ -308,35 +308,26 @@ endif()
 
 
 ###### tools/bench_dispatcher ######
-# add_executable(bench_dispatcher
-#     tools/bench_dispatcher/bench_dispatcher_main.cpp
-#     tools/bench_dispatcher/fake_accessor.cpp
-# )
-# target_include_directories(bench_dispatcher PUBLIC
-#         ${CMAKE_CURRENT_SOURCE_DIR}/tools)
-# target_link_libraries(bench_dispatcher PUBLIC dispatcher_obj)
+add_library(bench_dispatcher_obj
+    tools/bench_dispatcher/fake_accessor.cpp
+    tools/bench_dispatcher/fake_backend.cpp
+    tools/bench_dispatcher/fake_frontend.cpp
+)
+target_include_directories(bench_dispatcher_obj PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+target_link_libraries(bench_dispatcher_obj PUBLIC dispatcher_obj)
 
 
 
 ###### tools/bench_rankmt ######
-add_executable(bench_rankmt
-    tools/bench_dispatcher/bench_rankmt_main.cpp
-    tools/bench_dispatcher/fake_accessor.cpp
-)
-target_include_directories(bench_rankmt PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/tools)
-target_link_libraries(bench_rankmt PUBLIC dispatcher_obj)
+add_executable(bench_rankmt tools/bench_dispatcher/bench_rankmt_main.cpp)
+target_link_libraries(bench_rankmt PUBLIC bench_dispatcher_obj)
 
 
 
-###### tools/run_dispatcher ######
-# add_executable(run_dispatcher
-#     tools/bench_dispatcher/run_dispatcher_main.cpp
-#     tools/bench_dispatcher/fake_accessor.cpp
-# )
-# target_include_directories(run_dispatcher PUBLIC
-#         ${CMAKE_CURRENT_SOURCE_DIR}/tools)
-# target_link_libraries(run_dispatcher PUBLIC dispatcher_obj)
+###### tools/run_rankmt ######
+add_executable(run_rankmt tools/bench_dispatcher/run_rankmt_main.cpp)
+target_link_libraries(run_rankmt PUBLIC bench_dispatcher_obj)
 
 
 

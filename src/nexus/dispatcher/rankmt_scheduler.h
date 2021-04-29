@@ -187,7 +187,7 @@ class RankThread {
   };
 
   struct BackendContext {
-    BackendContext(NodeId backend_id,
+    BackendContext(ario::EpollExecutor* executor, NodeId backend_id,
                    std::shared_ptr<BackendDelegate> delegate);
 
     NodeId backend_id;

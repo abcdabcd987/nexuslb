@@ -6,6 +6,7 @@
 
 #include "ario/chrono.h"
 #include "ario/error.h"
+#include "ario/small_function.h"
 
 namespace ario {
 
@@ -34,8 +35,9 @@ class Timer {
  public:
   Timer();
   explicit Timer(EpollExecutor& executor);
+  Timer(EpollExecutor& executor, TimePoint timeout);
   Timer(EpollExecutor& executor, TimePoint timeout,
-        std::function<void(ErrorCode)>&& callback);
+        SmallFunction<void(ErrorCode)>&& callback);
   ~Timer();
   Timer(const Timer& other) = delete;
   Timer& operator=(const Timer& other) = delete;
@@ -46,7 +48,11 @@ class Timer {
 
   size_t CancelAll();
   size_t SetTimeout(TimePoint timeout);
-  void AsyncWait(std::function<void(ErrorCode)>&& callback);
+  void AsyncWaitBigCallback(std::function<void(ErrorCode)>&& callback);
+
+  void AsyncWait(SmallFunction<void(ErrorCode)>&& callback) {
+    AsyncWaitBigCallback(callback.Release());
+  }
 
  private:
   EpollExecutor* executor_;

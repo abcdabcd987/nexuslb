@@ -99,12 +99,12 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
     ParseModelSession(q.model_session_id(), &model_session);
     auto deadline =
         TimePoint(std::chrono::nanoseconds(q.clock().frontend_recv_ns()) +
-                  std::chrono::milliseconds(model_session.latency_sla()));
+                  std::chrono::milliseconds(model_session.latency_sla()) -
+                  std::chrono::microseconds(kDataPlaneLatencyUs));
     qctx = std::make_shared<QueryContext>(std::move(request), deadline);
   }
   const auto& query = qctx->request.query_without_input();
-  auto now =
-      TimePoint(std::chrono::nanoseconds(query.clock().dispatcher_recv_ns()));
+  auto now = Clock::now();
 
   // Add to pending queries
   const auto& model_session_id = query.model_session_id();

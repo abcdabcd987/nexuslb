@@ -124,7 +124,7 @@ template <typename Key, typename Value, typename CompareKeyFn>
 typename ValueRankedSplayMap<Key, Value, CompareKeyFn>::RefPair
 ValueRankedSplayMap<Key, Value, CompareKeyFn>::GetByRank(size_t rank) {
   if (rank >= map_.size()) {
-    throw std::out_of_range("rank > Size()");
+    throw std::out_of_range("rank >= Size()");
   }
   Node* x = GetNthNode(rank);
   return {std::cref(x->key), std::cref(x->value)};

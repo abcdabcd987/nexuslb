@@ -82,9 +82,9 @@ IncrementalBatchPolicy::IncrementalBatchPolicy(SortedQueryList& queries)
 void IncrementalBatchPolicy::Update(TimePoint exec_time,
                                     uint32_t target_batch_size) {
   CHECK_NE(profile_, nullptr) << "Profile not set.";
-  CHECK_LE(last_exec_time_.time_since_epoch().count(),
-           exec_time.time_since_epoch().count())
-      << "Time can't go backwards.";
+  CHECK(last_exec_time_ <= exec_time)
+      << "Time can't go backwards. diff="
+      << (last_exec_time_ - exec_time).count() / 1e3 << "us";
   last_exec_time_ = exec_time;
 
   GetBatchByExpandedWindow(exec_time, target_batch_size, queries_, *profile_,

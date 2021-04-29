@@ -202,7 +202,7 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
     // Do nothing. Dispatcher will send the query to the backend.
   } else {
     // Mark the query failed.
-    if (reply.status() == CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY) {
+    if (reply.status() != CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY) {
       LOG(WARNING) << "Dispatcher returns failure: "
                    << CtrlStatus_Name(reply.status())
                    << " query_id: " << reply.query_id()

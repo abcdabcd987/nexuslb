@@ -150,7 +150,8 @@ void RankThread::UpdateActivePlans(TimePoint earliest_exec_time,
   size_t rank = candidate_pool_.Rank(mdata.model_session_id);
   if (rank < num_idle_backends) {
     const auto& cinfo = candidate_pool_.GetByKey(mdata.model_session_id);
-    if (cinfo->candidate.batch_size) {
+    if (cinfo->candidate.batch_size &&
+        earliest_exec_time <= cinfo->candidate.latest_exec_time) {
       RemoveActivePlan(mdata);
       SetupActivePlan(earliest_exec_time, mdata, cinfo);
     }
@@ -187,7 +188,10 @@ void RankThread::SetupActivePlan(TimePoint earliest_exec_time,
   auto finish_time = plan->exec_time + exec_elapse;
   plan->mdata = &cinfo->mdata;
   CHECK(finish_time <= deadline)
-      << "diff = " << (finish_time - deadline).count() / 1e3 << "us";
+      << "diff = " << (finish_time - deadline).count() / 1e3 << "us"
+      << " earliest_exec_time-candidate.latest_exec_time = "
+      << (earliest_exec_time - cinfo->candidate.latest_exec_time).count() / 1e3
+      << "us";
 
   // Update bookkeeping
   mdata.active_plan = plan;
@@ -226,12 +230,14 @@ void RankThread::OnBackendAvailableSoon(NodeId backend_id) {
   auto num_idle_backends =
       backend_availability_pool_.CountLessEqual(earliest_exec_time);
   CHECK_GT(num_idle_backends, 0);
-  auto kv = candidate_pool_.GetByRank(num_idle_backends - 1);
-  auto& cinfo = kv.value.get();
-  if (cinfo->candidate.batch_size > 0) {
-    auto& mdata = cinfo->mdata;
-    CHECK_EQ(mdata.active_plan, nullptr);
-    UpdateActivePlans(earliest_exec_time, mdata);
+  if (candidate_pool_.Size() >= num_idle_backends) {
+    auto kv = candidate_pool_.GetByRank(num_idle_backends - 1);
+    auto& cinfo = kv.value.get();
+    if (cinfo->candidate.batch_size > 0) {
+      auto& mdata = cinfo->mdata;
+      CHECK_EQ(mdata.active_plan, nullptr);
+      UpdateActivePlans(earliest_exec_time, mdata);
+    }
   }
 }
 
@@ -259,8 +265,9 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   CHECK_GT(backend_availability_pool_.Size(), 0);
   auto backend_id = backend_availability_pool_.GetByRank(0).key.get();
   auto& bctx = backends_.at(backend_id);
-  CHECK_LT(bctx->next_available_time.time_since_epoch().count(),
-           plan->exec_time.time_since_epoch().count());
+  CHECK(bctx->next_available_time <= plan->exec_time)
+      << "diff = "
+      << (bctx->next_available_time - plan->exec_time).count() / 1e3 << "us";
 
   // Mark backend unavailable until ModelThread gives UpdateBackendCommand
   UpdateBackend(bctx.get(), TimePoint::max());

@@ -315,14 +315,12 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
     plans_.pop_back();
   }
   TimePoint exec_time(nanoseconds(plan->proto().exec_time_ns()));
-  auto offset_us = duration_cast<microseconds>(start_time - exec_time).count();
-  if (offset_us > 10) {
-    LOG(ERROR)
-        << "Huge time offset when start executing BatchPlan"
-        << ". plan_id=" << plan->proto().plan_id()
-        << ", exec_time=" << plan->proto().exec_time_ns() << ", now="
-        << duration_cast<nanoseconds>(start_time.time_since_epoch()).count()
-        << ", offset=" << offset_us << "us";
+  auto start_delay_us =
+      duration_cast<microseconds>(start_time - exec_time).count();
+  if (start_delay_us > 100) {
+    LOG(WARNING) << "Huge start_delay. " << plan->proto().model_session_id()
+                 << " plan_id=" << plan->proto().plan_id()
+                 << ", start_delay=" << start_delay_us << "us";
   }
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -338,7 +336,7 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
   VLOG(1) << "Executing BatchPlan: plan_id=" << plan->proto().plan_id()
           << ", model_session=" << plan->proto().model_session_id()
           << ", batch_size=" << plan->proto().queries_size()
-          << ", exec_time_offset=" << offset_us << "us";
+          << ", start_delay=" << start_delay_us << "us";
   bool is_executing = is_executing_.test_and_set();
   CHECK(!is_executing)
       << "BUG: the backend has not finished the previous batch.";
@@ -348,14 +346,20 @@ void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
       duration_cast<microseconds>(finish_time - start_time).count();
   auto finish_time_ns =
       duration_cast<nanoseconds>(finish_time.time_since_epoch()).count();
-  auto finish_time_offset_us =
+  auto finish_delay_us =
       (finish_time_ns - plan->proto().expected_finish_time_ns()) / 1000;
   VLOG(1) << "BatchPlan finished. plan_id=" << plan->proto().plan_id()
           << ", model_session=" << plan->proto().model_session_id()
           << ", batch_size=" << plan->proto().queries_size()
-          << ", exec_time_offset=" << offset_us << "us"
+          << ", start_delay=" << start_delay_us << "us"
           << ", elapse=" << elapse_us << "us"
-          << ", finish_time_offset=" << finish_time_offset_us << "us";
+          << ", finish_delay=" << finish_delay_us << "us";
+  if (finish_delay_us > 100) {
+    LOG(WARNING) << "Huge finish_delay. " << plan->proto().model_session_id()
+                 << " plan_id=" << plan->proto().plan_id()
+                 << ", start_delay=" << start_delay_us << "us"
+                 << ", finish_delay=" << finish_delay_us << "us";
+  }
   UpdateTimer();
   is_executing_.clear();
 }

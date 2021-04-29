@@ -130,7 +130,8 @@ void EpollExecutor::LoopSpinning() {
     // SAFTY: event_pollers_ doesn't reallocate.
     // SAFTY: event_pollers_size_ <= event_pollers_.size()
     //        because elements won't ever be removed from event_pollers_.
-    for (size_t i = 0; i < event_pollers_size_; ++i) {
+    for (size_t i = 0, sz = event_pollers_size_.load(std::memory_order_consume);
+         i < sz; ++i) {
       auto *poller = event_pollers_[i];
       poller->Poll();
     }
@@ -149,6 +150,7 @@ void EpollExecutor::LoopSpinning() {
     for (auto &bind : binds) {
       bind.callback(bind.error);
     }
+    binds.clear();
 
     _mm_pause();
   }
@@ -231,7 +233,7 @@ void EpollExecutor::AddPoller(EventPoller &poller) {
         "event_pollers_.size() == event_pollers_.capacity()");
   }
   event_pollers_.push_back(&poller);
-  event_pollers_size_ = event_pollers_.size();
+  event_pollers_size_.store(event_pollers_.size(), std::memory_order_release);
 }
 
 }  // namespace ario

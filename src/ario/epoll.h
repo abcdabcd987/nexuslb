@@ -83,7 +83,7 @@ class EpollExecutor {
   CallbackQueue callback_queue_ /* GUARDED_BY(mutex_) */;
 
   std::mutex event_pollers_write_mutex_;
-  size_t event_pollers_size_;
+  std::atomic<size_t> event_pollers_size_{0};
   std::vector<EventPoller *> event_pollers_;
 };
 

@@ -16,7 +16,7 @@ namespace rankmt {
 
 constexpr size_t kRpsMeterHistoryLength = 32;
 constexpr uint32_t kCtrlPlaneLatencyUs = 2000;
-constexpr uint32_t kDataPlaneLatencyUs = 2000;
+constexpr uint32_t kDataPlaneLatencyUs = 4000;
 
 std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
                                             uint32_t batch_size);

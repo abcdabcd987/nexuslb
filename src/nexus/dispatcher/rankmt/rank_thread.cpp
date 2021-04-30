@@ -235,8 +235,14 @@ void RankThread::OnBackendAvailableSoon(NodeId backend_id) {
     auto& cinfo = kv.value.get();
     if (cinfo->candidate.batch_size > 0) {
       auto& mdata = cinfo->mdata;
-      CHECK_EQ(mdata.active_plan, nullptr);
-      UpdateActivePlans(earliest_exec_time, mdata);
+      if (mdata.active_plan) {
+        if (mdata.active_plan->exec_time > earliest_exec_time) {
+          RemoveActivePlan(mdata);
+          UpdateActivePlans(earliest_exec_time, mdata);
+        }
+      } else {
+        UpdateActivePlans(earliest_exec_time, mdata);
+      }
     }
   }
 }

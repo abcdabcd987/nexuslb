@@ -226,9 +226,9 @@ class RdmaQueuePair {
   uint64_t tag_ = 0;
 
   std::mutex wr_ctx_mutex_;
-  CircularCompletionQueue<OwnedMemoryBlock, 4096>
+  CircularCompletionQueue<OwnedMemoryBlock, 1024>
       recv_wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;
-  CircularCompletionQueue<OwnedMemoryBlock, 4096>
+  CircularCompletionQueue<OwnedMemoryBlock, 16384>
       out_wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;
 };
 

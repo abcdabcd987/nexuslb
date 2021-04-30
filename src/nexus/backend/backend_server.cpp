@@ -70,7 +70,7 @@ BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
 
   // Init GPU executor
   LOG(INFO) << "Using PlanFollower as GpuExecutor";
-  gpu_executor_.reset(new GpuExecutorPlanFollower(gpu_id));
+  gpu_executor_.reset(new GpuExecutorPlanFollower(gpu_id, poller_type));
   if (cores.empty()) {
     gpu_executor_->Start();
   } else {

@@ -12,6 +12,7 @@
 #include "nexus/backend/backend_server.h"
 #include "nexus/common/device.h"
 #include "nexus/common/typedef.h"
+#include "nexus/common/util.h"
 
 #ifdef USE_CAFFE
 #include "nexus/backend/caffe_model.h"
@@ -222,10 +223,9 @@ double GpuExecutorNoMultiBatching::CurrentUtilization() {
   return -1.;
 }
 
-GpuExecutorPlanFollower::GpuExecutorPlanFollower(int gpu_id)
-    : gpu_id_(gpu_id),
-      io_context_work_guard_(io_context_.get_executor()),
-      next_timer_(io_context_) {}
+GpuExecutorPlanFollower::GpuExecutorPlanFollower(int gpu_id,
+                                                 ario::PollerType poller_type)
+    : gpu_id_(gpu_id), executor_(poller_type), next_timer_(executor_) {}
 
 GpuExecutorPlanFollower::~GpuExecutorPlanFollower() {
   if (thread_.joinable()) {
@@ -234,28 +234,18 @@ GpuExecutorPlanFollower::~GpuExecutorPlanFollower() {
 }
 
 void GpuExecutorPlanFollower::Start(int core) {
-  thread_ = std::thread(&GpuExecutorPlanFollower::Run, this);
-  if (core >= 0) {
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(core, &cpuset);
-    int rc = pthread_setaffinity_np(thread_.native_handle(), sizeof(cpu_set_t),
-                                    &cpuset);
-    if (rc != 0) {
-      LOG(ERROR) << "Error calling pthread_setaffinity_np: " << rc << "\n";
+  thread_ = std::thread([this, core] {
+    if (core >= 0) {
+      PinCpu(core);
+      LOG(INFO) << "GPU executor is pinned on CPU " << core;
     }
-    LOG(INFO) << "GPU executor is pinned on CPU " << core;
-  }
-}
-
-void GpuExecutorPlanFollower::Run() {
-  io_context_.run();
-  LOG(INFO) << "GpuExecutorPlanFollower exited.";
+    pthread_setname_np(pthread_self(), "GpuExecutor");
+    executor_.RunEventLoop();
+  });
 }
 
 void GpuExecutorPlanFollower::Stop() {
-  io_context_work_guard_.reset();
-  LOG(INFO) << "io_context_work_guard reset. Waiting worker thread to join.";
+  executor_.StopEventLoop();
   thread_.join();
 }
 
@@ -287,17 +277,17 @@ void GpuExecutorPlanFollower::UpdateTimer() {
   if (plans_.empty()) {
     return;
   }
-  next_timer_.cancel();
   const auto& plan = plans_[0];
   TimePoint exec_time(std::chrono::nanoseconds(plan->proto().exec_time_ns()));
-  next_timer_.async_wait(
-      [this](const boost::system::error_code& error) { OnTimer(error); });
+  if (exec_time != next_timer_.timeout()) {
+    next_timer_.SetTimeout(exec_time);
+    next_timer_.AsyncWait([this](ario::ErrorCode error) { OnTimer(error); });
+  }
 }
 
-void GpuExecutorPlanFollower::OnTimer(const boost::system::error_code& error) {
+void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
   using namespace std::chrono;
-  if (error) {
-    LOG(ERROR) << error.message();
+  if (error != ario::ErrorCode::kOk) {
     return;
   }
   auto start_time = Clock::now();

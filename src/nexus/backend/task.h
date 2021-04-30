@@ -6,13 +6,12 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
-#include <opencv2/opencv.hpp>
 #include <optional>
 
 #include "ario/ario.h"
 #include "nexus/common/block_queue.h"
-#include "nexus/common/connection.h"
 #include "nexus/common/data_type.h"
+#include "nexus/common/message.h"
 #include "nexus/common/typedef.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"

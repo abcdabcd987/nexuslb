@@ -47,10 +47,14 @@ class ModelWorker::ModelWorkerRdmaHandler : public ario::RdmaEventHandler {
       case ControlMessage::MessageCase::kDispatch: {
         // Dispatcher <- Frontend
         ControlMessage resp;
-        outer_.HandleDispatch(std::move(*req.mutable_dispatch()),
-                              resp.mutable_dispatch_reply(),
+        auto* reply = resp.mutable_dispatch_reply();
+        outer_.HandleDispatch(std::move(*req.mutable_dispatch()), reply,
                               dispatcher_recv_ns);
-        outer_.rdma_sender_.SendMessage(conn, resp);
+
+        // Send out DispatchReply only when failure
+        if (reply->status() != CtrlStatus::CTRL_OK) {
+          outer_.rdma_sender_.SendMessage(conn, resp);
+        }
         break;
       }
       default:
@@ -133,8 +137,6 @@ void ModelWorker::AddModelSession(
 void ModelWorker::HandleDispatch(DispatchRequest&& request,
                                  DispatchReply* reply,
                                  long dispatcher_recv_ns) {
-  *reply->mutable_model_session() = request.model_session();
-  reply->set_query_id(request.query_id());
   auto* query_without_input = request.mutable_query_without_input();
   auto* clock = query_without_input->mutable_clock();
   clock->set_dispatcher_recv_ns(dispatcher_recv_ns);
@@ -155,7 +157,13 @@ void ModelWorker::HandleDispatch(DispatchRequest&& request,
   auto model_session_id = ModelSessionToString(request.model_session());
   auto& entrance = model_session_entrance_table_.at(model_session_id);
   auto status = entrance.EnqueueQuery(std::move(request));
+
+  // Send out DispatchReply only when failure
   reply->set_status(status);
+  if (status != CtrlStatus::CTRL_OK) {
+    *reply->mutable_model_session() = request.model_session();
+    reply->add_query_id_list(request.query_id());
+  }
 }
 
 }  // namespace dispatcher

@@ -22,7 +22,7 @@ class FrontendDelegateImpl : public FrontendDelegate {
 
   void Tick() override;
   void UpdateBackendList(BackendListUpdates&& request) override;
-  void MarkQueryDroppedByDispatcher(DispatchReply&& request) override;
+  void MarkQueriesDroppedByDispatcher(DispatchReply&& request) override;
 
  private:
   std::string ip_;

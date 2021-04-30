@@ -12,6 +12,7 @@
 #include "nexus/dispatcher/rankmt/model_thread.h"
 #include "nexus/dispatcher/rankmt/rank_thread.h"
 #include "nexus/proto/control.pb.h"
+#include "nexus/proto/nnquery.pb.h"
 
 namespace nexus {
 namespace dispatcher {
@@ -37,6 +38,13 @@ class MultiThreadRankScheduler {
     RequestEntrance(RequestEntrance&& other) = default;
     RequestEntrance& operator=(RequestEntrance&& other) = default;
     CtrlStatus EnqueueQuery(DispatchRequest&& request);
+
+    const ModelSession& model_session() const {
+      return model_thread_->model_session();
+    }
+    const std::string& model_session_id() const {
+      return model_thread_->model_session_id();
+    }
 
    private:
     friend class MultiThreadRankScheduler;

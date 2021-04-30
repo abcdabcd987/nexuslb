@@ -32,7 +32,7 @@ void FrontendDelegateImpl::UpdateBackendList(BackendListUpdates&& request) {
   Tick();
 }
 
-void FrontendDelegateImpl::MarkQueryDroppedByDispatcher(
+void FrontendDelegateImpl::MarkQueriesDroppedByDispatcher(
     DispatchReply&& request) {
   ControlMessage req;
   *req.mutable_dispatch_reply() = std::move(request);

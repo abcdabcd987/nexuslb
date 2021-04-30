@@ -31,7 +31,7 @@ class FakeFrontendDelegate : public FrontendDelegate {
 
   void Tick() override;
   void UpdateBackendList(BackendListUpdates&& request) override;
-  void MarkQueryDroppedByDispatcher(DispatchReply&& request) override;
+  void MarkQueriesDroppedByDispatcher(DispatchReply&& request) override;
 
   void ReportRequestDone(size_t cnt_done);
   void Reserve(size_t max_queries);

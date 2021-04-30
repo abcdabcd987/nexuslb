@@ -193,11 +193,6 @@ void ModelHandler::HandleBackendReply(const QueryResultProto& result) {
 }
 
 void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
-  auto qid = QueryId(reply.query_id());
-  VLOG(1) << "HandleDispatcherReply. model_session=" << model_session_id_
-          << ", query_id=" << reply.query_id()
-          << ", reply.status()=" << CtrlStatus_Name(reply.status());
-
   if (reply.status() == CtrlStatus::CTRL_OK) {
     // Do nothing. Dispatcher will send the query to the backend.
   } else {
@@ -205,14 +200,16 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
     if (reply.status() != CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY) {
       LOG(WARNING) << "Dispatcher returns failure: "
                    << CtrlStatus_Name(reply.status())
-                   << " query_id: " << reply.query_id()
+                   << " query_id_list.size(): " << reply.query_id_list_size()
                    << " model_session: " << model_session_id_;
     }
     QueryResultProto result;
-    result.set_query_id(reply.query_id());
     *result.mutable_model_session_id() = model_session_id_;
     result.set_status(reply.status());
-    HandleBackendReply(result);
+    for (auto query_id : reply.query_id_list()) {
+      result.set_query_id(query_id);
+      HandleBackendReply(result);
+    }
   }
 }
 

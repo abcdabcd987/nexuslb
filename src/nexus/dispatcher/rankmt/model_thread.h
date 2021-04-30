@@ -51,6 +51,8 @@ class ModelThread {
     return &rank_command_queue_;
   };
   const ModelProfile& profile() const { return profile_; }
+  const ModelSession& model_session() const { return model_session_; }
+  const std::string& model_session_id() const { return model_session_id_; }
 
   CtrlStatus EnqueueQuery(DispatchRequest&& request);
   void PostCommand();

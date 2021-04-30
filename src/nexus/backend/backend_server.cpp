@@ -424,6 +424,7 @@ void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,
     auto task = std::make_shared<Task>(nullptr);
     task->SetQuery(query.query_without_input(), query.rdma_read_offset(),
                    query.rdma_read_length());
+    task->query.set_model_session_id(plan->proto().model_session_id());
     task->SetPlanId(plan->plan_id());
     task->query.mutable_clock()->set_backend_recv_ns(backend_recv_ns);
     bool ok = EnqueueQuery(task);

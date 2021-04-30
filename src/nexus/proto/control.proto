@@ -4,39 +4,6 @@ package nexus;
 
 import "nnquery.proto";
 
-service SchedulerCtrl {
-  rpc Register(RegisterRequest) returns (RegisterReply) {}
-  rpc Unregister(UnregisterRequest) returns (RpcReply) {}
-  rpc LoadModel(LoadModelRequest) returns (LoadModelReply) {}
-  rpc ReportWorkload(WorkloadStatsProto) returns (RpcReply) {}
-  rpc KeepAlive(KeepAliveRequest) returns (RpcReply) {}
-  rpc ComplexQuerySetup(ComplexQuerySetupRequest) returns (RpcReply) {}
-  rpc ComplexQueryAddEdge(ComplexQueryAddEdgeRequest) returns (RpcReply) {}
-}
-
-service FrontendCtrl {
-  rpc UpdateModelRoutes(ModelRouteUpdates) returns (RpcReply) {}
-  rpc CheckAlive(CheckAliveRequest) returns (RpcReply) {}
-  rpc UpdateBackendList(BackendListUpdates) returns (RpcReply) {}
-  rpc MarkQueryDroppedByDispatcher(DispatchReply) returns (RpcReply) {}
-}
-
-service BackendCtrl {
-  rpc UpdateModelTable(ModelTableConfig) returns (RpcReply) {}
-  rpc CheckAlive(CheckAliveRequest) returns (RpcReply) {}
-  rpc CurrentUtilization(UtilizationRequest) returns (UtilizationReply) {}
-  rpc LoadModel(BackendLoadModelCommand) returns (RpcReply) {}
-  rpc EnqueueQuery(EnqueueQueryCommand) returns (RpcReply) {}
-  rpc EnqueueBatchPlan(BatchPlanProto) returns (RpcReply) {}
-}
-
-service DispatcherCtrl {
-  rpc Register(RegisterRequest) returns (RegisterReply) {}
-  rpc Unregister(UnregisterRequest) returns (RpcReply) {}
-  rpc LoadModel(LoadModelRequest) returns (LoadModelReply) {}
-  rpc KeepAlive(KeepAliveRequest) returns (RpcReply) {}
-}
-
 message ControlMessage {
   oneof message {
     // Frontend/Backend <- Dispatcher
@@ -257,7 +224,7 @@ message DispatchRequest {
 
 message DispatchReply {
   ModelSession model_session = 1;
-  uint64 query_id = 2;
+  repeated uint64 query_id_list = 2;
   CtrlStatus status = 3;
 }
 

@@ -17,7 +17,7 @@ class FrontendDelegate {
   virtual ~FrontendDelegate() = default;
   virtual void Tick() = 0;
   virtual void UpdateBackendList(BackendListUpdates&& request) = 0;
-  virtual void MarkQueryDroppedByDispatcher(DispatchReply&& request) = 0;
+  virtual void MarkQueriesDroppedByDispatcher(DispatchReply&& request) = 0;
 
  protected:
   uint32_t node_id_;

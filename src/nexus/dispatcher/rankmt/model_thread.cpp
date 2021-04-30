@@ -5,9 +5,11 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 
 #include "nexus/common/functional.h"
 #include "nexus/common/model_def.h"
+#include "nexus/common/typedef.h"
 #include "nexus/dispatcher/rankmt/rank_thread.h"
 
 namespace nexus {
@@ -183,25 +185,31 @@ void ModelThread::OnDropTimer() {
 
 void ModelThread::SendDroppedQueries(
     const std::vector<std::shared_ptr<QueryContext>>& drops) {
-  DispatchReply dispatch_reply;
+  std::unordered_map<NodeId, DispatchReply> replies;
+
   for (auto& qctx : drops) {
-    auto frontend_id =
-        NodeId(qctx->request.query_without_input().frontend_id());
-    const auto& model_session_id =
-        qctx->request.query_without_input().model_session_id();
+    const auto& proto = qctx->request.query_without_input();
+    auto frontend_id = NodeId(proto.frontend_id());
+
+    auto res = replies.try_emplace(frontend_id);
+    auto& reply = res.first->second;
+    if (res.second) {
+      reply.mutable_model_session()->CopyFrom(model_session_);
+      reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
+    }
+    reply.add_query_id_list(proto.query_id());
+  }
+
+  for (auto& pair : replies) {
+    auto frontend_id = NodeId(pair.first);
     auto iter = frontends_.find(frontend_id);
     if (iter == frontends_.end()) {
       LOG(ERROR) << "Cannot find frontend. frontend_id=" << frontend_id.t
-                 << ", global_id=" << qctx->global_id.t
-                 << ", model_session=" << model_session_id;
+                 << ", model_session=" << model_session_id_;
       continue;
     }
     auto& frontend = iter->second;
-    dispatch_reply.Clear();
-    ParseModelSession(model_session_id, dispatch_reply.mutable_model_session());
-    dispatch_reply.set_query_id(qctx->request.query_without_input().query_id());
-    dispatch_reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
-    frontend->MarkQueryDroppedByDispatcher(std::move(dispatch_reply));
+    frontend->MarkQueriesDroppedByDispatcher(std::move(pair.second));
   }
 }
 
@@ -256,8 +264,9 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   proto.set_expected_finish_time_ns(
       duration_cast<nanoseconds>(finish_time.time_since_epoch()).count());
   for (auto& qctx : inputs) {
-    query.mutable_query_without_input()->Swap(
-        qctx->request.mutable_query_without_input());
+    auto* query_without_input = query.mutable_query_without_input();
+    query_without_input->Swap(qctx->request.mutable_query_without_input());
+    query_without_input->clear_model_session_id();
     query.set_rdma_read_offset(qctx->request.rdma_read_offset());
     query.set_rdma_read_length(qctx->request.rdma_read_length());
     qctx->request.Clear();

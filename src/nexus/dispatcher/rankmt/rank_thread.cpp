@@ -7,6 +7,7 @@
 #include <mutex>
 
 #include "nexus/common/model_def.h"
+#include "nexus/common/typedef.h"
 #include "nexus/dispatcher/rankmt/model_thread.h"
 
 namespace nexus {
@@ -51,21 +52,20 @@ void RankThread::Stop(std::mutex& mutex, size_t& cnt,
 
 PlanId RankThread::NextPlanId() { return PlanId(next_plan_id_.t++); }
 
-void RankThread::PostCommandFromModelThread(
-    const std::string* ptr_model_session_id) {
-  executor_.PostOk([this, ptr_model_session_id](ario::ErrorCode) {
-    ExecuteCommand(ptr_model_session_id);
-  });
+void RankThread::PostCommandFromModelThread(ModelIndex model_index) {
+  executor_.PostOk(
+      [this, model_index](ario::ErrorCode) { ExecuteCommand(model_index); });
 }
 
-void RankThread::ExecuteCommand(const std::string* ptr_model_session_id) {
+void RankThread::ExecuteCommand(ModelIndex model_index) {
   if (stop_flag_) {
     return;
   }
-  auto& mdata = model_threads_.at(*ptr_model_session_id);
+  auto& mdata = model_threads_.at(model_index);
+  CHECK(mdata);
   auto visitor = make_visitor(
-      [this, ptr_model_session_id](UpdateCandidateCommand& cmd) {
-        DoUpdateCandidateCommand(cmd, ptr_model_session_id);
+      [this, model_index](UpdateCandidateCommand& cmd) {
+        DoUpdateCandidateCommand(cmd, model_index);
       },
       [this](UpdateBackendCommand& cmd) { DoUpdateBackendCommand(cmd); }
       // Force newline for clang-format
@@ -77,15 +77,16 @@ void RankThread::ExecuteCommand(const std::string* ptr_model_session_id) {
   }
 }
 
-void RankThread::DoUpdateCandidateCommand(
-    UpdateCandidateCommand& cmd, const std::string* ptr_model_session_id) {
-  auto& mdata = *model_threads_.at(*ptr_model_session_id);
+void RankThread::DoUpdateCandidateCommand(UpdateCandidateCommand& cmd,
+                                          ModelIndex model_index) {
+  auto& mdata = model_threads_.at(model_index.t);
+  CHECK(mdata);
 
   auto cinfo =
-      std::shared_ptr<CandidateInfo>(new CandidateInfo{mdata, cmd.candidate});
-  candidate_pool_.Upsert(*ptr_model_session_id, cinfo);
+      std::shared_ptr<CandidateInfo>(new CandidateInfo{*mdata, cmd.candidate});
+  candidate_pool_.Upsert(model_index, cinfo);
 
-  UpdateActivePlans(cinfo->candidate.earliest_exec_time, mdata);
+  UpdateActivePlans(cinfo->candidate.earliest_exec_time, *mdata);
 }
 
 void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
@@ -93,26 +94,30 @@ void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
   UpdateBackend(bctx.get(), cmd.next_available_time);
 }
 
-void RankThread::PostAddModelThread(ModelSession model_session,
+void RankThread::PostAddModelThread(ModelIndex model_index,
                                     ModelThread* model_thread) {
   executor_.PostBigCallback(
-      [this, model_session = std::move(model_session),
-       model_thread](ario::ErrorCode) {
-        auto model_session_id = ModelSessionToString(model_session);
-        if (model_threads_.count(model_session_id)) {
-          LOG(ERROR) << "ModelThread already exists. model_sesion_id="
-                     << model_session_id;
+      [this, model_index, model_thread](ario::ErrorCode) {
+        if (model_threads_.size() > model_index.t &&
+            model_threads_[model_index.t]) {
+          LOG(ERROR)
+              << "ModelThread already exists. model_index=" << model_index.t
+              << " model_sesion_id="
+              << model_threads_[model_index.t]->model_thread.model_session_id();
           return;
         }
         auto& m = *CHECK_NOTNULL(model_thread);
-        model_threads_[model_session_id] =
+        if (model_threads_.size() <= model_index.t) {
+          model_threads_.resize(model_index.t + 1);
+        }
+        model_threads_[model_index.t] =
             std::unique_ptr<PerModelThreadData>(new PerModelThreadData{
-                m, model_session_id, m.profile(),
+                m, model_index, m.profile(),
                 *CHECK_NOTNULL(m.model_command_queue()),
                 *CHECK_NOTNULL(m.rank_command_queue()), nullptr});
 
-        auto& mdata = *model_threads_[model_session_id];
-        candidate_pool_.Upsert(model_session_id,
+        auto& mdata = *model_threads_[model_index.t];
+        candidate_pool_.Upsert(model_index,
                                std::shared_ptr<CandidateInfo>(new CandidateInfo{
                                    mdata, ExecutionCandidate::Invalid()}));
       },
@@ -147,9 +152,9 @@ void RankThread::UpdateActivePlans(TimePoint earliest_exec_time,
                                    PerModelThreadData& mdata) {
   auto num_idle_backends =
       backend_availability_pool_.CountLessEqual(earliest_exec_time);
-  size_t rank = candidate_pool_.Rank(mdata.model_session_id);
+  size_t rank = candidate_pool_.Rank(mdata.model_index);
   if (rank < num_idle_backends) {
-    const auto& cinfo = candidate_pool_.GetByKey(mdata.model_session_id);
+    const auto& cinfo = candidate_pool_.GetByKey(mdata.model_index);
     if (cinfo->candidate.batch_size &&
         earliest_exec_time <= cinfo->candidate.latest_exec_time) {
       RemoveActivePlan(mdata);
@@ -158,8 +163,9 @@ void RankThread::UpdateActivePlans(TimePoint earliest_exec_time,
   }
   if (candidate_pool_.Size() > num_idle_backends) {
     auto bottom_pair = candidate_pool_.GetByRank(num_idle_backends);
-    auto& bottom_mdata = *model_threads_.at(bottom_pair.key);
-    RemoveActivePlan(bottom_mdata);
+    auto& bottom_mdata = model_threads_.at(bottom_pair.key.get().t);
+    CHECK(bottom_mdata);
+    RemoveActivePlan(*bottom_mdata);
   }
 }
 
@@ -279,7 +285,7 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   UpdateBackend(bctx.get(), TimePoint::max());
 
   // Update candidate pool
-  candidate_pool_.Upsert(mdata.model_session_id,
+  candidate_pool_.Upsert(mdata.model_index,
                          std::shared_ptr<CandidateInfo>(new CandidateInfo{
                              mdata, ExecutionCandidate::Invalid()}));
   UpdateActivePlans(plan->exec_time, mdata);

@@ -258,14 +258,21 @@ void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
   }
 }
 
+std::shared_ptr<ModelHandler> Frontend::GetModel(ModelIndex model_index) const {
+  if (model_pool_.size() > model_index.t) {
+    return model_pool_[model_index.t];
+  }
+  return nullptr;
+}
+
 void Frontend::HandleQueryResult(const QueryResultProto& result) {
-  std::string model_session_id = result.model_session_id();
-  auto itr = model_pool_.find(model_session_id);
-  if (itr == model_pool_.end()) {
-    LOG(ERROR) << "Cannot find model handler for " << model_session_id;
+  auto m = GetModel(ModelIndex(result.model_index()));
+  if (!m) {
+    LOG(ERROR) << "Cannot find model handler for ModelIndex("
+               << result.model_index() << ")";
     return;
   }
-  itr->second->HandleBackendReply(result);
+  m->HandleBackendReply(result);
 }
 
 void Frontend::HandleError(std::shared_ptr<Connection> conn,
@@ -305,11 +312,6 @@ std::shared_ptr<UserSession> Frontend::GetUserSession(uint32_t uid) {
 }
 
 std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req) {
-  return LoadModel(std::move(req), LoadBalancePolicy(FLAGS_load_balance));
-}
-
-std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req,
-                                                  LoadBalancePolicy lb_policy) {
   ControlMessage request;
   request.mutable_add_model()->CopyFrom(req);
 
@@ -320,6 +322,7 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req,
     LOG(ERROR) << "Load model error: " << CtrlStatus_Name(reply.status());
     return nullptr;
   }
+  ModelIndex model_index(reply.model_index());
 
   // Connect to the ModelWorker
   model_worker_port_ = reply.model_worker_port();
@@ -328,13 +331,19 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req,
   model_worker_conn_ = promise_model_worker_conn_.get_future().get();
   LOG(INFO) << "ModelWorker connected.";
 
+  // Sanity check
+  auto m = GetModel(model_index);
+  CHECK(!m) << "Model already loaded. model_index: " << model_index.t
+            << " loaded: " << m->model_session_id();
+
   // Add to model pool
-  auto model_session_id = ModelSessionToString(req.model_session());
   auto model_handler = std::make_shared<ModelHandler>(
-      model_session_id, backend_pool_, lb_policy, node_id_, model_worker_conn_,
-      rdma_sender_, &large_buffers_);
-  // Only happens at Setup stage, so no concurrent modification to model_pool_
-  model_pool_.emplace(model_handler->model_session_id(), model_handler);
+      req.model_session(), model_index, backend_pool_, node_id_,
+      model_worker_conn_, rdma_sender_, &large_buffers_);
+  if (model_pool_.size() <= model_index.t) {
+    model_pool_.resize(model_index.t + 1);
+  }
+  model_pool_[model_index.t] = model_handler;
 
   return model_handler;
 }
@@ -401,14 +410,13 @@ void Frontend::UpdateBackendList(const BackendListUpdates& request) {
 }
 
 void Frontend::HandleDispatcherReply(const DispatchReply& request) {
-  auto model_session_id = ModelSessionToString(request.model_session());
-  auto iter = model_pool_.find(model_session_id);
-  if (iter == model_pool_.end()) {
-    LOG(ERROR) << "HandleDispatcherReply cannot find ModelSession: "
-               << model_session_id;
+  auto m = GetModel(ModelIndex(request.model_index()));
+  if (!m) {
+    LOG(ERROR) << "HandleDispatcherReply cannot find ModelSession: ModelIndex("
+               << request.model_index() << ")";
     return;
   }
-  iter->second->HandleDispatcherReply(request);
+  m->HandleDispatcherReply(request);
 }
 
 void Frontend::RegisterUser(std::shared_ptr<UserSession> user_sess,
@@ -433,11 +441,13 @@ void Frontend::Daemon() {
     auto next_time = Clock::now() + std::chrono::seconds(beacon_interval_sec_);
     WorkloadStatsProto workload_stats;
     workload_stats.set_node_id(node_id_);
-    for (auto const& iter : model_pool_) {
-      auto model_session_id = iter.first;
-      auto history = iter.second->counter()->GetHistory();
+    for (const auto& m : model_pool_) {
+      if (!m) {
+        continue;
+      }
+      auto history = m->counter()->GetHistory();
       auto model_stats = workload_stats.add_model_stats();
-      model_stats->set_model_session_id(model_session_id);
+      model_stats->set_model_session_id(m->model_session_id());
       for (auto nreq : history) {
         model_stats->add_num_requests(nreq);
       }

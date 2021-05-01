@@ -11,8 +11,9 @@
 namespace nexus {
 namespace backend {
 
-SleepModel::SleepModel(SleepProfile profile, const ModelInstanceConfig& config)
-    : ModelInstance(-1, config), profile_(std::move(profile)) {
+SleepModel::SleepModel(SleepProfile profile, const ModelInstanceConfig& config,
+                       ModelIndex model_index)
+    : ModelInstance(-1, config, model_index), profile_(std::move(profile)) {
   LOG(INFO) << "Construct SleepModel."
             << "slope_us=" << profile.slope_us()
             << ", intercept_us=" << profile.intercept_us()

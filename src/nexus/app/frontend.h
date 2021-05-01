@@ -68,9 +68,6 @@ class Frontend : public ServerBase, public MessageHandler {
  protected:
   std::shared_ptr<ModelHandler> LoadModel(LoadModelRequest req);
 
-  std::shared_ptr<ModelHandler> LoadModel(LoadModelRequest req,
-                                          LoadBalancePolicy lb_policy);
-
   void ComplexQuerySetup(const ComplexQuerySetupRequest& req);
 
   void ComplexQueryAddEdge(const ComplexQueryAddEdgeRequest& req);
@@ -110,6 +107,8 @@ class Frontend : public ServerBase, public MessageHandler {
   };
 
  private:
+  std::shared_ptr<ModelHandler> GetModel(ModelIndex model_index) const;
+
   std::string dispatcher_ip_;
   uint16_t rdma_tcp_server_port_;
 
@@ -139,25 +138,16 @@ class Frontend : public ServerBase, public MessageHandler {
   NodeId node_id_;
   /*! \brief Backend pool */
   BackendPool backend_pool_;
-  /*!
-   * \brief Map from backend ID to model sessions servered at this backend.
-   * Guarded by backend_sessions_mu_
-   */
-  std::unordered_map<uint32_t, std::unordered_set<std::string> >
-      backend_sessions_;
-  std::mutex backend_sessions_mu_;
   /*! \brief Request pool */
   RequestPool request_pool_;
   /*! \brief Worker pool for processing requests */
-  std::vector<std::unique_ptr<Worker> > workers_;
+  std::vector<std::unique_ptr<Worker>> workers_;
   /*! \brief User connection pool. Guarded by user_mutex_. */
-  std::unordered_set<std::shared_ptr<Connection> > connection_pool_;
+  std::unordered_set<std::shared_ptr<Connection>> connection_pool_;
   /*! \brief Map from user id to user session. Guarded by user_mutex_. */
-  std::unordered_map<uint32_t, std::shared_ptr<UserSession> > user_sessions_;
-  /*!
-   * \brief Map from model session ID to model handler.
-   */
-  std::unordered_map<std::string, std::shared_ptr<ModelHandler> > model_pool_;
+  std::unordered_map<uint32_t, std::shared_ptr<UserSession>> user_sessions_;
+  /*! \brief Map from ModelIndex to model handler. */
+  std::vector<std::shared_ptr<ModelHandler>> model_pool_;
 
   // for UpdateBackendList
   std::mutex connecting_backends_mutex_;

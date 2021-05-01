@@ -53,6 +53,7 @@ MultiThreadRankScheduler::RequestEntrance::RequestEntrance(
 
 CtrlStatus MultiThreadRankScheduler::RequestEntrance::EnqueueQuery(
     DispatchRequest&& request) {
+  CHECK(model_thread_ != nullptr);
   return model_thread_->EnqueueQuery(std::move(request));
 }
 
@@ -66,8 +67,8 @@ void MultiThreadRankScheduler::Stop() {
   std::mutex mutex;
   size_t cnt = 0;
   std::condition_variable cv;
-  for (auto& pair : model_threads_) {
-    pair.second->Stop(mutex, cnt, cv);
+  for (auto& model_thread : model_threads_) {
+    model_thread->Stop(mutex, cnt, cv);
   }
   rank_thread_.Stop(mutex, cnt, cv);
   {
@@ -87,9 +88,10 @@ MultiThreadRankScheduler::AddModelSession(
   }
 
   auto model_session_id = ModelSessionToString(model_session);
-  if (model_threads_.count(model_session_id)) {
+  if (model_index_table_.count(model_session_id)) {
     LOG(FATAL) << "Model session already exists. model_session="
-               << model_session_id;
+               << model_session_id
+               << " model_index=" << model_index_table_[model_session_id];
   }
 
   auto profile_id = ModelSessionToProfileID(model_session);
@@ -101,11 +103,14 @@ MultiThreadRankScheduler::AddModelSession(
       << gpu_info_for_profile_->gpu_device << "\" with uuid \""
       << gpu_info_for_profile_->gpu_uuid << "\"";
 
-  model_threads_[model_session_id] = std::make_unique<ModelThread>(
-      model_thread_executor, model_session, *profile, &rank_thread_, frontends_,
-      backends_);
-  auto* model_thread = model_threads_[model_session_id].get();
-  rank_thread_.PostAddModelThread(model_session, model_thread);
+  CHECK_EQ(model_threads_.size(), model_index_table_.size());
+  ModelIndex model_index(model_index_table_.size());
+  model_index_table_[model_session_id] = model_index;
+  model_threads_.emplace_back(std::make_unique<ModelThread>(
+      model_thread_executor, model_session, model_index, *profile,
+      &rank_thread_, frontends_, backends_));
+  auto* model_thread = model_threads_.back().get();
+  rank_thread_.PostAddModelThread(model_index, model_thread);
   return RequestEntrance(model_thread);
 }
 
@@ -119,31 +124,43 @@ void MultiThreadRankScheduler::AddBackend(
   // Update RankThread and ModelThread
   backends_[backend_id] = delegate;
   rank_thread_.PostAddBackend(backend_id, delegate);
-  for (auto& pair : model_threads_) {
-    pair.second->PostAddBackend(backend_id, delegate);
+  for (auto& model_thread : model_threads_) {
+    if (!model_thread) {
+      continue;
+    }
+    model_thread->PostAddBackend(backend_id, delegate);
   }
 }
 
 void MultiThreadRankScheduler::AddFrontend(
     NodeId frontend_id, std::shared_ptr<FrontendDelegate> delegate) {
   frontends_[frontend_id] = delegate;
-  for (auto& pair : model_threads_) {
-    pair.second->PostAddFrontend(frontend_id, delegate);
+  for (auto& model_thread : model_threads_) {
+    if (!model_thread) {
+      continue;
+    }
+    model_thread->PostAddFrontend(frontend_id, delegate);
   }
 }
 
 void MultiThreadRankScheduler::RemoveBackend(NodeId backend_id) {
   backends_.erase(backend_id);
   rank_thread_.PostRemoveBackend(backend_id);
-  for (auto& pair : model_threads_) {
-    pair.second->PostRemoveBackend(backend_id);
+  for (auto& model_thread : model_threads_) {
+    if (!model_thread) {
+      continue;
+    }
+    model_thread->PostRemoveBackend(backend_id);
   }
 }
 
 void MultiThreadRankScheduler::RemoveFrontend(NodeId frontend_id) {
   frontends_.erase(frontend_id);
-  for (auto& pair : model_threads_) {
-    pair.second->PostRemoveFrontend(frontend_id);
+  for (auto& model_thread : model_threads_) {
+    if (!model_thread) {
+      continue;
+    }
+    model_thread->PostRemoveFrontend(frontend_id);
   }
 }
 

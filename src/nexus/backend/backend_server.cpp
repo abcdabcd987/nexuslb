@@ -18,6 +18,7 @@
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/sleep_profile.h"
+#include "nexus/common/typedef.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -224,7 +225,13 @@ void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
     case ControlMessage::MessageCase::kEnqueueQuery: {
       // from Dispatcher
       auto& msg = *req.mutable_enqueue_query();
-      auto task = std::make_shared<Task>(nullptr);
+
+      auto model_index = msg.query_without_input().model_index();
+      CHECK_GT(outer_.model_table_.size(), model_index);
+      auto model_executor = outer_.model_table_[model_index];
+      CHECK(model_executor != nullptr);
+
+      auto task = std::make_shared<Task>(nullptr, model_executor);
       task->SetQuery(std::move(*msg.mutable_query_without_input()),
                      msg.rdma_read_offset(), msg.rdma_read_length());
       bool ok = outer_.EnqueueQuery(task);
@@ -330,8 +337,12 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   std::lock_guard<std::mutex> lock(model_table_mu_);
   auto model_sess_id = ModelSessionToString(request.model_session());
   VLOG(1) << "LoadModel: model_session=" << model_sess_id;
-  auto model_iter = model_table_.find(model_sess_id);
-  if (model_iter != model_table_.end()) {
+  if (model_table_.size() <= request.model_index()) {
+    model_table_.resize(request.model_index() + 1);
+  }
+  if (model_table_[request.model_index()]) {
+    CHECK_EQ(model_table_[request.model_index()]->model()->model_session_id(),
+             model_sess_id);
     LOG(INFO) << "Skip loading model session " << model_sess_id
               << " because already loaded.";
     return;
@@ -351,8 +362,9 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   config.set_memory_usage(memory_usage);
 
   // Load new model instance
-  auto model = std::make_shared<ModelExecutor>(gpu_id_, config, task_queue_);
-  model_table_.emplace(model_sess_id, model);
+  auto model = std::make_shared<ModelExecutor>(
+      gpu_id_, config, ModelIndex(request.model_index()), task_queue_);
+  model_table_[request.model_index()] = model;
   gpu_executor_->AddModel(model);
   LOG(INFO) << "Load model instance " << model_sess_id
             << ", max_batch: " << config.max_batch();
@@ -360,7 +372,7 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
 
 bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
   VLOG(1) << "EnqueueQuery: frontend_id=" << task->query.frontend_id()
-          << ", model_session=" << task->query.model_session_id()
+          << ", model_index=" << task->query.model_index()
           << ", query_id=" << task->query.query_id()
           << ", global_id=" << task->query.global_id();
   ario::RdmaQueuePair* frontend_conn;
@@ -370,7 +382,7 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
     if (iter == node_connections_.end()) {
       LOG(ERROR) << "Cannot find connection to Frontend " << frontend_id.t
                  << ". Ignore the incoming query. "
-                 << "model_session=" << task->query.model_session_id()
+                 << "model_index=" << task->query.model_index()
                  << ", query_id=" << task->query.query_id()
                  << ", global_id=" << task->query.global_id();
       task->result.set_status(CtrlStatus::CTRL_FRONTEND_CONNECTION_NOT_FOUND);
@@ -418,13 +430,17 @@ void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,
     pending_plans_[plan->plan_id()] = plan;
   }
 
+  CHECK_GT(model_table_.size(), req.model_index());
+  auto model_executor = model_table_[req.model_index()];
+  CHECK(model_executor != nullptr);
+
   // Enqueue queries
   reply->set_status(CtrlStatus::CTRL_OK);
   for (const auto& query : plan->proto().queries()) {
-    auto task = std::make_shared<Task>(nullptr);
+    auto task = std::make_shared<Task>(nullptr, model_executor);
     task->SetQuery(query.query_without_input(), query.rdma_read_offset(),
                    query.rdma_read_length());
-    task->query.set_model_session_id(plan->proto().model_session_id());
+    task->query.set_model_index(plan->proto().model_index());
     task->SetPlanId(plan->plan_id());
     task->query.mutable_clock()->set_backend_recv_ns(backend_recv_ns);
     bool ok = EnqueueQuery(task);
@@ -459,41 +475,27 @@ void BackendServer::MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task) {
   }
 }
 
-ModelExecutorPtr BackendServer::GetModel(const std::string& model_session_id) {
-  std::lock_guard<std::mutex> lock(model_table_mu_);
-  auto itr = model_table_.find(model_session_id);
-  if (itr == model_table_.end()) {
-    LOG(WARNING) << "Model session is not loaded: " << model_session_id;
-    return nullptr;
-  }
-  return itr->second;
-}
-
-BackendServer::ModelTable BackendServer::GetModelTable() {
-  std::lock_guard<std::mutex> lock(model_table_mu_);
-  return model_table_;
-}
-
 void BackendServer::Daemon() {
   while (running_) {
     auto next_time = Clock::now() + std::chrono::seconds(beacon_interval_sec_);
     KeepAlive();
-    ModelTable model_table;
+    std::vector<ModelExecutorPtr> model_table;
     {
       std::lock_guard<std::mutex> lock(model_table_mu_);
       model_table = model_table_;
     }
-    for (auto iter : model_table) {
-      double rps = iter.second->GetRequestRate();
-      double drop_rate = iter.second->GetDropRate();
+    for (const auto& m : model_table) {
+      double rps = m->GetRequestRate();
+      double drop_rate = m->GetDropRate();
       if (rps > 0.1) {
         int drop_percent = static_cast<int>(100. * drop_rate / rps);
         if (drop_percent >= 1) {
-          LOG(WARNING) << iter.first << " request rate: " << rps
+          LOG(WARNING) << m->model()->model_session_id()
+                       << " request rate: " << rps
                        << ", drop rate: " << drop_rate << " (" << drop_percent
                        << "%)";
         } else {
-          VLOG(1) << iter.first << " request rate: " << rps
+          VLOG(1) << m->model()->model_session_id() << " request rate: " << rps
                   << ", drop rate: " << drop_rate << " (" << drop_percent
                   << "%)";
         }

@@ -60,10 +60,10 @@ void Worker::Run() {
 void Worker::Process(std::shared_ptr<Task> task) {
   switch (task->stage) {
     case kPreprocess: {
-      task->model = server_->GetModel(task->query.model_session_id());
       if (task->model == nullptr) {
         std::stringstream ss;
-        ss << "Model session is not loaded: " << task->query.model_session_id();
+        ss << "Model session is not loaded: "
+           << task->model->model()->model_session_id();
         task->result.set_status(MODEL_SESSION_NOT_LOADED);
         SendReply(std::move(task));
         break;
@@ -99,7 +99,7 @@ void Worker::Process(std::shared_ptr<Task> task) {
 void Worker::SendReply(std::shared_ptr<Task> task) {
   task->timer.Record("end");
   task->result.set_query_id(task->query.query_id());
-  task->result.set_model_session_id(task->query.model_session_id());
+  task->result.set_model_index(task->query.model_index());
   task->result.set_latency_us(task->timer.GetLatencyMicros("begin", "end"));
   task->result.set_queuing_us(task->timer.GetLatencyMicros("begin", "exec"));
   if (task->model != nullptr && task->model->backup()) {

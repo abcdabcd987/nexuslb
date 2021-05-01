@@ -29,11 +29,13 @@ void BackendDelegateImpl::Tick() {
 }
 
 void BackendDelegateImpl::SendLoadModelCommand(
-    const ModelSession& model_session, uint32_t max_batch) {
+    const ModelSession& model_session, uint32_t max_batch,
+    ModelIndex model_index) {
   ControlMessage req;
   auto* request = req.mutable_load_model();
   *request->mutable_model_session() = model_session;
   request->set_max_batch(max_batch);
+  request->set_model_index(model_index.t);
   rdma_sender_.SendMessage(conn_, req);
   Tick();
 }

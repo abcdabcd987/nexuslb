@@ -13,8 +13,9 @@ namespace fs = boost::filesystem;
 namespace nexus {
 namespace backend {
 
-TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config)
-    : ModelInstance(gpu_id, config),
+TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
+                                 ModelIndex model_index)
+    : ModelInstance(gpu_id, config, model_index),
       first_input_array_(true),
       num_suffixes_(0) {
   CHECK(model_info_["model_file"]) << "Missing model_file in the model info";

@@ -1,5 +1,9 @@
 #include "nexus/backend/task.h"
 
+#include <glog/logging.h>
+
+#include "nexus/backend/model_exec.h"
+#include "nexus/backend/model_ins.h"
 #include "nexus/common/model_def.h"
 
 namespace nexus {
@@ -14,12 +18,12 @@ Output::Output(uint64_t tid, int idx,
 
 std::atomic<uint64_t> Task::global_task_id_(0);
 
-Task::Task() : Task(nullptr) {}
+Task::Task() : Task(nullptr, nullptr) {}
 
-Task::Task(ario::RdmaQueuePair* conn)
+Task::Task(ario::RdmaQueuePair* conn, std::shared_ptr<ModelExecutor> model)
     : DeadlineItem(),
       connection(conn),
-      model(nullptr),
+      model(std::move(model)),
       stage(Stage::kFetchImage),
       filled_outputs(0) {
   task_id = global_task_id_.fetch_add(1, std::memory_order_relaxed);
@@ -32,12 +36,11 @@ void Task::SetPlanId(PlanId plan_id) { this->plan_id = plan_id; }
 
 void Task::SetQuery(QueryProto decoded_query, uint64_t rdma_read_offset,
                     uint64_t rdma_read_length) {
+  CHECK(model != nullptr);
   query = std::move(decoded_query);
   this->rdma_read_offset = rdma_read_offset;
   this->rdma_read_length = rdma_read_length;
-  ModelSession sess;
-  ParseModelSession(query.model_session_id(), &sess);
-  uint32_t budget = sess.latency_sla();
+  uint32_t budget = model->model()->model_session().latency_sla();
   if (query.slack_ms() > 0) {
     budget += query.slack_ms();
     // LOG(INFO) << "slack " << query.slack_ms() << " ms";

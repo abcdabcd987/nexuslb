@@ -14,7 +14,8 @@ class TFShareModel;
 
 class TensorflowModel : public ModelInstance {
  public:
-  TensorflowModel(int gpu_id, const ModelInstanceConfig& config);
+  TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
+                  ModelIndex model_index);
 
   ~TensorflowModel();
 

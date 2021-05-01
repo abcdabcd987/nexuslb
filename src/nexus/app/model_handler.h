@@ -70,21 +70,10 @@ class QueryResult {
 
 class RequestContext;
 
-enum LoadBalancePolicy {
-  // Weighted round robin
-  LB_WeightedRR = 1,
-  // Query 2 backends and pick one with lowest utilization
-  LB_Query = 2,
-  // Deficit round robin
-  LB_DeficitRR = 3,
-  // Use a dispatcher
-  LB_Dispatcher = 4,
-};
-
 class ModelHandler {
  public:
-  ModelHandler(const std::string& model_session_id, BackendPool& pool,
-               LoadBalancePolicy lb_policy, NodeId frontend_id,
+  ModelHandler(ModelSession model_session, ModelIndex model_index,
+               BackendPool& pool, NodeId frontend_id,
                ario::RdmaQueuePair* model_worker_conn, RdmaSender rdma_sender,
                ario::MemoryBlockAllocator* input_memory_allocator);
 
@@ -93,6 +82,8 @@ class ModelHandler {
   ModelSession model_session() const { return model_session_; }
 
   std::string model_session_id() const { return model_session_id_; }
+
+  ModelIndex model_index() const { return model_index_; }
 
   std::shared_ptr<IntervalCounter> counter() const { return counter_; }
 
@@ -110,8 +101,6 @@ class ModelHandler {
 
   bool FetchImage(QueryId query_id, ValueProto* output);
 
-  void UpdateRoute(const ModelRouteProto& route);
-
   std::vector<uint32_t> BackendList();
 
  private:
@@ -122,8 +111,8 @@ class ModelHandler {
   NodeId frontend_id_;
   ModelSession model_session_;
   std::string model_session_id_;
+  ModelIndex model_index_;
   BackendPool& backend_pool_;
-  LoadBalancePolicy lb_policy_;
   static std::atomic<uint64_t> global_query_id_;
 
   ario::RdmaQueuePair* model_worker_conn_;
@@ -153,8 +142,6 @@ class ModelHandler {
   /*! \brief random number generator */
   std::random_device rd_;
   std::mt19937 rand_gen_;
-
-  std::atomic<bool> running_;
 };
 
 }  // namespace app

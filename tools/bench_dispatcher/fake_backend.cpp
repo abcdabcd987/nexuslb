@@ -35,7 +35,8 @@ void FakeBackendDelegate::Tick() {
 }
 
 void FakeBackendDelegate::SendLoadModelCommand(
-    const ModelSession& model_session, uint32_t max_batch) {
+    const ModelSession& model_session, uint32_t max_batch,
+    ModelIndex model_index) {
   // Ignore
 }
 

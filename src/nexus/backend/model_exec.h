@@ -17,7 +17,7 @@ namespace backend {
 class ModelExecutor {
  public:
   ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
-                BlockPriorityQueue<Task>& task_queue);
+                ModelIndex model_index, BlockPriorityQueue<Task>& task_queue);
 
   ~ModelExecutor();
 
@@ -50,7 +50,6 @@ class ModelExecutor {
 
   void Postprocess(std::shared_ptr<Task> task);
 
-  uint64_t Execute(uint32_t batch = 0);
   void ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan);
 
   TimePoint LastExecuteFinishTime();
@@ -62,22 +61,12 @@ class ModelExecutor {
   uint64_t GetStaticMemoryUsage();
 
  private:
-  std::pair<std::shared_ptr<BatchTask>, int> GetBatchTaskSlidingWindow(
-      uint32_t batch_size);
-  std::pair<std::shared_ptr<BatchTask>, int> GetBatchTaskEarliest(
-      uint32_t batch_size);
   std::shared_ptr<BatchTask> GetBatchTaskByBatchPlan(
       std::shared_ptr<BatchPlanContext> plan);
 
   bool IncreaseOpenRequests(int cnt, bool limit_max_batch);
 
   void DecreaseOpenRequests(int cnt);
-  /*!
-   * \brief Get batch task from the task queue.
-   * \param batch_size Expected batch size in the batch task.
-   * \return Batch task and the number of inputs dequeued from input queue.
-   */
-  std::pair<std::shared_ptr<BatchTask>, int> GetBatchTask(uint32_t batch_size);
 
   void RemoveTask(std::shared_ptr<Task> task);
 

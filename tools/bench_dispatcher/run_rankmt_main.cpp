@@ -335,6 +335,7 @@ class DispatcherRunner {
       auto entrance = scheduler_->AddModelSession(model_executors_.back().get(),
                                                   w.model_session);
       request_entrances_.push_back(entrance);
+      model_index_table_.push_back(entrance.model_index());
     }
   }
 
@@ -365,11 +366,12 @@ class DispatcherRunner {
     auto query_id = ++l.last_query_id;
     auto global_id = ++l.last_global_id;
     CHECK_LT(query_id, l.reserved_size) << "Reserved size not big enough.";
-    l.request.mutable_model_session()->CopyFrom(workload.model_session);
+    auto model_index = model_index_table_[workload_idx];
+    l.request.set_model_index(model_index.t);
     l.request.set_query_id(query_id);
     auto* query = l.request.mutable_query_without_input();
     query->set_query_id(query_id);
-    query->set_model_session_id(l.model_session_id);
+    query->set_model_index(model_index.t);
     query->set_global_id(global_id);
     query->set_frontend_id(l.frontend->node_id());
     auto* clock = query->mutable_clock();
@@ -425,6 +427,7 @@ class DispatcherRunner {
   std::vector<std::shared_ptr<ario::EpollExecutor>> model_executors_;
   std::unique_ptr<MultiThreadRankScheduler> scheduler_;
   std::vector<MultiThreadRankScheduler::RequestEntrance> request_entrances_;
+  std::vector<ModelIndex> model_index_table_;
   FakeDispatcherAccessor accessor_;
   std::vector<std::shared_ptr<FakeBackendDelegate>> backends_;
   std::vector<std::shared_ptr<FakeFrontendDelegate>> frontends_;

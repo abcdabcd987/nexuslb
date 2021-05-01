@@ -29,8 +29,7 @@ class ModelWorker {
   void Stop();
   void Join();
 
-  void AddModelSession(std::string model_session_id,
-                       MultiThreadRankScheduler::RequestEntrance entrance);
+  void AddModelSession(MultiThreadRankScheduler::RequestEntrance entrance);
 
  private:
   class ModelWorkerRdmaHandler;
@@ -51,7 +50,7 @@ class ModelWorker {
   RdmaSender rdma_sender_;
   std::thread ev_thread_;
 
-  std::unordered_map<std::string, MultiThreadRankScheduler::RequestEntrance>
+  std::vector<MultiThreadRankScheduler::RequestEntrance>
       model_session_entrance_table_;
 };
 

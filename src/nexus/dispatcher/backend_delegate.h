@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "nexus/common/typedef.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -28,7 +29,8 @@ class BackendDelegate {
   virtual ~BackendDelegate() = default;
   virtual void Tick() = 0;
   virtual void SendLoadModelCommand(const ModelSession& model_session,
-                                    uint32_t max_batch) = 0;
+                                    uint32_t max_batch,
+                                    ModelIndex model_index) = 0;
   virtual void EnqueueBatchPlan(BatchPlanProto&& request) = 0;
 
  protected:

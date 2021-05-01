@@ -28,7 +28,8 @@ class ModelInstance {
    * \param gpu_id GPU index
    * \param config Configuration of model instance
    */
-  ModelInstance(int gpu_id, const ModelInstanceConfig& config);
+  ModelInstance(int gpu_id, const ModelInstanceConfig& config,
+                ModelIndex model_index);
   /*! \brief Deconstructs ModelInstance. */
   virtual ~ModelInstance();
   /*! \brief Get GPU ID that model is allocated on. */
@@ -40,7 +41,9 @@ class ModelInstance {
   /*! \brief Get the model version. */
   int version() const { return model_session_.version(); }
   /*! \brief Get the model session ID. */
+  const ModelSession& model_session() const { return model_session_; }
   std::string model_session_id() const { return model_session_id_; }
+  ModelIndex model_index() const { return model_index_; }
   /*! \brief Get the model type. */
   std::string type() const { return model_info_["type"].as<std::string>(); }
   /*! \brief Get the suggested batch size. */
@@ -130,6 +133,7 @@ class ModelInstance {
   ModelSession model_session_;
   /*! \brief Model session ID */
   std::string model_session_id_;
+  ModelIndex model_index_;
   /*! \brief Current batch size to use */
   std::atomic<uint32_t> batch_;
   /*! \brief Maximum batch size allowed given latency SLO */
@@ -151,6 +155,7 @@ class ModelInstance {
  * \param model Unique pointer to store the model instance
  */
 void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
+                         ModelIndex model_index,
                          std::unique_ptr<ModelInstance>* model);
 
 }  // namespace backend

@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -18,6 +19,7 @@
 #include "nexus/common/block_queue.h"
 #include "nexus/common/device.h"
 #include "nexus/common/model_db.h"
+#include "nexus/common/typedef.h"
 #include "nexus/proto/nnquery.pb.h"
 
 DEFINE_int32(gpu, 0, "GPU device id");
@@ -112,12 +114,12 @@ class ModelProfiler {
     BlockPriorityQueue<Task> task_queue;
 
     // preprocess
-    std::vector<std::shared_ptr<Task> > preproc_tasks;
+    std::vector<std::shared_ptr<Task>> preproc_tasks;
     {
       config.set_batch(1);
       config.set_max_batch(1);
       std::unique_ptr<ModelInstance> model;
-      CreateModelInstance(gpu_, config, &model);
+      CreateModelInstance(gpu_, config, ModelIndex(0), &model);
       // prepare the input
       int num_inputs = max_batch * (repeat + 1);
       if (num_inputs > 1000) {
@@ -180,27 +182,44 @@ class ModelProfiler {
     for (int batch = min_batch; batch <= max_batch; ++batch) {
       config.set_batch(batch);
       config.set_max_batch(batch);
-      auto model = std::make_shared<ModelExecutor>(gpu_, config, task_queue);
+      auto model = std::make_shared<ModelExecutor>(gpu_, config, ModelIndex(0),
+                                                   task_queue);
       std::vector<uint64_t> forward_lats;
+      std::vector<std::shared_ptr<BatchPlanContext>> batchplans;
+      batchplans.reserve(repeat + dryrun);
+      for (int i = 0; i < repeat + dryrun; ++i) {
+        BatchPlanProto batchplan_proto;
+        batchplan_proto.set_model_index(0);
+        batchplan_proto.set_plan_id(i);
+        for (int j = 0; j < batch; ++j) {
+          auto* query =
+              batchplan_proto.add_queries()->mutable_query_without_input();
+          query->set_global_id(i * batch + j);
+          query->set_model_index(0);
+        }
+        batchplans.push_back(
+            std::make_shared<BatchPlanContext>(batchplan_proto));
+      }
+
       for (int i = 0; i < batch * (repeat + dryrun); ++i) {
         int idx = i % preproc_tasks.size();
+        int plan_id = i / batch;
         auto task = std::make_shared<Task>();
         task->SetDeadline(std::chrono::milliseconds(1000000));
-        task->query.set_query_id(i);
-        task->query.set_model_session_id(
-            model_sessions_[i % model_sessions_.size()]);
+        task->query.set_global_id(i);
+        task->query.set_model_index(0);
         task->attrs = preproc_tasks[idx]->attrs;
         task->AppendInput(preproc_tasks[idx]->inputs[0]->array);
-        model->AddPreprocessedTask(task);
+        batchplans[plan_id]->AddPreprocessedTask(task);
       }
       // dry run
       for (int i = 0; i < dryrun; ++i) {
-        model->Execute();
+        model->ExecuteBatchPlan(batchplans[i]);
       }
       // start meansuring forward latency
-      for (int i = 0; i < repeat; ++i) {
+      for (int i = dryrun; i < dryrun + repeat; ++i) {
         auto beg = std::chrono::high_resolution_clock::now();
-        model->Execute();
+        model->ExecuteBatchPlan(batchplans[i]);
         auto end = std::chrono::high_resolution_clock::now();
         forward_lats.push_back(
             std::chrono::duration_cast<duration>(end - beg).count());

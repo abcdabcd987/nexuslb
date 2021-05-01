@@ -18,13 +18,15 @@ namespace rankmt {
 
 ModelThread::ModelThread(
     ario::EpollExecutor* executor, ModelSession model_session,
-    const ModelProfile& profile, RankThread* rank_thread,
+    ModelIndex model_index, const ModelProfile& profile,
+    RankThread* rank_thread,
     std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
     std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends)
     : executor_(*CHECK_NOTNULL(executor)),
       rank_thread_(*CHECK_NOTNULL(rank_thread)),
       model_session_(std::move(model_session)),
       model_session_id_(ModelSessionToString(model_session_)),
+      model_index_(model_index),
       profile_(profile),
       stop_flag_(false),
       frontends_(std::move(frontends)),
@@ -94,28 +96,26 @@ void ModelThread::PostCommand() {
 CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   CHECK_EQ(ario::EpollExecutor::ThisThreadExecutor(), &executor_);
 
-  std::shared_ptr<QueryContext> qctx;
-  {
-    const auto& q = request.query_without_input();
-    ModelSession model_session;
-    ParseModelSession(q.model_session_id(), &model_session);
-    auto deadline =
-        TimePoint(std::chrono::nanoseconds(q.clock().frontend_recv_ns()) +
-                  std::chrono::milliseconds(model_session.latency_sla()) -
-                  std::chrono::microseconds(kDataPlaneLatencyUs));
-    qctx = std::make_shared<QueryContext>(std::move(request), deadline);
+  ModelIndex model_index(request.query_without_input().model_index());
+  if (model_index.t != model_index_.t) {
+    LOG(ERROR) << "Wrong ModelThread. global_id="
+               << request.query_without_input().global_id()
+               << ", requested model_index: " << model_index.t
+               << ", this model_index: " << model_index_.t << " "
+               << model_session_id_;
+    return CtrlStatus::MODEL_SESSION_NOT_LOADED;
   }
+
+  auto deadline =
+      TimePoint(std::chrono::nanoseconds(
+                    request.query_without_input().clock().frontend_recv_ns()) +
+                std::chrono::milliseconds(model_session_.latency_sla()) -
+                std::chrono::microseconds(kDataPlaneLatencyUs));
+  auto qctx = std::make_shared<QueryContext>(std::move(request), deadline);
   const auto& query = qctx->request.query_without_input();
   auto now = Clock::now();
 
   // Add to pending queries
-  const auto& model_session_id = query.model_session_id();
-  if (model_session_id != model_session_id_) {
-    LOG(ERROR) << "Wrong ModelThread. global_id=" << qctx->global_id.t
-               << ", requested model_session: " << model_session_id
-               << ", ModelThread: " << model_session_id_;
-    return CtrlStatus::MODEL_SESSION_NOT_LOADED;
-  }
   rps_meter_.Hit(now);
   unprocessed_queries_.insert(qctx);
 
@@ -127,7 +127,7 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
 
   // Notify the RankThread
   rank_command_queue_.enqueue(UpdateCandidateCommand{candidate_});
-  rank_thread_.PostCommandFromModelThread(&model_session_id_);
+  rank_thread_.PostCommandFromModelThread(model_index);
 
   return CtrlStatus::CTRL_OK;
 }
@@ -194,7 +194,7 @@ void ModelThread::SendDroppedQueries(
     auto res = replies.try_emplace(frontend_id);
     auto& reply = res.first->second;
     if (res.second) {
-      reply.mutable_model_session()->CopyFrom(model_session_);
+      reply.set_model_index(model_index_.t);
       reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
     }
     reply.add_query_id_list(proto.query_id());
@@ -240,7 +240,7 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   if (inputs.empty()) {
     rank_command_queue_.enqueue(UpdateBackendCommand{cmd.backend_id, now});
     rank_command_queue_.enqueue(UpdateCandidateCommand{candidate_});
-    rank_thread_.PostCommandFromModelThread(&model_session_id_);
+    rank_thread_.PostCommandFromModelThread(model_index_);
     return;
   }
 
@@ -249,13 +249,13 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   auto finish_time = exec_time + exec_elapse;
   rank_command_queue_.enqueue(
       UpdateBackendCommand{cmd.backend_id, finish_time});
-  rank_thread_.PostCommandFromModelThread(&model_session_id_);
+  rank_thread_.PostCommandFromModelThread(model_index_);
 
   // Prepare the batchplan
   BatchPlanProto proto;
   EnqueueQueryCommand query;
   proto.set_plan_id(cmd.plan_id.t);
-  proto.set_model_session_id(model_session_id_);
+  proto.set_model_index(model_index_);
   proto.set_exec_time_ns(
       duration_cast<nanoseconds>(exec_time.time_since_epoch()).count());
   proto.set_deadline_ns(
@@ -266,7 +266,7 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   for (auto& qctx : inputs) {
     auto* query_without_input = query.mutable_query_without_input();
     query_without_input->Swap(qctx->request.mutable_query_without_input());
-    query_without_input->clear_model_session_id();
+    query_without_input->clear_model_index();
     query.set_rdma_read_offset(qctx->request.rdma_read_offset());
     query.set_rdma_read_length(qctx->request.rdma_read_length());
     qctx->request.Clear();
@@ -298,7 +298,7 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   UpdateCandidate(exec_time);
   // Notify the RankThread about the new candidate
   rank_command_queue_.enqueue(UpdateCandidateCommand{candidate_});
-  rank_thread_.PostCommandFromModelThread(&model_session_id_);
+  rank_thread_.PostCommandFromModelThread(model_index_);
 }
 
 }  // namespace rankmt

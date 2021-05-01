@@ -125,7 +125,8 @@ class RequestContext : public DeadlineItem,
 
   void AddBlockReturn(std::vector<VariablePtr> vars);
 
-  void HandleQueryResult(const QueryResultProto& result);
+  void HandleQueryResult(const QueryResultProto& result,
+                         const ModelSession& model_session);
 
   void HandleDispatcherReply(const DispatchReply& reply);
 

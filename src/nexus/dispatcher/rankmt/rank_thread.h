@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "ario/ario.h"
 #include "nexus/common/model_db.h"
@@ -38,14 +39,13 @@ class RankThread {
   ario::EpollExecutor& executor() const { return executor_; }
 
   // Control plane commands
-  void PostAddModelThread(ModelSession model_session,
-                          ModelThread* model_thread);
+  void PostAddModelThread(ModelIndex model_index, ModelThread* model_thread);
   void PostAddBackend(NodeId backend_id,
                       std::shared_ptr<BackendDelegate> delegate);
   void PostRemoveBackend(NodeId backend_id);
 
   // Commands from model threads
-  void PostCommandFromModelThread(const std::string* ptr_model_session_id);
+  void PostCommandFromModelThread(ModelIndex model_index);
 
  private:
   struct PerModelThreadData;
@@ -71,8 +71,8 @@ class RankThread {
   };
 
   struct PerModelThreadData {
-    ModelThread& model_thread;  // TODO: replace with capability
-    std::string model_session_id;
+    ModelThread& model_thread;
+    ModelIndex model_index;
     const ModelProfile& profile;
     moodycamel::ReaderWriterQueue<ModelCommand>& model_command_queue;
     moodycamel::ReaderWriterQueue<RankCommand>& rank_command_queue;
@@ -91,9 +91,9 @@ class RankThread {
   };
 
   // Handlers for commands from model threads
-  void ExecuteCommand(const std::string* ptr_model_session_id);
+  void ExecuteCommand(ModelIndex model_index);
   void DoUpdateCandidateCommand(UpdateCandidateCommand& cmd,
-                                const std::string* ptr_model_session_id);
+                                ModelIndex model_index);
   void DoUpdateBackendCommand(UpdateBackendCommand& cmd);
 
   PlanId NextPlanId();
@@ -110,13 +110,9 @@ class RankThread {
   bool stop_flag_;
   PlanId next_plan_id_{1};
   std::unordered_map<NodeId, std::shared_ptr<BackendContext>> backends_;
+  std::vector<std::unique_ptr<PerModelThreadData>> model_threads_;
 
-  // PERFORMANCE: model_session_id
-  std::unordered_map<std::string, std::unique_ptr<PerModelThreadData>>
-      model_threads_;
-
-  // PERFORMANCE: model_session_id
-  ValueRankedSplayMap<std::string, std::shared_ptr<CandidateInfo>,
+  ValueRankedSplayMap<ModelIndex, std::shared_ptr<CandidateInfo>,
                       CandidateInfo::CompareKeyFn>
       candidate_pool_;
   ValueRankedSplayMap<NodeId, TimePoint> backend_availability_pool_;

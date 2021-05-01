@@ -13,9 +13,6 @@
 #include "nexus/proto/control.pb.h"
 
 DEFINE_int32(count_interval, 1, "Interval to count number of requests in sec");
-DEFINE_int32(load_balance, 4,
-             "Load balance policy (1: random, 2: choice of 2, "
-             "3: deficit round robin, 4: centralized dispatcher)");
 
 namespace nexus {
 namespace app {
@@ -79,34 +76,30 @@ void QueryResult::SetError(uint32_t status, const std::string& error_msg) {
 
 std::atomic<uint64_t> ModelHandler::global_query_id_(0);
 
-ModelHandler::ModelHandler(const std::string& model_session_id,
-                           BackendPool& pool, LoadBalancePolicy lb_policy,
-                           NodeId frontend_id,
+ModelHandler::ModelHandler(ModelSession model_session, ModelIndex model_index,
+                           BackendPool& pool, NodeId frontend_id,
                            ario::RdmaQueuePair* model_worker_conn,
                            RdmaSender rdma_sender,
                            ario::MemoryBlockAllocator* input_memory_allocator)
     : frontend_id_(frontend_id),
-      model_session_id_(model_session_id),
+      model_session_(std::move(model_session)),
+      model_session_id_(ModelSessionToString(model_session_)),
+      model_index_(model_index),
       backend_pool_(pool),
-      lb_policy_(lb_policy),
       model_worker_conn_(model_worker_conn),
       rdma_sender_(rdma_sender),
       input_memory_allocator_(input_memory_allocator),
       total_throughput_(0.),
       rd_(),
       rand_gen_(rd_()) {
-  ParseModelSession(model_session_id, &model_session_);
   counter_ =
       MetricRegistry::Singleton().CreateIntervalCounter(FLAGS_count_interval);
-  LOG(INFO) << model_session_id_ << " load balance policy: " << lb_policy_;
-  if (lb_policy_ == LB_DeficitRR) {
-    running_ = true;
-  }
+  LOG(INFO) << "Created ModelHandler " << model_session_id_ << " ModelIndex "
+            << model_index.t;
 }
 
 ModelHandler::~ModelHandler() {
   MetricRegistry::Singleton().RemoveMetric(counter_);
-  running_ = false;
 }
 
 std::shared_ptr<QueryResult> ModelHandler::Execute(
@@ -123,7 +116,7 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   // Build the query proto
   QueryProto query, query_without_input;
   query.set_query_id(qid);
-  query.set_model_session_id(model_session_id_);
+  query.set_model_index(model_index_);
   query.set_frontend_id(frontend_id_.t);
   for (auto field : output_fields) {
     query.add_output_field(field);
@@ -151,27 +144,20 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   clock->set_frontend_dispatch_ns(frontend_dispatch_ns);
 
   // Move `query`
-  if (lb_policy_ == LB_Dispatcher) {
-    query_without_input.CopyFrom(query);
-  }
+  query_without_input.CopyFrom(query);
   query.mutable_input()->CopyFrom(input);
   ctx->SetBackendQueryProto(std::move(query),
                             input_memory_allocator_->Allocate());
 
-  // Send query to backend if not using dispatcher.
-  // Otherwise ask the dispatcher first.
-  if (lb_policy_ != LB_Dispatcher) {
-    LOG(FATAL) << "TODO: remove lb_policy_";
-  } else {
-    ControlMessage msg;
-    auto* request = msg.mutable_dispatch();
-    *request->mutable_model_session() = model_session_;
-    *request->mutable_query_without_input() = std::move(query_without_input);
-    request->set_query_id(qid);
-    request->set_rdma_read_offset(ctx->rdma_read_offset());
-    request->set_rdma_read_length(ctx->rdma_read_length());
-    rdma_sender_.SendMessage(model_worker_conn_, msg);
-  }
+  // Send to dispatcher
+  ControlMessage msg;
+  auto* request = msg.mutable_dispatch();
+  request->set_model_index(model_index_.t);
+  *request->mutable_query_without_input() = std::move(query_without_input);
+  request->set_query_id(qid);
+  request->set_rdma_read_offset(ctx->rdma_read_offset());
+  request->set_rdma_read_length(ctx->rdma_read_length());
+  rdma_sender_.SendMessage(model_worker_conn_, msg);
 
   auto reply = std::make_shared<QueryResult>(qid);
   return reply;
@@ -188,7 +174,7 @@ void ModelHandler::HandleBackendReply(const QueryResultProto& result) {
     return;
   }
   auto ctx = iter->second;
-  ctx->HandleQueryResult(result);
+  ctx->HandleQueryResult(result, model_session_);
   query_ctx_.erase(iter);
 }
 
@@ -204,7 +190,7 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
                    << " model_session: " << model_session_id_;
     }
     QueryResultProto result;
-    *result.mutable_model_session_id() = model_session_id_;
+    result.set_model_index(model_index_.t);
     result.set_status(reply.status());
     for (auto query_id : reply.query_id_list()) {
       result.set_query_id(query_id);
@@ -220,41 +206,6 @@ bool ModelHandler::FetchImage(QueryId query_id, ValueProto* output) {
   }
   *output = iter->second->backend_query_proto().input();
   return true;
-}
-
-void ModelHandler::UpdateRoute(const ModelRouteProto& route) {
-  std::lock_guard<std::mutex> lock(route_mu_);
-  backends_.clear();
-  backend_rates_.clear();
-  total_throughput_ = 0.;
-
-  double min_rate = std::numeric_limits<double>::max();
-  for (auto itr : route.backend_rate()) {
-    min_rate = std::min(min_rate, itr.throughput());
-  }
-  quantum_to_rate_ratio_ = 1. / min_rate;
-
-  for (auto itr : route.backend_rate()) {
-    uint32_t backend_id = itr.info().node_id();
-    backends_.push_back(backend_id);
-    const auto rate = itr.throughput();
-    backend_rates_.emplace(backend_id, rate);
-    total_throughput_ += rate;
-    LOG(INFO) << "- backend " << backend_id << ": " << rate;
-    if (backend_quanta_.count(backend_id) == 0) {
-      backend_quanta_.emplace(backend_id, rate * quantum_to_rate_ratio_);
-    }
-  }
-  LOG(INFO) << "Total throughput: " << total_throughput_;
-  std::sort(backends_.begin(), backends_.end());
-  current_drr_index_ %= backends_.size();
-  for (auto iter = backend_quanta_.begin(); iter != backend_quanta_.end();) {
-    if (backend_rates_.count(iter->first) == 0) {
-      iter = backend_quanta_.erase(iter);
-    } else {
-      ++iter;
-    }
-  }
 }
 
 std::vector<uint32_t> ModelHandler::BackendList() {

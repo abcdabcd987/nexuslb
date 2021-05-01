@@ -88,7 +88,7 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
    * \brief Construct a task with connection to frontend.
    * \param conn Connection to frontend server
    */
-  Task(ario::RdmaQueuePair* conn);
+  Task(ario::RdmaQueuePair* conn, std::shared_ptr<ModelExecutor> model);
   /*!
    * \brief Decode query from message.
    * \param message Message received from frontend

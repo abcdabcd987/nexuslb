@@ -31,6 +31,12 @@ NS_STRONG_TYPEDEF(nexus, uint64_t, GlobalId)
 // PlanId is assigned by Dispatcher.
 NS_STRONG_TYPEDEF(nexus, uint64_t, PlanId)
 
+// ModelIndex is assigned by Dispatcher. Maps to a model session.
+// Start from 0.
+NS_STRONG_TYPEDEF(nexus, uint32_t, ModelIndex)
+
+namespace nexus {
+
 struct AvgStd {
   AvgStd() : avg(0.0), std(0.0) {}
   AvgStd(double avg, double std) : avg(avg), std(std) {}
@@ -38,5 +44,7 @@ struct AvgStd {
   double avg;
   double std;
 };
+
+}  // namespace nexus
 
 #endif

@@ -25,7 +25,8 @@ class BackendDelegateImpl : public BackendDelegate {
 
   void Tick() override;
   void SendLoadModelCommand(const ModelSession& model_session,
-                            uint32_t max_batch) override;
+                            uint32_t max_batch,
+                            ModelIndex model_index) override;
   void EnqueueBatchPlan(BatchPlanProto&& request) override;
 
  private:

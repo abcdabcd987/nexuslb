@@ -14,6 +14,7 @@
 #include "ario/ario.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/rps_meter.h"
+#include "nexus/common/typedef.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/batch_policy.h"
 #include "nexus/dispatcher/batch_size_estimator.h"
@@ -33,7 +34,8 @@ class ModelThread {
  public:
   ModelThread(
       ario::EpollExecutor* executor, ModelSession model_session,
-      const ModelProfile& profile, RankThread* rank_thread,
+      ModelIndex model_index, const ModelProfile& profile,
+      RankThread* rank_thread,
       std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
       std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends);
   ModelThread(const ModelThread& other) = delete;
@@ -53,6 +55,7 @@ class ModelThread {
   const ModelProfile& profile() const { return profile_; }
   const ModelSession& model_session() const { return model_session_; }
   const std::string& model_session_id() const { return model_session_id_; }
+  ModelIndex model_index() const { return model_index_; }
 
   CtrlStatus EnqueueQuery(DispatchRequest&& request);
   void PostCommand();
@@ -80,6 +83,7 @@ class ModelThread {
   RankThread& rank_thread_;
   ModelSession model_session_;
   std::string model_session_id_;
+  ModelIndex model_index_;
   // TODO: GPU performance heterogeneity
   const ModelProfile& profile_;
   bool stop_flag_;

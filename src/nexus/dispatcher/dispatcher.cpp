@@ -279,7 +279,8 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
         // LoadModel RPC
         VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
                 << ", model_session=" << iter.first;
-        backend->SendLoadModelCommand(model_session, max_batch);
+        backend->SendLoadModelCommand(model_session, max_batch,
+                                      iter.second->model_index());
         VLOG(1) << "Finish SendLoadModelCommand: backend_id="
                 << backend->node_id() << ", model_session=" << iter.first;
       }
@@ -339,16 +340,18 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
   }
   reply->set_status(CtrlStatus::CTRL_OK);
 
-  // Add the model session
-  auto sctx = std::make_shared<ModelSessionContext>(request.model_session());
-  sessions_[model_sess_id] = sctx;
-
   // Add model session for the scheduler
   auto& model_worker = GetModelWorker(request.model_session());
   auto entrance = scheduler_.AddModelSession(model_worker.executor(),
                                              request.model_session());
-  model_worker.AddModelSession(model_sess_id, entrance);
+  model_worker.AddModelSession(entrance);
   reply->set_model_worker_port(model_worker.tcp_port());
+  reply->set_model_index(entrance.model_index().t);
+
+  // Add the model session
+  auto sctx = std::make_shared<ModelSessionContext>(request.model_session(),
+                                                    entrance.model_index());
+  sessions_[model_sess_id] = sctx;
 
   // Ask backends to load the model
   auto profile_id = ModelSessionToProfileID(request.model_session());
@@ -366,7 +369,8 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
     // LoadModel RPC
     VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
             << ", model_session=" << model_sess_id;
-    backend->SendLoadModelCommand(request.model_session(), max_batch);
+    backend->SendLoadModelCommand(request.model_session(), max_batch,
+                                  entrance.model_index());
     VLOG(1) << "Finish SendLoadModelCommand: backend_id=" << backend->node_id()
             << ", model_session=" << model_sess_id;
   }

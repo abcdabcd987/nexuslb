@@ -2,7 +2,6 @@
 
 #include <stdexcept>
 
-#include "nexus/backend/share_prefix_model.h"
 #include "nexus/backend/sleep_model.h"
 #include "nexus/common/sleep_profile.h"
 #include "nexus/common/util.h"
@@ -22,7 +21,6 @@
 
 #ifdef USE_TENSORFLOW
 #include "nexus/backend/tensorflow_model.h"
-#include "nexus/backend/tf_share_model.h"
 #endif
 
 #include <glog/logging.h>
@@ -31,18 +29,18 @@ namespace nexus {
 namespace backend {
 
 void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
+                         ModelIndex model_index,
                          std::unique_ptr<ModelInstance>* model) {
   const std::string kSleepPrefix = "sleep#";
   auto beg = Clock::now();
   std::string framework = config.model_session(0).framework();
 #ifdef USE_TENSORFLOW
   if (framework == "tf_share") {
-    model->reset(new TFShareModel(gpu_id, config));
+    LOG(FATAL) << "TFShareModel is not supported";
   } else
 #endif
       if (config.model_session_size() > 1) {
-    LOG(INFO) << "Create prefix model";
-    model->reset(new SharePrefixModel(gpu_id, config));
+    LOG(FATAL) << "SharePrefixModel is not supported";
   } else {
     std::string model_name = config.model_session(0).model_name();
 #ifdef USE_DARKNET
@@ -66,7 +64,7 @@ void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
 #endif
 #ifdef USE_TENSORFLOW
         if (framework == "tensorflow") {
-      model->reset(new TensorflowModel(gpu_id, config));
+      model->reset(new TensorflowModel(gpu_id, config, model_index));
     } else
 #endif
         if (SleepProfile::MatchPrefix(framework)) {
@@ -74,7 +72,7 @@ void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
       if (!profile.has_value()) {
         LOG(FATAL) << "Failed to parse SleepProfile.";
       }
-      model->reset(new SleepModel(*profile, config));
+      model->reset(new SleepModel(*profile, config, model_index));
     } else {
       LOG(FATAL) << "Unknown framework " << framework;
     }
@@ -86,9 +84,11 @@ void CreateModelInstance(int gpu_id, const ModelInstanceConfig& config,
   LOG(INFO) << "Loading model time: " << duration.count() << "ms";
 }
 
-ModelInstance::ModelInstance(int gpu_id, const ModelInstanceConfig& config)
+ModelInstance::ModelInstance(int gpu_id, const ModelInstanceConfig& config,
+                             ModelIndex model_index)
     : gpu_id_(gpu_id),
       model_session_(config.model_session(0)),
+      model_index_(model_index),
       batch_(config.batch()),
       max_batch_(config.max_batch()) {
   CHECK_GT(batch_, 0) << "batch must be greater than 0";

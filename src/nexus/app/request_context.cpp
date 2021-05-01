@@ -115,7 +115,8 @@ void RequestContext::AddBlockReturn(std::vector<VariablePtr> vars) {
   }
 }
 
-void RequestContext::HandleQueryResult(const QueryResultProto& result) {
+void RequestContext::HandleQueryResult(const QueryResultProto& result,
+                                       const ModelSession& model_session) {
   if (state_ == kError) {
     return;
   }
@@ -132,7 +133,7 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
                      Clock::now() - begin_)
                      .count();
   query_latency->set_query_id(qid);
-  query_latency->set_model_session_id(result.model_session_id());
+  query_latency->set_model_session_id(ModelSessionToString(model_session));
   query_latency->set_frontend_recv_timestamp_us(recv_ts);
   query_latency->set_backend_latency_us(result.latency_us());
   query_latency->set_backend_queuing_us(result.queuing_us());
@@ -143,9 +144,7 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result) {
       frontend_got_reply_ns);
 
   double latency = recv_ts;
-  ModelSession model_sess;
-  ParseModelSession(result.model_session_id(), &model_sess);
-  slack_ms_ += model_sess.latency_sla() - latency / 1e3;
+  slack_ms_ += model_session.latency_sla() - latency / 1e3;
 
   if (result.status() != CTRL_OK) {
     // LOG(INFO) << request_.user_id() << ":" << request_.req_id() << ":" <<

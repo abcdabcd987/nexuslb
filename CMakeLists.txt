@@ -136,17 +136,14 @@ add_library(dispatcher_obj
     src/nexus/dispatcher/backend_delegate_impl.cpp
     src/nexus/dispatcher/batch_policy.cpp
     src/nexus/dispatcher/batch_size_estimator.cpp
-#     src/nexus/dispatcher/delayed_scheduler.cpp
     src/nexus/dispatcher/dispatcher.cpp
     src/nexus/dispatcher/frontend_delegate_impl.cpp
     src/nexus/dispatcher/model_worker.cpp
     src/nexus/dispatcher/query_context.cpp
-#     src/nexus/dispatcher/rank_scheduler.cpp
     src/nexus/dispatcher/rankmt/common.cpp
     src/nexus/dispatcher/rankmt/model_thread.cpp
     src/nexus/dispatcher/rankmt/rank_thread.cpp
     src/nexus/dispatcher/rankmt/scheduler.cpp
-#     src/nexus/dispatcher/round_robin_scheduler.cpp
     src/nexus/dispatcher/session_context.cpp
 )
 target_link_libraries(dispatcher_obj PUBLIC common)
@@ -179,7 +176,6 @@ add_library(backend_obj
         src/nexus/backend/gpu_executor.cpp
         src/nexus/backend/model_exec.cpp
         src/nexus/backend/model_ins.cpp
-        src/nexus/backend/share_prefix_model.cpp
         src/nexus/backend/sleep_model.cpp
         src/nexus/backend/slice.cpp
         src/nexus/backend/task.cpp
@@ -205,8 +201,7 @@ endif()
 if(USE_TENSORFLOW)
     target_compile_definitions(backend_obj PRIVATE USE_TENSORFLOW)
     target_sources(backend_obj PRIVATE
-            src/nexus/backend/tensorflow_model.cpp
-            src/nexus/backend/tf_share_model.cpp)
+            src/nexus/backend/tensorflow_model.cpp)
     target_include_directories(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/include)
     target_link_libraries(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_cc.so)
     target_link_libraries(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_framework.so)
@@ -286,10 +281,10 @@ target_link_libraries(profiler PRIVATE common backend_obj)
 
 
 ###### tools/test_pb ######
-if(USE_GPU)
-    add_executable(test_pb tools/profiler/test_pb.cpp)
-    target_link_libraries(test_pb PRIVATE common backend_obj)
-endif()
+# if(USE_GPU)
+#     add_executable(test_pb tools/profiler/test_pb.cpp)
+#     target_link_libraries(test_pb PRIVATE common backend_obj)
+# endif()
 
 
 
@@ -303,10 +298,10 @@ endif()
 
 
 ###### tools/bench_tfshare ######
-if(USE_GPU AND USE_TENSORFLOW)
-    add_executable(bench_tfshare tools/bench_tfshare.cpp)
-    target_link_libraries(bench_tfshare PRIVATE common backend_obj)
-endif()
+# if(USE_GPU AND USE_TENSORFLOW)
+#     add_executable(bench_tfshare tools/bench_tfshare.cpp)
+#     target_link_libraries(bench_tfshare PRIVATE common backend_obj)
+# endif()
 
 
 

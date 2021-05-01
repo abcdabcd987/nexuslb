@@ -124,14 +124,13 @@ void ModelWorker::Stop() {
 void ModelWorker::Join() { ev_thread_.join(); }
 
 void ModelWorker::AddModelSession(
-    std::string model_session_id,
     MultiThreadRankScheduler::RequestEntrance entrance) {
-  executor_.PostBigCallback(
-      [this, m = std::move(model_session_id), entrance](ario::ErrorCode) {
-        model_session_entrance_table_.erase(m);
-        model_session_entrance_table_.try_emplace(m, std::move(entrance));
-      },
-      ario::ErrorCode::kOk);
+  executor_.PostOk([this, entrance](ario::ErrorCode) {
+    if (model_session_entrance_table_.size() <= entrance.model_index().t) {
+      model_session_entrance_table_.resize(entrance.model_index().t + 1);
+    }
+    model_session_entrance_table_[entrance.model_index().t] = entrance;
+  });
 }
 
 void ModelWorker::HandleDispatch(DispatchRequest&& request,
@@ -153,15 +152,13 @@ void ModelWorker::HandleDispatch(DispatchRequest&& request,
   query_without_input->set_global_id(global_id.t);
 
   // Enqueue query
-  // PERFORMANCE: model_session_id
-  auto model_session_id = ModelSessionToString(request.model_session());
-  auto& entrance = model_session_entrance_table_.at(model_session_id);
+  auto& entrance = model_session_entrance_table_.at(request.model_index());
   auto status = entrance.EnqueueQuery(std::move(request));
 
   // Send out DispatchReply only when failure
   reply->set_status(status);
   if (status != CtrlStatus::CTRL_OK) {
-    *reply->mutable_model_session() = request.model_session();
+    reply->set_model_index(request.model_index());
     reply->add_query_id_list(request.query_id());
   }
 }

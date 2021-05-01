@@ -35,8 +35,6 @@ namespace backend {
  */
 class BackendServer {
  public:
-  using ModelTable = std::unordered_map<std::string, ModelExecutorPtr>;
-
   /*!
    * \brief Constructs a backend server
    * \param port Port number for receiving requests
@@ -63,18 +61,6 @@ class BackendServer {
   void LoadModel(const BackendLoadModelCommand& req);
   void HandleEnqueueBatchPlan(BatchPlanProto&& req, RpcReply* reply);
   void MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task);
-
-  /*!
-   * \brief Gets the model instance given model session ID
-   * \param model_session_id Model session ID
-   * \return Model instance pointer
-   */
-  ModelExecutorPtr GetModel(const std::string& model_session_id);
-  /*!
-   * \brief Gets all model instances loaded in the backend server
-   * \return All model instances
-   */
-  ModelTable GetModelTable();
 
  private:
   /*! \brief Daemon thread that sends stats to scheduler periodically. */
@@ -158,10 +144,10 @@ class BackendServer {
   /*! \brief GPU executor */
   std::unique_ptr<GpuExecutorPlanFollower> gpu_executor_;
   /*!
-   * \brief Mapping from model session ID to model instance.
+   * \brief Mapping from ModelIndex to model instance.
    * Guarded by model_table_mu_.p
    */
-  ModelTable model_table_;
+  std::vector<ModelExecutorPtr> model_table_;
   std::thread model_table_thread_;
 
   BlockQueue<BackendLoadModelCommand> model_table_requests_;

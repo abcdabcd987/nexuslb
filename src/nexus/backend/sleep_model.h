@@ -11,7 +11,8 @@ namespace backend {
 
 class SleepModel : public ModelInstance {
  public:
-  SleepModel(SleepProfile profile, const ModelInstanceConfig& config);
+  SleepModel(SleepProfile profile, const ModelInstanceConfig& config,
+             ModelIndex model_index);
 
   Shape InputShape() override;
   std::unordered_map<std::string, Shape> OutputShapes() override;

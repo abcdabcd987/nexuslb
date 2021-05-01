@@ -5,8 +5,6 @@
 
 #include "nexus/app/frontend.h"
 
-DECLARE_int32(load_balance);
-
 namespace nexus {
 namespace app {
 
@@ -34,8 +32,7 @@ class AppBase : public Frontend {
   std::shared_ptr<ModelHandler> GetModelHandler(
       const std::string& framework, const std::string& model_name,
       uint32_t version, uint64_t latency_sla, float estimate_workload = 0.,
-      std::vector<uint32_t> image_size = {},
-      LoadBalancePolicy lb_policy = LoadBalancePolicy(FLAGS_load_balance));
+      std::vector<uint32_t> image_size = {});
   size_t nthreads_;
   QueryProcessor* qp_;
 

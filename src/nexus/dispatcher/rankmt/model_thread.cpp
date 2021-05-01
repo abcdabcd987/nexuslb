@@ -9,6 +9,7 @@
 
 #include "nexus/common/functional.h"
 #include "nexus/common/model_def.h"
+#include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/rankmt/rank_thread.h"
 
@@ -238,7 +239,8 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
 
   // Early return when batch_size=0
   if (inputs.empty()) {
-    rank_command_queue_.enqueue(UpdateBackendCommand{cmd.backend_id, now});
+    rank_command_queue_.enqueue(
+        UpdateBackendCommand{cmd.backend_id, TimePoint::min()});
     rank_command_queue_.enqueue(UpdateCandidateCommand{candidate_});
     rank_thread_.PostCommandFromModelThread(model_index_);
     return;
@@ -272,7 +274,8 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
     qctx->request.Clear();
     *proto.add_queries() = std::move(query);
   }
-  VLOG(1) << "ModelThread BatchPlanProto: batch_size=" << proto.queries_size()
+  VLOG(1) << "Send BatchPlan: " << model_session_id_
+          << " batch_size=" << proto.queries_size()
           << " elapse=" << exec_elapse.count() / 1e6 << "ms"
           << " target_batch_size=" << target_batch_size_;
   // Update punch clock

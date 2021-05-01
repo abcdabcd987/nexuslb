@@ -7,6 +7,7 @@
 #include <mutex>
 
 #include "nexus/common/model_def.h"
+#include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/rankmt/model_thread.h"
 
@@ -91,7 +92,13 @@ void RankThread::DoUpdateCandidateCommand(UpdateCandidateCommand& cmd,
 
 void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
   auto& bctx = backends_.at(cmd.backend_id);
-  UpdateBackend(bctx.get(), cmd.next_available_time);
+  TimePoint next_available_time = cmd.next_available_time;
+  if (next_available_time == TimePoint::min()) {
+    next_available_time = Clock::now() +
+                          std::chrono::microseconds(kCtrlPlaneLatencyUs) +
+                          std::chrono::microseconds(kDataPlaneLatencyUs);
+  }
+  UpdateBackend(bctx.get(), next_available_time);
 }
 
 void RankThread::PostAddModelThread(ModelIndex model_index,
@@ -301,6 +308,11 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
 void RankThread::UpdateBackend(BackendContext* bctx,
                                TimePoint next_available_time) {
   bctx->next_available_time = next_available_time;
+  backend_availability_pool_.Upsert(bctx->backend_id, next_available_time);
+
+  if (next_available_time == TimePoint::max()) {
+    return;
+  }
   auto schedule_time = next_available_time -
                        std::chrono::microseconds(kDataPlaneLatencyUs) -
                        std::chrono::microseconds(kCtrlPlaneLatencyUs);
@@ -310,8 +322,6 @@ void RankThread::UpdateBackend(BackendContext* bctx,
         if (error == ario::ErrorCode::kCancelled) return;
         OnBackendAvailableSoon(backend_id);
       });
-
-  backend_availability_pool_.Upsert(bctx->backend_id, next_available_time);
 }
 
 }  // namespace rankmt

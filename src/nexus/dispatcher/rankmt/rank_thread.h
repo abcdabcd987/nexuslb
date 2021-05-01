@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -45,9 +46,19 @@ class RankThread {
   void PostRemoveBackend(NodeId backend_id);
 
   // Commands from model threads
-  void PostCommandFromModelThread(ModelIndex model_index);
+  void PostExecutionCandidate(ModelIndex model_index,
+                              ExecutionCandidate candidate);
 
  private:
+  class Poller : public ario::EventPoller {
+   public:
+    explicit Poller(RankThread* outer) : outer_(*outer) {}
+    void Poll() override { outer_.Poll(); }
+
+   private:
+    RankThread& outer_;
+  };
+
   struct PerModelThreadData;
   struct CandidateInfo {
     PerModelThreadData& mdata;
@@ -77,6 +88,9 @@ class RankThread {
     moodycamel::ReaderWriterQueue<ModelCommand>& model_command_queue;
     moodycamel::ReaderWriterQueue<RankCommand>& rank_command_queue;
     std::shared_ptr<ActivePlan> active_plan;
+
+    std::mutex new_candidate_mutex;
+    std::optional<ExecutionCandidate> new_candidate;
   };
 
   struct BackendContext {
@@ -91,10 +105,9 @@ class RankThread {
   };
 
   // Handlers for commands from model threads
-  void ExecuteCommand(ModelIndex model_index);
-  void DoUpdateCandidateCommand(UpdateCandidateCommand& cmd,
-                                ModelIndex model_index);
+  void ExecuteCommand(PerModelThreadData& mdata);
   void DoUpdateBackendCommand(UpdateBackendCommand& cmd);
+  void DoUpdateCandidate(PerModelThreadData& mdata);
 
   PlanId NextPlanId();
   void UpdateActivePlans(TimePoint earliest_exec_time,
@@ -106,8 +119,11 @@ class RankThread {
   void OnPlanTimer(PlanId plan_id);
   void UpdateBackend(BackendContext* bctx, TimePoint next_available_time);
 
+  void Poll();
+
   ario::EpollExecutor& executor_;
   bool stop_flag_;
+  Poller poller_;
   PlanId next_plan_id_{1};
   std::unordered_map<NodeId, std::shared_ptr<BackendContext>> backends_;
   std::vector<std::unique_ptr<PerModelThreadData>> model_threads_;

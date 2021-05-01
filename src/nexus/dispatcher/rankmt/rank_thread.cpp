@@ -27,7 +27,14 @@ RankThread::BackendContext::BackendContext(
       schedule_timer(*CHECK_NOTNULL(executor)) {}
 
 RankThread::RankThread(ario::EpollExecutor* executor)
-    : executor_(*CHECK_NOTNULL(executor)), stop_flag_(false) {}
+    : executor_(*CHECK_NOTNULL(executor)), stop_flag_(false), poller_(this) {
+  constexpr size_t kMaxModels = 512;
+
+  // Prevent reallocation for thread safety.
+  model_threads_.reserve(kMaxModels);
+
+  executor_.AddPoller(poller_);
+}
 
 RankThread::~RankThread() {
   // TODO
@@ -53,41 +60,46 @@ void RankThread::Stop(std::mutex& mutex, size_t& cnt,
 
 PlanId RankThread::NextPlanId() { return PlanId(next_plan_id_.t++); }
 
-void RankThread::PostCommandFromModelThread(ModelIndex model_index) {
-  executor_.PostOk(
-      [this, model_index](ario::ErrorCode) { ExecuteCommand(model_index); });
-}
-
-void RankThread::ExecuteCommand(ModelIndex model_index) {
+void RankThread::ExecuteCommand(PerModelThreadData& mdata) {
   if (stop_flag_) {
     return;
   }
-  auto& mdata = model_threads_.at(model_index);
-  CHECK(mdata);
   auto visitor = make_visitor(
-      [this, model_index](UpdateCandidateCommand& cmd) {
-        DoUpdateCandidateCommand(cmd, model_index);
-      },
       [this](UpdateBackendCommand& cmd) { DoUpdateBackendCommand(cmd); }
       // Force newline for clang-format
   );
 
   RankCommand command;
-  while (mdata->rank_command_queue.try_dequeue(command)) {
+  while (mdata.rank_command_queue.try_dequeue(command)) {
     std::visit(visitor, command);
   }
 }
 
-void RankThread::DoUpdateCandidateCommand(UpdateCandidateCommand& cmd,
-                                          ModelIndex model_index) {
+void RankThread::PostExecutionCandidate(ModelIndex model_index,
+                                        ExecutionCandidate candidate) {
   auto& mdata = model_threads_.at(model_index.t);
   CHECK(mdata);
 
-  auto cinfo =
-      std::shared_ptr<CandidateInfo>(new CandidateInfo{*mdata, cmd.candidate});
-  candidate_pool_.Upsert(model_index, cinfo);
+  std::lock_guard lock(mdata->new_candidate_mutex);
+  mdata->new_candidate = candidate;
+}
 
-  UpdateActivePlans(cinfo->candidate.earliest_exec_time, *mdata);
+void RankThread::DoUpdateCandidate(PerModelThreadData& mdata) {
+  std::optional<ExecutionCandidate> candidate;
+  {
+    std::lock_guard lock(mdata.new_candidate_mutex);
+    candidate = std::move(mdata.new_candidate);
+    mdata.new_candidate.reset();
+  }
+  if (!candidate.has_value()) {
+    return;
+  }
+
+  auto cinfo = std::shared_ptr<CandidateInfo>(
+      new CandidateInfo{mdata, candidate.value()});
+  candidate_pool_.Upsert(mdata.model_index, cinfo);
+
+  UpdateActivePlans(cinfo->candidate.earliest_exec_time, mdata);
 }
 
 void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
@@ -114,9 +126,13 @@ void RankThread::PostAddModelThread(ModelIndex model_index,
           return;
         }
         auto& m = *CHECK_NOTNULL(model_thread);
+
+        // Ensure no realloaction for thread safety.
+        CHECK_LT(model_index.t, model_threads_.capacity());
         if (model_threads_.size() <= model_index.t) {
           model_threads_.resize(model_index.t + 1);
         }
+
         model_threads_[model_index.t] =
             std::unique_ptr<PerModelThreadData>(new PerModelThreadData{
                 m, model_index, m.profile(),
@@ -322,6 +338,16 @@ void RankThread::UpdateBackend(BackendContext* bctx,
         if (error == ario::ErrorCode::kCancelled) return;
         OnBackendAvailableSoon(backend_id);
       });
+}
+
+void RankThread::Poll() {
+  for (auto& mdata : model_threads_) {
+    if (!mdata) {
+      continue;
+    }
+    ExecuteCommand(*mdata);
+    DoUpdateCandidate(*mdata);
+  }
 }
 
 }  // namespace rankmt

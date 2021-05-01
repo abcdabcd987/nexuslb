@@ -39,16 +39,12 @@ struct GrantedBackendMessage {
 
 using ModelCommand = std::variant<GrantedBackendMessage>;
 
-struct UpdateCandidateCommand {
-  ExecutionCandidate candidate;
-};
-
 struct UpdateBackendCommand {
   NodeId backend_id;
   TimePoint next_available_time;
 };
 
-using RankCommand = std::variant<UpdateCandidateCommand, UpdateBackendCommand>;
+using RankCommand = std::variant<UpdateBackendCommand>;
 
 }  // namespace rankmt
 }  // namespace dispatcher

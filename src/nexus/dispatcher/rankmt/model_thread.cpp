@@ -127,8 +127,7 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   UpdateCandidate(earliest_exec_time);
 
   // Notify the RankThread
-  rank_command_queue_.enqueue(UpdateCandidateCommand{candidate_});
-  rank_thread_.PostCommandFromModelThread(model_index);
+  rank_thread_.PostExecutionCandidate(model_index_, candidate_);
 
   return CtrlStatus::CTRL_OK;
 }
@@ -241,8 +240,7 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   if (inputs.empty()) {
     rank_command_queue_.enqueue(
         UpdateBackendCommand{cmd.backend_id, TimePoint::min()});
-    rank_command_queue_.enqueue(UpdateCandidateCommand{candidate_});
-    rank_thread_.PostCommandFromModelThread(model_index_);
+    rank_thread_.PostExecutionCandidate(model_index_, candidate_);
     return;
   }
 
@@ -251,7 +249,6 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   auto finish_time = exec_time + exec_elapse;
   rank_command_queue_.enqueue(
       UpdateBackendCommand{cmd.backend_id, finish_time});
-  rank_thread_.PostCommandFromModelThread(model_index_);
 
   // Prepare the batchplan
   BatchPlanProto proto;
@@ -300,8 +297,7 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   // Update candidate
   UpdateCandidate(exec_time);
   // Notify the RankThread about the new candidate
-  rank_command_queue_.enqueue(UpdateCandidateCommand{candidate_});
-  rank_thread_.PostCommandFromModelThread(model_index_);
+  rank_thread_.PostExecutionCandidate(model_index_, candidate_);
 }
 
 }  // namespace rankmt

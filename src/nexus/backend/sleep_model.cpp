@@ -1,15 +1,39 @@
 #include "nexus/backend/sleep_model.h"
 
 #include <glog/logging.h>
+#include <immintrin.h>
 
 #include <chrono>
 #include <stdexcept>
 #include <thread>
 
 #include "nexus/backend/model_ins.h"
+#include "nexus/common/time_util.h"
 
 namespace nexus {
 namespace backend {
+
+namespace {
+
+template <class Rep, class Period>
+inline void BlockSleepFor(const std::chrono::duration<Rep, Period>& duration) {
+  std::this_thread::sleep_for(duration);
+}
+
+template <class Rep, class Period>
+inline void SpinSleepFor(const std::chrono::duration<Rep, Period>& duration) {
+  auto until = Clock::now() + duration;
+  while (Clock::now() < until) {
+    _mm_pause();
+  }
+}
+
+template <class Rep, class Period>
+inline void SleepFor(const std::chrono::duration<Rep, Period>& duration) {
+  BlockSleepFor(duration);
+}
+
+}  // namespace
 
 SleepModel::SleepModel(SleepProfile profile, const ModelInstanceConfig& config,
                        ModelIndex model_index)
@@ -99,14 +123,12 @@ void SleepModel::Preprocess(std::shared_ptr<Task> task) {
       break;
   }
 
-  std::this_thread::sleep_for(
-      std::chrono::microseconds(profile_.preprocess_us()));
+  SleepFor(std::chrono::microseconds(profile_.preprocess_us()));
 }
 
 void SleepModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   size_t batch_size = batch_task->batch_size();
-  std::this_thread::sleep_for(
-      std::chrono::microseconds(profile_.forward_us(batch_size)));
+  SleepFor(std::chrono::microseconds(profile_.forward_us(batch_size)));
   std::unordered_map<std::string, Slice> slices;
   for (uint i = 0; i < output_layers_.size(); ++i) {
     const auto& name = output_layers_[i];
@@ -126,8 +148,7 @@ void SleepModel::Postprocess(std::shared_ptr<Task> task) {
     auto* record = result->add_output();
   }
 
-  std::this_thread::sleep_for(
-      std::chrono::microseconds(profile_.postprocess_us()));
+  SleepFor(std::chrono::microseconds(profile_.postprocess_us()));
 }
 
 uint64_t SleepModel::GetPeakBytesInUse() {

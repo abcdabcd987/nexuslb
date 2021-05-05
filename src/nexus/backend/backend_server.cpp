@@ -306,8 +306,6 @@ void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
     tasks_pending_fetch_image_.erase(iter);
   }
   auto global_id = task->query.global_id();
-  VLOG(1) << "HandleFetchImageReply: global_id=" << global_id
-          << ", wrid=" << wrid.DebugString();
 
   // TODO: avoid deserialization
   auto* input = task->query.mutable_input();
@@ -371,10 +369,6 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
 }
 
 bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
-  VLOG(1) << "EnqueueQuery: frontend_id=" << task->query.frontend_id()
-          << ", model_index=" << task->query.model_index()
-          << ", query_id=" << task->query.query_id()
-          << ", global_id=" << task->query.global_id();
   ario::RdmaQueuePair* frontend_conn;
   {
     auto frontend_id = NodeId(task->query.frontend_id());
@@ -401,7 +395,6 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
   task->query.mutable_clock()->set_backend_fetch_image_ns(
       backend_fetch_image_ns);
   auto global_id = task->query.global_id();
-  VLOG(1) << "RDMA READ input image from Frontend: global_id=" << global_id;
   auto wrid =
       frontend_conn->AsyncRead(large_buffers_.Allocate(),
                                task->rdma_read_offset, task->rdma_read_length);

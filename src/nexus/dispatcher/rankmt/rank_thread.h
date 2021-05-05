@@ -94,14 +94,12 @@ class RankThread {
   };
 
   struct BackendContext {
-    BackendContext(ario::EpollExecutor* executor, NodeId backend_id,
+    BackendContext(NodeId backend_id,
                    std::shared_ptr<BackendDelegate> delegate);
 
     NodeId backend_id;
     std::shared_ptr<BackendDelegate> delegate;
     TimePoint next_available_time;
-
-    ario::Timer schedule_timer;
   };
 
   // Handlers for commands from model threads
@@ -110,12 +108,7 @@ class RankThread {
   void DoUpdateCandidate(PerModelThreadData& mdata);
 
   PlanId NextPlanId();
-  void UpdateActivePlans(TimePoint earliest_exec_time,
-                         PerModelThreadData& mdata);
-  void SetupActivePlan(TimePoint earliest_exec_time, PerModelThreadData& mdata,
-                       std::shared_ptr<CandidateInfo> cinfo);
-  void RemoveActivePlan(PerModelThreadData& mdata);
-  void OnBackendAvailableSoon(NodeId backend_id);
+  void SetupActivePlan(PerModelThreadData& mdata);
   void OnPlanTimer(PlanId plan_id);
   void UpdateBackend(BackendContext* bctx, TimePoint next_available_time);
 

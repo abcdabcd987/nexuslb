@@ -107,11 +107,14 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
     return CtrlStatus::MODEL_SESSION_NOT_LOADED;
   }
 
-  auto deadline =
-      TimePoint(std::chrono::nanoseconds(
-                    request.query_without_input().clock().frontend_recv_ns()) +
-                std::chrono::milliseconds(model_session_.latency_sla()) -
-                std::chrono::microseconds(kDataPlaneLatencyUs));
+  // Define deadline
+  auto deadline = TimePoint(std::chrono::nanoseconds(
+      request.query_without_input().clock().frontend_recv_ns()));
+  deadline += std::chrono::milliseconds(model_session_.latency_sla());
+  deadline -= std::chrono::microseconds(kDataPlaneLatencyUs);
+  constexpr int kBackendExecutionDelayUs = 2000;  // FIXME: investigate this
+  deadline -= std::chrono::microseconds(kBackendExecutionDelayUs);
+
   auto qctx = std::make_shared<QueryContext>(std::move(request), deadline);
   const auto& query = qctx->request.query_without_input();
   auto now = Clock::now();
@@ -181,6 +184,7 @@ void ModelThread::OnDropTimer() {
                             std::chrono::microseconds(kDataPlaneLatencyUs) +
                             std::chrono::microseconds(kCtrlPlaneLatencyUs);
   UpdateCandidate(earliest_exec_time);
+  rank_thread_.PostExecutionCandidate(model_index_, candidate_);
 }
 
 void ModelThread::SendDroppedQueries(

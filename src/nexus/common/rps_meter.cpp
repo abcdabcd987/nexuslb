@@ -1,10 +1,13 @@
 #include "nexus/common/rps_meter.h"
 
+#include <gflags/gflags.h>
 #include <glog/logging.h>
 
 #include <chrono>
 #include <cmath>
 #include <optional>
+
+DEFINE_double(hack_rpsmeter, 0, "");
 
 namespace nexus {
 
@@ -48,6 +51,10 @@ void RpsMeter::Hit(TimePoint time) {
 }
 
 std::optional<AvgStd> RpsMeter::Get(TimePoint now) {
+  // FIXME
+  CHECK_NE(FLAGS_hack_rpsmeter, 0.0);
+  return {{FLAGS_hack_rpsmeter, 0.0}};
+
   auto time_ns = ns(now);
   if (time_ns < earliest_time_ns_) {
     return std::nullopt;

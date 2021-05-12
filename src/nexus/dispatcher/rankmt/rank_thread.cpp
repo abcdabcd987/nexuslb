@@ -78,18 +78,34 @@ void RankThread::PostExecutionCandidate(ModelIndex model_index,
   auto& mdata = model_threads_.at(model_index.t);
   CHECK(mdata);
 
-  std::lock_guard lock(mdata->new_candidate_mutex);
-  mdata->new_candidate = candidate;
+  std::lock_guard lock(mdata->model_msg_mutex);
+  mdata->model_msg.new_candidate = candidate;
+}
+
+void RankThread::PostResumeCandidateUpdate(ModelIndex model_index) {
+  auto& mdata = model_threads_.at(model_index.t);
+  CHECK(mdata);
+
+  std::lock_guard lock(mdata->model_msg_mutex);
+  CHECK(!mdata->model_msg.resume_candidate_update);
+  mdata->model_msg.resume_candidate_update = true;
 }
 
 void RankThread::DoUpdateCandidate(PerModelThreadData& mdata) {
   std::optional<ExecutionCandidate> candidate;
   {
-    std::lock_guard lock(mdata.new_candidate_mutex);
-    candidate = std::move(mdata.new_candidate);
-    mdata.new_candidate.reset();
+    std::lock_guard lock(mdata.model_msg_mutex);
+    if (mdata.model_msg.new_candidate.has_value()) {
+      candidate = std::move(mdata.model_msg.new_candidate);
+      mdata.model_msg.new_candidate.reset();
+    }
+    if (mdata.model_msg.resume_candidate_update) {
+      CHECK(mdata.rejecting_candidates);
+      mdata.rejecting_candidates = false;
+      mdata.model_msg.resume_candidate_update = false;
+    }
   }
-  if (!candidate.has_value()) {
+  if (!candidate.has_value() || mdata.rejecting_candidates) {
     return;
   }
 
@@ -103,13 +119,7 @@ void RankThread::DoUpdateCandidate(PerModelThreadData& mdata) {
 
 void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
   auto& bctx = backends_.at(cmd.backend_id);
-  TimePoint next_available_time = cmd.next_available_time;
-  if (next_available_time == TimePoint::min()) {
-    next_available_time = Clock::now() +
-                          std::chrono::microseconds(kCtrlPlaneLatencyUs) +
-                          std::chrono::microseconds(kDataPlaneLatencyUs);
-  }
-  UpdateBackend(bctx.get(), next_available_time);
+  UpdateBackend(bctx.get(), cmd.next_available_time);
 }
 
 void RankThread::PostAddModelThread(ModelIndex model_index,
@@ -135,8 +145,7 @@ void RankThread::PostAddModelThread(ModelIndex model_index,
         model_threads_[model_index.t] =
             std::unique_ptr<PerModelThreadData>(new PerModelThreadData{
                 m, model_index, m.profile(),
-                *CHECK_NOTNULL(m.model_command_queue()),
-                *CHECK_NOTNULL(m.rank_command_queue()), nullptr});
+                *CHECK_NOTNULL(m.rank_command_queue()), nullptr, false});
 
         auto& mdata = *model_threads_[model_index.t];
         candidate_pool_.Upsert(model_index,
@@ -202,6 +211,7 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   // Remove old plan. Timer will be cancelled by the destructor.
   if (mdata.active_plan) {
     plans_.erase(mdata.active_plan->plan_id);
+    CHECK_EQ(mdata.active_plan.use_count(), 1);
   }
 
   // Update bookkeeping
@@ -236,9 +246,8 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
     LOG(WARNING) << "OnPlanTimer: huge timer delay: " << us << " us";
   }
   auto& mdata = *plan->mdata;
-  if (mdata.active_plan == plan) {
-    mdata.active_plan.reset();
-  }
+  CHECK_EQ(mdata.active_plan, plan);
+  mdata.active_plan = nullptr;
 
   // Try to assign backend if possible
   CHECK_EQ(backend_availability_pool_.Size(), backends_.size());
@@ -251,6 +260,14 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
     return;
   }
 
+  // Let ModelThread send out the plan
+  GrantedBackendMessage msg;
+  msg.backend_id = backend_id;
+  msg.plan_id = plan->plan_id;
+  mdata.model_thread.PostGrantedBackend(msg);
+  VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
+          << " id=" << plan->plan_id.t << " backend=" << backend_id;
+
   // Mark backend unavailable.
   // Also set the candidate of this model to be invalid.
   // ModelThread will give us updates on the backend and new candidates.
@@ -259,12 +276,10 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
                          std::shared_ptr<CandidateInfo>(new CandidateInfo{
                              mdata, ExecutionCandidate::Invalid()}));
 
-  // Let ModelThread send out the plan
-  GrantedBackendMessage msg;
-  msg.backend_id = backend_id;
-  msg.plan_id = plan->plan_id;
-  mdata.model_command_queue.enqueue(std::move(msg));
-  mdata.model_thread.PostCommand();
+  // Reject candidate updates until ModelThread picks up the granted backend.
+  // Because after the backend is granted and before ModelThread picks it up,
+  // all candidates sent by ModelThread are invalid.
+  mdata.rejecting_candidates = true;
 }
 
 void RankThread::UpdateBackend(BackendContext* bctx,

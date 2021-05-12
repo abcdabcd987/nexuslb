@@ -46,9 +46,6 @@ class ModelThread {
   void Stop(std::mutex& mutex, size_t& cnt, std::condition_variable& cv);
 
   // Getters
-  moodycamel::ReaderWriterQueue<ModelCommand>* model_command_queue() {
-    return &model_command_queue_;
-  };
   moodycamel::ReaderWriterQueue<RankCommand>* rank_command_queue() {
     return &rank_command_queue_;
   };
@@ -58,7 +55,10 @@ class ModelThread {
   ModelIndex model_index() const { return model_index_; }
 
   CtrlStatus EnqueueQuery(DispatchRequest&& request);
-  void PostCommand();
+  void Poll();
+
+  // Messages from RankThread
+  void PostGrantedBackend(GrantedBackendMessage cmd);
 
   // Control plane commands
   void PostAddBackend(NodeId backend_id,
@@ -69,9 +69,21 @@ class ModelThread {
   void PostRemoveFrontend(NodeId frontend_id);
 
  private:
+  class Poller : public ario::EventPoller {
+   public:
+    explicit Poller(ModelThread* outer) : outer_(*outer) {}
+    void Poll() override { outer_.Poll(); }
+
+   private:
+    ModelThread& outer_;
+  };
+
+  struct MessagesFromRankThread {
+    std::optional<GrantedBackendMessage> granted_backend;
+  };
+
   // Command handlers
-  void ExecuteCommand();
-  void DoGrantedBackendMessage(GrantedBackendMessage& cmd);
+  TimePoint DoGrantedBackendMessage(GrantedBackendMessage& cmd);
 
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
   void UpdateCandidate(TimePoint earliest_exec_time);
@@ -87,7 +99,7 @@ class ModelThread {
   // TODO: GPU performance heterogeneity
   const ModelProfile& profile_;
   bool stop_flag_;
-  moodycamel::ReaderWriterQueue<ModelCommand> model_command_queue_;
+  Poller poller_;
   moodycamel::ReaderWriterQueue<RankCommand> rank_command_queue_;
   std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
   std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
@@ -98,6 +110,9 @@ class ModelThread {
   uint32_t target_batch_size_;
   ExecutionCandidate candidate_;
   ario::Timer drop_timer_;
+
+  std::mutex rank_msg_mutex_;
+  MessagesFromRankThread rank_msg_ /* GUARDED_BY(rank_msg_mutex_) */;
 };
 
 }  // namespace rankmt

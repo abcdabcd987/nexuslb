@@ -30,6 +30,7 @@ ModelThread::ModelThread(
       model_index_(model_index),
       profile_(profile),
       stop_flag_(false),
+      poller_(this),
       frontends_(std::move(frontends)),
       backends_(std::move(backends)),
       bse_(1.0, 0.0),
@@ -40,6 +41,8 @@ ModelThread::ModelThread(
       drop_timer_(*CHECK_NOTNULL(executor)) {
   batch_policy_.SetProfile(profile_);
   UpdateTargetBatchSize(std::nullopt);
+
+  executor_.AddPoller(poller_);
 }
 
 ModelThread::~ModelThread() {
@@ -90,8 +93,10 @@ void ModelThread::PostRemoveFrontend(NodeId frontend_id) {
       [this, frontend_id](ario::ErrorCode) { frontends_.erase(frontend_id); });
 }
 
-void ModelThread::PostCommand() {
-  executor_.PostOk([this](ario::ErrorCode) { ExecuteCommand(); });
+void ModelThread::PostGrantedBackend(GrantedBackendMessage cmd) {
+  std::lock_guard lock(rank_msg_mutex_);
+  CHECK(!rank_msg_.granted_backend.has_value());
+  rank_msg_.granted_backend = cmd;
 }
 
 CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
@@ -217,22 +222,7 @@ void ModelThread::SendDroppedQueries(
   }
 }
 
-void ModelThread::ExecuteCommand() {
-  if (stop_flag_) {
-    return;
-  }
-  auto visitor = make_visitor(
-      [this](GrantedBackendMessage& cmd) { DoGrantedBackendMessage(cmd); }
-      // Force newline for clang-format
-  );
-
-  ModelCommand command;
-  while (model_command_queue_.try_dequeue(command)) {
-    std::visit(visitor, command);
-  }
-}
-
-void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
+TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   using namespace std::chrono;
   auto now = Clock::now();
   auto exec_time = now + microseconds(kDataPlaneLatencyUs) +
@@ -242,17 +232,8 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
 
   // Early return when batch_size=0
   if (inputs.empty()) {
-    rank_command_queue_.enqueue(
-        UpdateBackendCommand{cmd.backend_id, TimePoint::min()});
-    rank_thread_.PostExecutionCandidate(model_index_, candidate_);
-    return;
+    return now;
   }
-
-  // Inform RankThread about the backend's correct next_available_time
-  auto exec_elapse = EstimateExecElapse(profile_, candidate_.batch_size);
-  auto finish_time = exec_time + exec_elapse;
-  rank_command_queue_.enqueue(
-      UpdateBackendCommand{cmd.backend_id, finish_time});
 
   // Prepare the batchplan
   BatchPlanProto proto;
@@ -264,6 +245,8 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   proto.set_deadline_ns(
       duration_cast<nanoseconds>(candidate_.deadline.time_since_epoch())
           .count());
+  auto exec_elapse = EstimateExecElapse(profile_, candidate_.batch_size);
+  auto finish_time = exec_time + exec_elapse;
   proto.set_expected_finish_time_ns(
       duration_cast<nanoseconds>(finish_time.time_since_epoch()).count());
   for (auto& qctx : inputs) {
@@ -275,10 +258,11 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
     qctx->request.Clear();
     *proto.add_queries() = std::move(query);
   }
-  VLOG(1) << "Send BatchPlan: " << model_session_id_
-          << " batch_size=" << proto.queries_size()
-          << " elapse=" << exec_elapse.count() / 1e6 << "ms"
-          << " target_batch_size=" << target_batch_size_;
+  VLOG(1) << "BatchPlan:  " << model_session_.model_name()
+          << " id=" << cmd.plan_id.t << " backend=" << cmd.backend_id
+          << " batch=" << proto.queries_size()
+          << " target=" << target_batch_size_
+          << " elapse=" << exec_elapse.count() / 1e6 << "ms";
   // Update punch clock
   auto dispatcher_dispatch_ns =
       duration_cast<nanoseconds>(Clock::now().time_since_epoch()).count();
@@ -288,20 +272,31 @@ void ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
         ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
   }
   // Send to backend
-  auto iter = backends_.find(cmd.backend_id);
-  if (iter != backends_.end()) {
-    auto& delegate = iter->second;
-    delegate->EnqueueBatchPlan(std::move(proto));
-  } else {
-    LOG(ERROR) << "Cannot find backend delegate. backend_id="
-               << cmd.backend_id.t;
-    return;
-  }
+  auto& delegate = backends_.at(cmd.backend_id);
+  delegate->EnqueueBatchPlan(std::move(proto));
 
   // Update candidate
   UpdateCandidate(exec_time);
-  // Notify the RankThread about the new candidate
-  rank_thread_.PostExecutionCandidate(model_index_, candidate_);
+  return finish_time;
+}
+
+void ModelThread::Poll() {
+  MessagesFromRankThread rank_msg;
+  {
+    std::lock_guard lock(rank_msg_mutex_);
+    rank_msg = std::move(rank_msg_);
+    rank_msg_.granted_backend.reset();
+  }
+  if (rank_msg.granted_backend.has_value()) {
+    auto& msg = rank_msg.granted_backend.value();
+    auto finish_time = DoGrantedBackendMessage(msg);
+
+    // Update RankThread
+    rank_command_queue_.enqueue(
+        UpdateBackendCommand{msg.backend_id, finish_time});
+    rank_thread_.PostResumeCandidateUpdate(model_index_);
+    rank_thread_.PostExecutionCandidate(model_index_, candidate_);
+  }
 }
 
 }  // namespace rankmt

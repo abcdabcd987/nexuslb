@@ -4,6 +4,7 @@
 #include <boost/serialization/strong_typedef.hpp>
 #include <cstdint>
 #include <functional>
+#include <ostream>
 
 #define NS_STRONG_TYPEDEF(NS, T, D)                         \
   namespace NS {                                            \
@@ -44,6 +45,12 @@ struct AvgStd {
   double avg;
   double std;
 };
+
+inline std::ostream& operator<<(std::ostream& out, NodeId node_id) {
+  char buf[11];
+  snprintf(buf, sizeof(buf), "0x%08x", node_id.t);
+  return out << buf;
+}
 
 }  // namespace nexus
 

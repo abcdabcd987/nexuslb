@@ -46,6 +46,7 @@ class RankThread {
   void PostRemoveBackend(NodeId backend_id);
 
   // Commands from model threads
+  void PostResumeCandidateUpdate(ModelIndex model_index);
   void PostExecutionCandidate(ModelIndex model_index,
                               ExecutionCandidate candidate);
 
@@ -81,16 +82,21 @@ class RankThread {
     ario::Timer send_timer;
   };
 
+  struct MessagesFromModelThread {
+    std::optional<ExecutionCandidate> new_candidate;
+    bool resume_candidate_update;
+  };
+
   struct PerModelThreadData {
     ModelThread& model_thread;
     ModelIndex model_index;
     const ModelProfile& profile;
-    moodycamel::ReaderWriterQueue<ModelCommand>& model_command_queue;
     moodycamel::ReaderWriterQueue<RankCommand>& rank_command_queue;
     std::shared_ptr<ActivePlan> active_plan;
+    bool rejecting_candidates;
 
-    std::mutex new_candidate_mutex;
-    std::optional<ExecutionCandidate> new_candidate;
+    std::mutex model_msg_mutex;
+    MessagesFromModelThread model_msg /* GUARDED_BY(model_msg_mutex) */;
   };
 
   struct BackendContext {

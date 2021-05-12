@@ -32,13 +32,13 @@ struct ExecutionCandidate {
   }
 };
 
+// RankThread -> ModelThread
 struct GrantedBackendMessage {
   NodeId backend_id;
   PlanId plan_id;
 };
 
-using ModelCommand = std::variant<GrantedBackendMessage>;
-
+// ModelThread -> RankThread
 struct UpdateBackendCommand {
   NodeId backend_id;
   TimePoint next_available_time;

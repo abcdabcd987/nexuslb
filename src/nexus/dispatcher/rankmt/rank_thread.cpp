@@ -190,8 +190,9 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   auto plan = std::make_shared<ActivePlan>(executor_);
   plan->plan_id = NextPlanId();
   auto deadline = cinfo->candidate.deadline;
+  constexpr auto kInterThreadLatency = std::chrono::microseconds(100);
   auto frontrun_elapse = EstimateExecElapse(mdata.profile, batch_size + 1);
-  auto frontrun_exec_time = deadline - frontrun_elapse;
+  auto frontrun_exec_time = deadline - frontrun_elapse - kInterThreadLatency;
   auto earliest_exec_time = cinfo->candidate.earliest_exec_time;
   plan->exec_time = std::max(earliest_exec_time, frontrun_exec_time);
   CHECK_LE(earliest_exec_time.time_since_epoch().count(),
@@ -216,9 +217,7 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   plans_[plan->plan_id] = plan;
 
   // Setup timer
-  constexpr auto kInterThreadLatency = std::chrono::microseconds(1000);
-  auto send_time = plan->exec_time - kCtrlPlaneLatency - kDataPlaneLatency -
-                   kInterThreadLatency;
+  auto send_time = plan->exec_time - kCtrlPlaneLatency - kDataPlaneLatency;
   auto now = Clock::now();
   plan->send_timer.SetTimeout(std::max(send_time, now));
   plan->send_timer.AsyncWait(

@@ -166,10 +166,11 @@ void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
     latest_exec_time = (*inputs.begin())->deadline - elapse;
     deadline = (*inputs.begin())->deadline;
     drop_timer_.SetTimeout(deadline);
-    drop_timer_.AsyncWait([this](ario::ErrorCode err) {
-      if (err != ario::ErrorCode::kOk) return;
-      OnDropTimer();
-    });
+    drop_timer_.AsyncWait(
+        [this, head = (*inputs.begin())->global_id](ario::ErrorCode err) {
+          if (err != ario::ErrorCode::kOk) return;
+          OnDropTimer(head);
+        });
   } else {
     latest_exec_time = TimePoint::max();
     deadline = TimePoint::max();
@@ -186,7 +187,12 @@ void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
   }
 }
 
-void ModelThread::OnDropTimer() {
+void ModelThread::OnDropTimer(GlobalId head) {
+  const auto& inputs = batch_policy_.inputs();
+  if (inputs.empty() || (*inputs.begin())->global_id != head) {
+    return;
+  }
+
   auto now = Clock::now();
   auto earliest_exec_time = now + kDataPlaneLatency + kCtrlPlaneLatency;
   UpdateCandidate(earliest_exec_time);

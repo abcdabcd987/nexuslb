@@ -116,9 +116,9 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   auto deadline = TimePoint(std::chrono::nanoseconds(
       request.query_without_input().clock().frontend_recv_ns()));
   deadline += std::chrono::milliseconds(model_session_.latency_sla());
-  deadline -= std::chrono::microseconds(kDataPlaneLatencyUs);
-  constexpr int kBackendExecutionDelayUs = 2000;  // FIXME: investigate this
-  deadline -= std::chrono::microseconds(kBackendExecutionDelayUs);
+  deadline -= kDataPlaneLatency;  // Backend -> Frontend
+  constexpr auto kBackendExecutionDelay = std::chrono::microseconds(2000);
+  deadline -= kBackendExecutionDelay;  // FIXME: investigate this
 
   auto qctx = std::make_shared<QueryContext>(std::move(request), deadline);
   const auto& query = qctx->request.query_without_input();
@@ -129,9 +129,7 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   unprocessed_queries_.insert(qctx);
 
   // Update schedule
-  auto earliest_exec_time = now +
-                            std::chrono::microseconds(kDataPlaneLatencyUs) +
-                            std::chrono::microseconds(kCtrlPlaneLatencyUs);
+  auto earliest_exec_time = now + kDataPlaneLatency + kCtrlPlaneLatency;
   UpdateCandidate(earliest_exec_time);
 
   // Notify the RankThread
@@ -142,11 +140,13 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
 
 void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   if (rps.has_value()) {
-    double time_budget = model_session_.latency_sla() * 1e-3;
-    time_budget -= kCtrlPlaneLatencyUs * 1e-6;
-    time_budget -= kDataPlaneLatencyUs * 1e-6;
+    double sec = model_session_.latency_sla() * 1e-3;
+    std::chrono::duration<double> time_budget(sec);
+    time_budget -= kCtrlPlaneLatency;
+    time_budget -= kDataPlaneLatency;
+    double time_budget_sec = time_budget.count();
     target_batch_size_ =
-        bse_.Estimate(profile_, time_budget, rps->avg, rps->std);
+        bse_.Estimate(profile_, time_budget_sec, rps->avg, rps->std);
   } else {
     double time_budget_ms = model_session_.latency_sla() / 2.0;
     target_batch_size_ = profile_.GetMaxBatchWithFullBudget(time_budget_ms);
@@ -166,7 +166,10 @@ void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
     latest_exec_time = (*inputs.begin())->deadline - elapse;
     deadline = (*inputs.begin())->deadline;
     drop_timer_.SetTimeout(deadline);
-    drop_timer_.AsyncWait([this](ario::ErrorCode) { OnDropTimer(); });
+    drop_timer_.AsyncWait([this](ario::ErrorCode err) {
+      if (err != ario::ErrorCode::kOk) return;
+      OnDropTimer();
+    });
   } else {
     latest_exec_time = TimePoint::max();
     deadline = TimePoint::max();
@@ -185,9 +188,7 @@ void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
 
 void ModelThread::OnDropTimer() {
   auto now = Clock::now();
-  auto earliest_exec_time = now +
-                            std::chrono::microseconds(kDataPlaneLatencyUs) +
-                            std::chrono::microseconds(kCtrlPlaneLatencyUs);
+  auto earliest_exec_time = now + kDataPlaneLatency + kCtrlPlaneLatency;
   UpdateCandidate(earliest_exec_time);
   rank_thread_.PostExecutionCandidate(model_index_, candidate_);
 }
@@ -225,8 +226,10 @@ void ModelThread::SendDroppedQueries(
 TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   using namespace std::chrono;
   auto now = Clock::now();
-  auto exec_time = now + microseconds(kDataPlaneLatencyUs) +
-                   microseconds(kCtrlPlaneLatencyUs);
+  auto exec_time = now + kDataPlaneLatency + kCtrlPlaneLatency;
+  CHECK(exec_time >= cmd.next_available_time)
+      << "diff=" << (cmd.next_available_time - exec_time).count() * 1e-3
+      << "us";
   UpdateCandidate(exec_time);
   auto inputs = batch_policy_.PopInputs();
 

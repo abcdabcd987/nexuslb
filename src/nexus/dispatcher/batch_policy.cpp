@@ -25,11 +25,15 @@ void GetBatchByExpandedWindow(
     auto fwd_elapse = nanoseconds(
         static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
     auto finish_time = exec_time + fwd_elapse + proc_elapse;
-    if (deadline > finish_time) {
+    if (deadline >= finish_time) {
       break;
     } else {
       drops.push_back(*inputs.begin());
       inputs.erase(inputs.begin());
+      auto& qctx = drops.back();
+      VLOG(1) << "Drop inputs. global_id=" << qctx->global_id.t
+              << " diff=" << (finish_time - qctx->deadline).count() / 1e3
+              << "us";
     }
   }
 
@@ -48,6 +52,10 @@ void GetBatchByExpandedWindow(
       if (deadline < finish_time) {
         drops.push_back(*inputs.begin());
         inputs.erase(inputs.begin());
+        auto& qctx = drops.back();
+        VLOG(1) << "Drop head. global_id=" << qctx->global_id.t
+                << " diff=" << (finish_time - qctx->deadline).count() / 1e3
+                << "us";
       }
     } else {
       auto deadline =
@@ -69,8 +77,8 @@ void GetBatchByExpandedWindow(
     auto fwd_elapse = nanoseconds(
         static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
     auto finish_time = exec_time + fwd_elapse + proc_elapse;
-    CHECK_LE(finish_time.time_since_epoch().count(),
-             (*inputs.begin())->deadline.time_since_epoch().count());
+    auto deadline = (*inputs.begin())->deadline;
+    CHECK(deadline >= finish_time);
   }
 }
 

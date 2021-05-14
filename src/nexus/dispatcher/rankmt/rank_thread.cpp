@@ -187,16 +187,14 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   }
 
   // Build plan
+  constexpr auto kInterThreadLatency = std::chrono::microseconds(1000);
   auto plan = std::make_shared<ActivePlan>(executor_);
   plan->plan_id = NextPlanId();
   auto deadline = cinfo->candidate.deadline;
   auto frontrun_elapse = EstimateExecElapse(mdata.profile, batch_size + 1);
-  auto frontrun_exec_time = deadline - frontrun_elapse;
+  auto frontrun_exec_time = deadline - frontrun_elapse - kInterThreadLatency;
   auto earliest_exec_time = cinfo->candidate.earliest_exec_time;
   plan->exec_time = std::max(earliest_exec_time, frontrun_exec_time);
-  auto send_time = plan->exec_time -
-                   std::chrono::microseconds(kCtrlPlaneLatencyUs) -
-                   std::chrono::microseconds(kDataPlaneLatencyUs);
   CHECK_LE(earliest_exec_time.time_since_epoch().count(),
            plan->exec_time.time_since_epoch().count());
   auto exec_elapse = EstimateExecElapse(mdata.profile, batch_size);
@@ -219,7 +217,9 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   plans_[plan->plan_id] = plan;
 
   // Setup timer
-  plan->send_timer.SetTimeout(send_time);
+  auto send_time = plan->exec_time - kCtrlPlaneLatency - kDataPlaneLatency;
+  auto now = Clock::now();
+  plan->send_timer.SetTimeout(std::max(send_time, now));
   plan->send_timer.AsyncWait(
       [this, plan_id = plan->plan_id](ario::ErrorCode error) {
         if (error == ario::ErrorCode::kCancelled) return;
@@ -264,6 +264,7 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   GrantedBackendMessage msg;
   msg.backend_id = backend_id;
   msg.plan_id = plan->plan_id;
+  msg.next_available_time = bctx->next_available_time;
   mdata.model_thread.PostGrantedBackend(msg);
   VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
           << " id=" << plan->plan_id.t << " backend=" << backend_id;

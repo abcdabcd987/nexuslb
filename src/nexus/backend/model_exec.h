@@ -4,6 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <unordered_set>
 
 #include "nexus/backend/batch_plan_context.h"
 #include "nexus/backend/model_ins.h"
@@ -43,6 +44,9 @@ class ModelExecutor {
   std::vector<uint32_t> BackupBackends();
 
   void UpdateBackupBackends(const ModelInstanceConfig& config);
+
+  std::shared_ptr<Array> AcquireInputArray();
+  void ReleaseInputArray(std::shared_ptr<Array> array);
 
   bool Preprocess(std::shared_ptr<Task> task, bool force = false);
 
@@ -84,7 +88,8 @@ class ModelExecutor {
                       std::vector<std::shared_ptr<Input> >, CompareDeadlineItem>
       input_queue_;
   /*! \brief Input array allocated in GPU memory to hold batch inputs. */
-  std::shared_ptr<Array> input_array_;
+  std::unordered_set<std::shared_ptr<Array>> input_arrays_;
+  std::unordered_set<std::shared_ptr<Array>> idle_input_arrays_;
   /*! \brief Batch index. */
   std::atomic<uint64_t> batch_id_;
   /*! \brief Number of open requests. */

@@ -18,6 +18,23 @@ BatchPlanContext::BatchPlanContext(BatchPlanProto proto)
     }
   }
   pending_queries_ = global_ids_;
+  batch_task_ = std::make_shared<BatchTask>(proto_.queries_size());
+}
+
+BatchPlanContext::~BatchPlanContext() {
+  CHECK(input_array_ == nullptr) << "input_array_ was not released";
+}
+
+void BatchPlanContext::SetInputArray(std::shared_ptr<Array> input_array) {
+  input_array_ = std::move(input_array);
+  batch_task_->SetInputArray(input_array_);
+}
+
+std::shared_ptr<Array> BatchPlanContext::ReleaseInputArray() {
+  CHECK(input_array_ != nullptr);
+  auto ret = input_array_;
+  input_array_ = nullptr;
+  return ret;
 }
 
 bool BatchPlanContext::MarkQueryProcessed(GlobalId global_id) {
@@ -50,7 +67,13 @@ void BatchPlanContext::AddPreprocessedTask(std::shared_ptr<Task> task) {
   if (!MarkQueryProcessed(global_id)) {
     return;
   }
-  preprocessed_task_.push_back(std::move(task));
+  preprocessed_task_.push_back(task);
+
+  // Memory copy
+  CHECK(input_array_ != nullptr) << "input_array_ was not set";
+  for (auto& input : task->inputs) {
+    batch_task_->AppendInput(input, task);
+  }
 }
 
 bool BatchPlanContext::IsReadyToRun() const { return pending_queries_.empty(); }

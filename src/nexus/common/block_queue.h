@@ -6,6 +6,8 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
+#include <vector>
 
 #include "nexus/common/time_util.h"
 
@@ -71,7 +73,7 @@ class BlockQueue {
 
  private:
   size_t max_size_;
-  std::queue<std::shared_ptr<T> > queue_;
+  std::queue<std::shared_ptr<T>> queue_;
   std::mutex mutex_;
   std::condition_variable not_full_;
   std::condition_variable not_empty_;
@@ -142,6 +144,18 @@ class BlockPriorityQueue {
     return true;
   }
 
+  void batch_push(const std::vector<std::shared_ptr<T>>& items) {
+    if (max_size_ != 0) {
+      throw std::invalid_argument("batch_push only supports unbounded queue");
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (const auto& item : items) {
+      queue_.push(item);
+    }
+    lock.unlock();
+    not_empty_.notify_one();
+  }
+
   std::shared_ptr<T> pop() {
     std::unique_lock<std::mutex> lock(mutex_);
     not_empty_.wait(lock, [this]() { return queue_.size() != 0; });
@@ -167,7 +181,7 @@ class BlockPriorityQueue {
 
  private:
   size_t max_size_;
-  std::priority_queue<std::shared_ptr<T>, std::vector<std::shared_ptr<T> >,
+  std::priority_queue<std::shared_ptr<T>, std::vector<std::shared_ptr<T>>,
                       CompareDeadlineItem>
       queue_;
   std::mutex mutex_;

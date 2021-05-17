@@ -423,9 +423,11 @@ void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,
     pending_plans_[plan->plan_id()] = plan;
   }
 
+  // Acquire input array
   CHECK_GT(model_table_.size(), req.model_index());
   auto model_executor = model_table_[req.model_index()];
   CHECK(model_executor != nullptr);
+  plan->SetInputArray(model_executor->AcquireInputArray());
 
   // Enqueue queries
   reply->set_status(CtrlStatus::CTRL_OK);

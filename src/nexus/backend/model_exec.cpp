@@ -52,15 +52,34 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
       FLAGS_backend_count_interval);
   drop_counter_ = MetricRegistry::Singleton().CreateIntervalCounter(
       FLAGS_backend_count_interval);
-  input_array_ = model_->CreateInputGpuArray();
   for (auto const& info : config.backup_backend()) {
     backup_backends_.push_back(info.node_id());
   }
+
+  // Create two input arrays. When one is used by forwarding, memcpy can still
+  // happen to another.
+  input_arrays_.insert(model_->CreateInputGpuArray());
+  input_arrays_.insert(model_->CreateInputGpuArray());
+  idle_input_arrays_ = input_arrays_;
 }
 
 ModelExecutor::~ModelExecutor() {
   MetricRegistry::Singleton().RemoveMetric(req_counter_);
   MetricRegistry::Singleton().RemoveMetric(drop_counter_);
+}
+
+std::shared_ptr<Array> ModelExecutor::AcquireInputArray() {
+  LOG_IF(FATAL, idle_input_arrays_.empty()) << "No more idle input arrays";
+  auto iter = idle_input_arrays_.begin();
+  auto ret = *iter;
+  idle_input_arrays_.erase(iter);
+  return ret;
+}
+
+void ModelExecutor::ReleaseInputArray(std::shared_ptr<Array> array) {
+  CHECK(input_arrays_.count(array) > 0) << "Invalid array";
+  CHECK(idle_input_arrays_.count(array) == 0) << "Already idle";
+  idle_input_arrays_.insert(std::move(array));
 }
 
 double ModelExecutor::GetRequestRate() {
@@ -231,15 +250,21 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
 
   auto outputs = batch_task->outputs();
   auto& tasks = batch_task->tasks();
+  std::vector<std::shared_ptr<Task>> completed_tasks;
+  completed_tasks.reserve(outputs.size());
   // Add output to corresponding tasks, and remove tasks that get all outputs
   for (int i = 0; i < outputs.size(); ++i) {
     auto output = outputs[i];
     auto task = tasks[i];
     if (task->AddOutput(output)) {
+      completed_tasks.push_back(task);
       task->stage = kPostprocess;
-      task_queue_.push(task);
     }
   }
+  // task_queue_.push is expensive. So batch push here.
+  task_queue_.batch_push(completed_tasks);
+
+  ReleaseInputArray(plan->ReleaseInputArray());
 
   auto backend_finish_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                Clock::now().time_since_epoch())
@@ -255,14 +280,10 @@ std::shared_ptr<BatchTask> ModelExecutor::GetBatchTaskByBatchPlan(
                              Clock::now().time_since_epoch())
                              .count();
   auto tasks = plan->PopPreprocessedTasks();
-  auto batch_task = std::make_shared<BatchTask>(tasks.size());
-  batch_task->SetInputArray(input_array_);
   for (auto& task : tasks) {
     task->query.mutable_clock()->set_backend_exec_ns(backend_exec_ns);
-    for (auto input : task->inputs) {
-      batch_task->AppendInput(input, task);
-    }
   }
+  auto batch_task = plan->batch_task();
   if (batch_task->batch_size() != plan->proto().queries_size()) {
     LOG(ERROR) << "Actual batch size differs from BatchPlan. plan_id="
                << plan->proto().plan_id()

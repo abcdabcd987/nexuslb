@@ -201,6 +201,8 @@ class ModelProfiler {
             std::make_shared<BatchPlanContext>(batchplan_proto));
       }
 
+      std::vector<std::shared_ptr<Task>> tasks;
+      tasks.reserve(batch * (repeat + dryrun));
       for (int i = 0; i < batch * (repeat + dryrun); ++i) {
         int idx = i % preproc_tasks.size();
         int plan_id = i / batch;
@@ -210,17 +212,25 @@ class ModelProfiler {
         task->query.set_model_index(0);
         task->attrs = preproc_tasks[idx]->attrs;
         task->AppendInput(preproc_tasks[idx]->inputs[0]->array);
-        batchplans[plan_id]->AddPreprocessedTask(task);
-      }
-      // dry run
-      for (int i = 0; i < dryrun; ++i) {
-        model->ExecuteBatchPlan(batchplans[i]);
+        tasks.push_back(task);
       }
       // start meansuring forward latency
-      for (int i = dryrun; i < dryrun + repeat; ++i) {
+      for (int i = 0; i < dryrun + repeat; ++i) {
+        // Memory copy
+        auto plan = batchplans[i];
+        plan->SetInputArray(model->AcquireInputArray());
+        for (int j = 0; j < batch; ++j) {
+          auto& task = tasks[i * batch + j];
+          plan->AddPreprocessedTask(task);
+        }
+
+        // Execute
         auto beg = std::chrono::high_resolution_clock::now();
-        model->ExecuteBatchPlan(batchplans[i]);
+        model->ExecuteBatchPlan(plan);
         auto end = std::chrono::high_resolution_clock::now();
+        model->ReleaseInputArray(plan->ReleaseInputArray());
+
+        if (i < dryrun) continue;
         forward_lats.push_back(
             std::chrono::duration_cast<duration>(end - beg).count());
       }

@@ -68,19 +68,12 @@ class MultiThreadRankScheduler {
   void RemoveFrontend(NodeId frontend_id);
 
  private:
-  struct GpuInfoForProfile {
-    std::string gpu_device;
-    std::string gpu_uuid;
-  };
-
   ario::EpollExecutor& executor_;
   RankThread rank_thread_;
 
   std::unordered_map<std::string, ModelIndex> model_index_table_;
   std::vector<std::unique_ptr<ModelThread>> model_threads_;
 
-  // TODO: GPU heterogeneity.
-  std::optional<GpuInfoForProfile> gpu_info_for_profile_;
   std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
   std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
 };

@@ -34,8 +34,7 @@ class ModelThread {
  public:
   ModelThread(
       ario::EpollExecutor* executor, ModelSession model_session,
-      ModelIndex model_index, const ModelProfile& profile,
-      RankThread* rank_thread,
+      ModelIndex model_index, RankThread* rank_thread,
       std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
       std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends);
   ModelThread(const ModelThread& other) = delete;
@@ -97,7 +96,7 @@ class ModelThread {
   std::string model_session_id_;
   ModelIndex model_index_;
   // TODO: GPU performance heterogeneity
-  const ModelProfile& profile_;
+  ModelProfile profile_;
   bool stop_flag_;
   Poller poller_;
   moodycamel::ReaderWriterQueue<RankCommand> rank_command_queue_;

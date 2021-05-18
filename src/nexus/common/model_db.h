@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "nexus/common/sleep_profile.h"
 
@@ -12,22 +13,24 @@ namespace nexus {
 
 struct ProfileEntry {
   // latency in us unit
-  double latency_mean;
-  double latency_std;
-  size_t static_memory;
-  size_t memory_usage;
-  int repeat;
+  double latency_mean = 0;
+  double latency_std = 0;
+  size_t static_memory = 0;
+  size_t memory_usage = 0;
+  int repeat = 0;
 };
 
 class ModelProfile {
  public:
-  ModelProfile() {}
+  ModelProfile();
 
   ModelProfile(const std::string& file_path);
 
   static ModelProfile FromSleepProfile(const SleepProfile& profile);
 
   void MergeProfile(const ModelProfile& rhs);
+
+  void MergeProfileBySlowest(const ModelProfile& rhs);
 
   void LoadProfile(const std::string& file_path);
 
@@ -64,7 +67,7 @@ class ModelProfile {
   std::string profile_id_;
   std::string gpu_device_name_;
   std::string gpu_uuid_;
-  std::unordered_map<uint32_t, ProfileEntry> forward_lats_;
+  std::vector<ProfileEntry> forward_lats_;
   ProfileEntry preprocess_;
   ProfileEntry postprocess_;
   double network_latency_us_ = 2000;  // us

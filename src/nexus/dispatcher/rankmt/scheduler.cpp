@@ -83,7 +83,7 @@ MultiThreadRankScheduler::RequestEntrance
 MultiThreadRankScheduler::AddModelSession(
     ario::EpollExecutor* model_thread_executor, ModelSession model_session) {
   CHECK_NE(model_thread_executor, nullptr);
-  if (!gpu_info_for_profile_.has_value()) {
+  if (backends_.empty()) {
     LOG(FATAL) << "Add backend before adding model sessions.";
   }
 
@@ -94,21 +94,12 @@ MultiThreadRankScheduler::AddModelSession(
                << " model_index=" << model_index_table_[model_session_id];
   }
 
-  auto profile_id = ModelSessionToProfileID(model_session);
-  const auto* profile = ModelDatabase::Singleton().GetModelProfile(
-      gpu_info_for_profile_->gpu_device, gpu_info_for_profile_->gpu_uuid,
-      profile_id);
-  CHECK_NE(profile, nullptr)
-      << "Cannot find profile for " << profile_id << " on device \""
-      << gpu_info_for_profile_->gpu_device << "\" with uuid \""
-      << gpu_info_for_profile_->gpu_uuid << "\"";
-
   CHECK_EQ(model_threads_.size(), model_index_table_.size());
   ModelIndex model_index(model_index_table_.size());
   model_index_table_[model_session_id] = model_index;
   model_threads_.emplace_back(std::make_unique<ModelThread>(
-      model_thread_executor, model_session, model_index, *profile,
-      &rank_thread_, frontends_, backends_));
+      model_thread_executor, model_session, model_index, &rank_thread_,
+      frontends_, backends_));
   auto* model_thread = model_threads_.back().get();
   rank_thread_.PostAddModelThread(model_index, model_thread);
   return RequestEntrance(model_thread);
@@ -116,11 +107,6 @@ MultiThreadRankScheduler::AddModelSession(
 
 void MultiThreadRankScheduler::AddBackend(
     NodeId backend_id, std::shared_ptr<BackendDelegate> delegate) {
-  // Workaround: use the first backend's profile as model session profile.
-  if (!gpu_info_for_profile_.has_value()) {
-    gpu_info_for_profile_ = {delegate->gpu_device(), delegate->gpu_uuid()};
-  }
-
   // Update RankThread and ModelThread
   backends_[backend_id] = delegate;
   rank_thread_.PostAddBackend(backend_id, delegate);

@@ -82,10 +82,10 @@ class ModelExecutor {
    * \brief Map from task id to current processing tasks.
    * Guarded by task_mu_.
    */
-  std::unordered_map<uint64_t, std::shared_ptr<Task> > processing_tasks_;
+  std::unordered_map<uint64_t, std::shared_ptr<Task>> processing_tasks_;
   /*! \brief Priority queue of inputs based on deadline. Guarded by task_mu_. */
   std::priority_queue<std::shared_ptr<Input>,
-                      std::vector<std::shared_ptr<Input> >, CompareDeadlineItem>
+                      std::vector<std::shared_ptr<Input>>, CompareDeadlineItem>
       input_queue_;
   /*! \brief Input array allocated in GPU memory to hold batch inputs. */
   std::unordered_set<std::shared_ptr<Array>> input_arrays_;

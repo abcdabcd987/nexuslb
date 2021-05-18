@@ -41,24 +41,55 @@ void MergeMeanStd(ProfileEntry& dst, const ProfileEntry& src) {
   dst.repeat += src.repeat;
 }
 
+void MergeMeanStdBySlowest(ProfileEntry& dst, const ProfileEntry& src) {
+  if (dst.latency_mean < src.latency_mean ||
+      dst.latency_mean + dst.latency_std < src.latency_mean + src.latency_std) {
+    dst.latency_mean = src.latency_mean;
+    dst.latency_std = src.latency_std;
+    dst.repeat = src.repeat;
+  }
+}
+
+ModelProfile::ModelProfile() : preprocess_(), postprocess_() {
+  forward_lats_.resize(1);
+}
+
 ModelProfile::ModelProfile(const std::string& filepath) {
   LoadProfile(filepath);
 }
 
 void ModelProfile::MergeProfile(const ModelProfile& rhs) {
   uint32_t batch = 1;
-  while (batch <= forward_lats_.size() && batch <= rhs.forward_lats_.size()) {
+  while (batch < forward_lats_.size() && batch < rhs.forward_lats_.size()) {
     auto& rec1 = forward_lats_.at(batch);
     const auto& rec2 = rhs.forward_lats_.at(batch);
     MergeMeanStd(rec1, rec2);
     ++batch;
   }
-  while (batch <= rhs.forward_lats_.size()) {
-    forward_lats_[batch] = rhs.forward_lats_.at(batch);
+  while (batch < rhs.forward_lats_.size()) {
+    CHECK_EQ(forward_lats_.size(), batch);
+    forward_lats_.push_back(rhs.forward_lats_.at(batch));
     ++batch;
   }
   MergeMeanStd(preprocess_, rhs.preprocess_);
   MergeMeanStd(postprocess_, rhs.postprocess_);
+}
+
+void ModelProfile::MergeProfileBySlowest(const ModelProfile& rhs) {
+  uint32_t batch = 1;
+  while (batch < forward_lats_.size() && batch < rhs.forward_lats_.size()) {
+    auto& rec1 = forward_lats_.at(batch);
+    const auto& rec2 = rhs.forward_lats_.at(batch);
+    MergeMeanStdBySlowest(rec1, rec2);
+    ++batch;
+  }
+  while (batch < rhs.forward_lats_.size()) {
+    CHECK_EQ(forward_lats_.size(), batch);
+    forward_lats_.push_back(rhs.forward_lats_.at(batch));
+    ++batch;
+  }
+  MergeMeanStdBySlowest(preprocess_, rhs.preprocess_);
+  MergeMeanStdBySlowest(postprocess_, rhs.postprocess_);
 }
 
 void ModelProfile::LoadProfile(const std::string& filepath) {
@@ -72,6 +103,7 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
   std::getline(fin, line);  // Forward latency
   // batch,latency(us),std(us),static memory(B),peak memory(B),repeat
   std::getline(fin, line);
+  forward_lats_.resize(1);
   while (true) {
     std::getline(fin, line);
     if (line.find("Preprocess latency (mean,std,repeat)") == 0) break;
@@ -84,7 +116,8 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
     entry.static_memory = stoll(tokens[3]);
     entry.memory_usage = stoll(tokens[4]);
     entry.repeat = std::stoi(tokens[5]);
-    forward_lats_.emplace(batch, entry);
+    CHECK_EQ(forward_lats_.size(), batch);
+    forward_lats_.push_back(entry);
   }
   std::getline(fin, line);
   SplitString(line, ',', &tokens);
@@ -97,10 +130,22 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
   postprocess_.latency_mean = stof(tokens[0]) * FLAGS_profile_multiplier;
   postprocess_.latency_std = stof(tokens[1]) * FLAGS_profile_multiplier;
   postprocess_.repeat = std::stoi(tokens[2]);
+
+  // Force monotonicity
+  for (size_t i = 2; i < forward_lats_.size(); ++i) {
+    auto mean1 = forward_lats_[i - 1].latency_mean;
+    auto std1 = forward_lats_[i - 1].latency_std;
+    auto& mean2 = forward_lats_[i].latency_mean;
+    auto& std2 = forward_lats_[i].latency_std;
+    if (mean2 < mean1 || mean2 + std2 < mean1 + std1) {
+      mean2 = mean1;
+      std2 = std1;
+    }
+  }
 }
 
 double ModelProfile::GetForwardLatency(uint32_t batch) const {
-  if (forward_lats_.find(batch) == forward_lats_.end()) {
+  if (batch == 0 || batch >= forward_lats_.size()) {
     LOG(FATAL) << "Cannot find forward latency: model=" << profile_id()
                << " batch=" << batch;
     return 0.;
@@ -118,7 +163,7 @@ double ModelProfile::GetPostprocessLatency() const {
 }
 
 size_t ModelProfile::GetMemoryUsage(uint32_t batch) const {
-  if (forward_lats_.find(batch) == forward_lats_.end()) {
+  if (batch == 0 || batch >= forward_lats_.size()) {
     return 0;
   }
   return forward_lats_.at(batch).memory_usage;
@@ -132,7 +177,7 @@ uint32_t ModelProfile::GetMaxBatch(double latency_sla_ms) const {
   latency_budget /= 2;
   uint32_t batch = 1;
   while (true) {
-    if (forward_lats_.find(batch) == forward_lats_.end()) {
+    if (batch == forward_lats_.size()) {
       break;
     }
     auto entry = forward_lats_.at(batch);
@@ -152,7 +197,7 @@ uint32_t ModelProfile::GetMaxBatchWithFullBudget(double time_budget_ms) const {
   latency_budget -= GetPostprocessLatency();
   uint32_t batch = 1;
   while (true) {
-    if (forward_lats_.find(batch) == forward_lats_.end()) {
+    if (batch == forward_lats_.size()) {
       break;
     }
     auto entry = forward_lats_.at(batch);
@@ -191,9 +236,10 @@ std::pair<uint32_t, double> ModelProfile::GetMaxThroughput(
 ModelProfile ModelProfile::FromSleepProfile(const SleepProfile& profile) {
   constexpr double kStdFactor = 0.01;
   ModelProfile p;
+  p.forward_lats_.push_back({});
   for (uint32_t i = 1; i < 500; ++i) {
     double f = profile.forward_us(i);
-    p.forward_lats_[i] = ProfileEntry{f, f * kStdFactor, 0, 0, 1};
+    p.forward_lats_.push_back({f, f * kStdFactor, 0, 0, 1});
   }
   p.preprocess_ = ProfileEntry{static_cast<double>(profile.preprocess_us()),
                                profile.preprocess_us() * kStdFactor, 0, 0, 1};

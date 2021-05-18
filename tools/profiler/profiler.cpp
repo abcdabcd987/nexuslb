@@ -228,7 +228,6 @@ class ModelProfiler {
         auto beg = std::chrono::high_resolution_clock::now();
         model->ExecuteBatchPlan(plan);
         auto end = std::chrono::high_resolution_clock::now();
-        model->ReleaseInputArray(plan->ReleaseInputArray());
 
         if (i < dryrun) continue;
         forward_lats.push_back(

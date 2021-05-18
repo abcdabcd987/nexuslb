@@ -19,8 +19,7 @@ namespace rankmt {
 
 ModelThread::ModelThread(
     ario::EpollExecutor* executor, ModelSession model_session,
-    ModelIndex model_index, const ModelProfile& profile,
-    RankThread* rank_thread,
+    ModelIndex model_index, RankThread* rank_thread,
     std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
     std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends)
     : executor_(*CHECK_NOTNULL(executor)),
@@ -28,7 +27,6 @@ ModelThread::ModelThread(
       model_session_(std::move(model_session)),
       model_session_id_(ModelSessionToString(model_session_)),
       model_index_(model_index),
-      profile_(profile),
       stop_flag_(false),
       poller_(this),
       frontends_(std::move(frontends)),
@@ -39,6 +37,18 @@ ModelThread::ModelThread(
       batch_policy_(unprocessed_queries_),
       target_batch_size_(0),
       drop_timer_(*CHECK_NOTNULL(executor)) {
+  // TODO: GPU performance heterogeneity
+  auto profile_id = ModelSessionToProfileID(model_session_);
+  for (auto& backend : backends_) {
+    const auto* profile = ModelDatabase::Singleton().GetModelProfile(
+        backend.second->gpu_device(), backend.second->gpu_uuid(), profile_id);
+    CHECK_NE(profile, nullptr)
+        << "Cannot find profile for " << profile_id << " on device \""
+        << backend.second->gpu_device() << "\" with uuid \""
+        << backend.second->gpu_uuid() << "\"";
+    profile_.MergeProfileBySlowest(*profile);
+  }
+
   batch_policy_.SetProfile(profile_);
   UpdateTargetBatchSize(std::nullopt);
 

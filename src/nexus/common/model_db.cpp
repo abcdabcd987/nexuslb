@@ -130,8 +130,9 @@ void ModelProfile::LoadProfile(const std::string& filepath) {
   postprocess_.latency_mean = stof(tokens[0]) * FLAGS_profile_multiplier;
   postprocess_.latency_std = stof(tokens[1]) * FLAGS_profile_multiplier;
   postprocess_.repeat = std::stoi(tokens[2]);
+}
 
-  // Force monotonicity
+void ModelProfile::ForceMonotonicity() {
   for (size_t i = 2; i < forward_lats_.size(); ++i) {
     auto mean1 = forward_lats_[i - 1].latency_mean;
     auto std1 = forward_lats_[i - 1].latency_std;

@@ -48,6 +48,7 @@ ModelThread::ModelThread(
         << backend.second->gpu_uuid() << "\"";
     profile_.MergeProfileBySlowest(*profile);
   }
+  profile_.ForceMonotonicity();
 
   batch_policy_.SetProfile(profile_);
   UpdateTargetBatchSize(std::nullopt);

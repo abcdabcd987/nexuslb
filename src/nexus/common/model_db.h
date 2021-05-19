@@ -32,6 +32,8 @@ class ModelProfile {
 
   void MergeProfileBySlowest(const ModelProfile& rhs);
 
+  void ForceMonotonicity();
+
   void LoadProfile(const std::string& file_path);
 
   std::string profile_id() const { return profile_id_; }

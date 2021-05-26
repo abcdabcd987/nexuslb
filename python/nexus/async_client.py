@@ -45,7 +45,7 @@ class AsyncClient:
         assert reply.status == 0
 
     async def _do_request(self, req, msg):
-        send_time = datetime.now()
+        send_time = datetime.utcnow()
         self._writer.write(msg)
         await self._writer.drain()
 
@@ -101,7 +101,7 @@ class AsyncClient:
                 buf = await self._reader.readexactly(body_length)
                 reply = npb.ReplyProto()
                 reply.ParseFromString(buf)
-                self._replies[reply.req_id] = (reply, datetime.now())
+                self._replies[reply.req_id] = (reply, datetime.utcnow())
 
                 # return early to avoid lock competition
                 reply = self._replies.pop(req_id, None)

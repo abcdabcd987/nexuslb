@@ -55,6 +55,7 @@ class ModelExecutor {
   void Postprocess(std::shared_ptr<Task> task);
 
   void ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan);
+  void DropBatchPlan(std::shared_ptr<BatchPlanContext> plan);
 
   TimePoint LastExecuteFinishTime();
 

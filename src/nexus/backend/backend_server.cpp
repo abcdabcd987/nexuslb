@@ -318,6 +318,11 @@ void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
   }
 
   task->query.mutable_clock()->set_backend_got_image_ns(backend_got_image_ns);
+  auto fetch_image_elapse_ns =
+      backend_got_image_ns - task->query.clock().backend_fetch_image_ns();
+  LOG_IF(WARNING, fetch_image_elapse_ns > 2 * 1000 * 1000)
+      << "Took way too long time to fetch image. "
+      << fetch_image_elapse_ns / 1000 << "us. global_id=" << global_id;
   task->stage = Stage::kPreprocess;
   task_queue_.push(std::move(task));
 }

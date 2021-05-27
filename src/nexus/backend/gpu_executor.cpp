@@ -78,6 +78,8 @@ void GpuExecutorPlanFollower::RemoveModel(
 
 void GpuExecutorPlanFollower::AddBatchPlan(
     std::shared_ptr<BatchPlanContext> plan) {
+  auto now = Clock::now();
+  plan->set_enqueue_time(now);
   std::lock_guard<std::mutex> lock(mutex_);
   plans_.push_back(plan);
   std::push_heap(plans_.begin(), plans_.end(),
@@ -117,6 +119,8 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
     plans_.pop_back();
   }
   TimePoint exec_time(nanoseconds(plan->proto().exec_time_ns()));
+  auto queue_delay_us =
+      duration_cast<microseconds>(start_time - plan->enqueue_time()).count();
   auto start_delay_us =
       duration_cast<microseconds>(start_time - exec_time).count();
   {
@@ -129,14 +133,24 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
     }
     model = models_[model_index];
   }
-  const auto& model_session_id = model->model()->model_session_id();
-  if (start_delay_us > 100) {
-    LOG(WARNING) << "Huge start_delay. " << model_session_id
-                 << " plan_id=" << plan->proto().plan_id()
+  const auto& model_name = model->model()->model_session().model_name();
+  if (start_delay_us > 1000) {
+    LOG(WARNING) << "Huge start  delay. " << model_name
+                 << ". plan_id=" << plan->proto().plan_id()
+                 << ", queue_delay=" << queue_delay_us << "us"
                  << ", start_delay=" << start_delay_us << "us";
   }
+
+  if (start_delay_us > 20000) {
+    LOG(ERROR) << "Intolerable start delay: " << start_delay_us
+               << "us. Drop current batch plan_id=" << plan->plan_id();
+    model->DropBatchPlan(plan);
+    UpdateTimer();
+    return;
+  }
+
   VLOG(1) << "Executing BatchPlan: plan_id=" << plan->proto().plan_id()
-          << ", model_session=" << model_session_id
+          << ", model_name=" << model_name
           << ", batch_size=" << plan->proto().queries_size()
           << ", start_delay=" << start_delay_us << "us";
   bool is_executing = is_executing_.test_and_set();
@@ -151,14 +165,15 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
   auto finish_delay_us =
       (finish_time_ns - plan->proto().expected_finish_time_ns()) / 1000;
   VLOG(1) << "BatchPlan finished. plan_id=" << plan->proto().plan_id()
-          << ", model_session=" << model_session_id
+          << ", model_name=" << model_name
           << ", batch_size=" << plan->proto().queries_size()
           << ", start_delay=" << start_delay_us << "us"
           << ", elapse=" << elapse_us << "us"
           << ", finish_delay=" << finish_delay_us << "us";
   if (finish_delay_us > 100) {
-    LOG(WARNING) << "Huge finish_delay. " << model_session_id
-                 << " plan_id=" << plan->proto().plan_id()
+    LOG(WARNING) << "Huge finish delay. " << model_name
+                 << ". plan_id=" << plan->proto().plan_id()
+                 << ", queue_delay=" << queue_delay_us << "us"
                  << ", start_delay=" << start_delay_us << "us"
                  << ", finish_delay=" << finish_delay_us << "us";
   }

@@ -77,6 +77,8 @@ class ModelInstance {
    * \return Array pointer with buffer allocated in GPU memory.
    */
   virtual ArrayPtr CreateInputGpuArray() = 0;
+
+  virtual void WarmupInputArray(std::shared_ptr<Array> input_array) = 0;
   /*!
    * \brief Create input GPU array given raw pointer. Neither input gpu array
    * nor framework-dependent data blob should take the ownership of allocated

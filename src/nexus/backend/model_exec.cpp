@@ -56,10 +56,16 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
     backup_backends_.push_back(info.node_id());
   }
 
-  // Create two input arrays. When one is used by forwarding, memcpy can still
-  // happen to another.
-  input_arrays_.insert(model_->CreateInputGpuArray());
-  input_arrays_.insert(model_->CreateInputGpuArray());
+  // Create multiple input arrays. When one is used by forwarding, memcpy can
+  // still happen to another.
+  LOG(INFO) << "Warming up input array for " << model_->model_session_id();
+  for (int i = 0; i < 10; ++i) {
+    auto input_array = model_->CreateInputGpuArray();
+    // model_->WarmupInputArray(input_array);  // Not effective
+    input_arrays_.insert(input_array);
+  }
+  LOG(INFO) << "Finish warming up input array for "
+            << model_->model_session_id();
   idle_input_arrays_ = input_arrays_;
 }
 
@@ -248,7 +254,7 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   }
   DecreaseOpenRequests(dequeue_cnt);
 
-  auto outputs = batch_task->outputs();
+  const auto& outputs = batch_task->outputs();
   auto& tasks = batch_task->tasks();
   std::vector<std::shared_ptr<Task>> completed_tasks;
   completed_tasks.reserve(outputs.size());
@@ -259,6 +265,38 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
     if (task->AddOutput(output)) {
       completed_tasks.push_back(task);
       task->stage = kPostprocess;
+    }
+  }
+  // task_queue_.push is expensive. So batch push here.
+  task_queue_.batch_push(completed_tasks);
+
+  ReleaseInputArray(plan->ReleaseInputArray());
+
+  auto backend_finish_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               Clock::now().time_since_epoch())
+                               .count();
+  for (auto& task : tasks) {
+    task->query.mutable_clock()->set_backend_finish_ns(backend_finish_ns);
+  }
+}
+
+void ModelExecutor::DropBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
+  auto batch_task = GetBatchTaskByBatchPlan(plan);
+  int dequeue_cnt = plan->proto().queries_size();
+  drop_counter_->Increase(dequeue_cnt);
+  DecreaseOpenRequests(dequeue_cnt);
+
+  const auto& inputs = batch_task->inputs();
+  auto& tasks = batch_task->tasks();
+  std::vector<std::shared_ptr<Task>> completed_tasks;
+  completed_tasks.reserve(inputs.size());
+  // Add output to corresponding tasks, and remove tasks that get all outputs
+  for (int i = 0; i < inputs.size(); ++i) {
+    auto input = inputs[i];
+    auto task = tasks[i];
+    if (task->AddVirtualOutput(input->index)) {
+      completed_tasks.push_back(task);
+      RemoveTask(task);
     }
   }
   // task_queue_.push is expensive. So batch push here.

@@ -17,6 +17,7 @@ class SleepModel : public ModelInstance {
   Shape InputShape() override;
   std::unordered_map<std::string, Shape> OutputShapes() override;
   ArrayPtr CreateInputGpuArray() override;
+  void WarmupInputArray(std::shared_ptr<Array> input_array) override;
   std::unordered_map<std::string, ArrayPtr> GetOutputGpuArrays() override;
   void Preprocess(std::shared_ptr<Task> task) override;
   void Forward(std::shared_ptr<BatchTask> batch_task) override;

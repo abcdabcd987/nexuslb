@@ -19,6 +19,8 @@ class TensorflowModel : public ModelInstance {
 
   ~TensorflowModel();
 
+  void WarmupInputArray(std::shared_ptr<Array> input_array) override;
+
   Shape InputShape() final;
 
   std::unordered_map<std::string, Shape> OutputShapes() final;
@@ -39,6 +41,9 @@ class TensorflowModel : public ModelInstance {
 
  private:
   tf::Tensor* NewInputTensor();
+
+  void WarmupInputTensor(tf::Tensor in_tensor,
+                         std::vector<tf::Tensor>* out_tensors);
 
   void MarshalDetectionResult(const QueryProto& query,
                               std::shared_ptr<Output> output, int im_height,

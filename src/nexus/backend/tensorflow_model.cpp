@@ -1,5 +1,7 @@
 #include <boost/filesystem.hpp>
+#include <cstdint>
 #include <opencv2/opencv.hpp>
+#include <random>
 // #include <glog/logging.h>  //
 // https://github.com/tensorflow/tensorflow/issues/25913
 #include "nexus/backend/slice.h"
@@ -9,6 +11,19 @@
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 
 namespace fs = boost::filesystem;
+
+namespace {
+
+template <typename T>
+void FillJunk(T* data, size_t len) {
+  std::mt19937 gen(reinterpret_cast<uint64_t>(data));
+  std::uniform_int_distribution<uint8_t> dist;
+  for (size_t i = 0; i < len; ++i) {
+    data[i] = static_cast<T>(dist(gen));
+  }
+}
+
+}  // namespace
 
 namespace nexus {
 namespace backend {
@@ -105,32 +120,8 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
 
   // Dry run the model to get the outpue size
   auto in_tensor = NewInputTensor()->Slice(0, 1);
-  std::vector<std::pair<std::string, tf::Tensor>> inputs;
   std::vector<tf::Tensor> out_tensors;
-  inputs.emplace_back(input_layer_, in_tensor);
-  if (model_info_["slice_beg_vector"]) {
-    // TFShareModel
-    auto slice_beg_vector = model_info_["slice_beg_vector"].as<std::string>();
-    auto slice_end_vector = model_info_["slice_len_vector"].as<std::string>();
-    num_suffixes_ = model_info_["suffix_models"].size();
-    tf::TensorShape shape;
-    shape.AddDim(num_suffixes_);
-    slice_beg_tensor_.reset(
-        new tf::Tensor(/* tf_allocator_, */ tf::DT_INT32, shape));
-    slice_end_tensor_.reset(
-        new tf::Tensor(/* tf_allocator_, */ tf::DT_INT32, shape));
-    set_slice_tensor(slice_beg_tensor_, std::vector<int32_t>(num_suffixes_, 0));
-    set_slice_tensor(slice_end_tensor_, std::vector<int32_t>(num_suffixes_, 1));
-    inputs.emplace_back(slice_beg_vector,
-                        slice_beg_tensor_->Slice(0, num_suffixes_));
-    inputs.emplace_back(slice_end_vector,
-                        slice_end_tensor_->Slice(0, num_suffixes_));
-  }
-  status = session_->Run(inputs, output_layers_, {}, &out_tensors);
-  if (!status.ok()) {
-    LOG(FATAL) << "Failed to run " << model_session_id_ << ": "
-               << status.ToString();
-  }
+  WarmupInputTensor(in_tensor, &out_tensors);
   for (uint i = 0; i < out_tensors.size(); ++i) {
     tf::TensorShape tf_shape = out_tensors[i].shape();
     std::vector<int> dims;
@@ -172,7 +163,67 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
   }
 }
 
-TensorflowModel::~TensorflowModel() { session_->Close(); }
+void TensorflowModel::WarmupInputArray(std::shared_ptr<Array> input_array) {
+  auto* in_tensor = input_tensors_[input_array->tag()].get();
+
+  std::vector<char> buf;
+  size_t size =
+      input_array->num_elements() * type_size(input_array->data_type());
+  buf.resize(size);
+  switch (input_array->data_type()) {
+    case DataType::DT_UINT8:
+      FillJunk(static_cast<char*>(buf.data()), input_array->num_elements());
+      break;
+    case DataType::DT_FLOAT:
+      FillJunk(reinterpret_cast<float*>(buf.data()),
+               input_array->num_elements());
+      break;
+    default:
+      LOG(FATAL) << "Unknown data type: "
+                 << DataType_Name(input_array->data_type());
+  }
+  Memcpy(input_array->Data<char>(), input_array->device(), buf.data(),
+         cpu_device_, size);
+
+  std::vector<tf::Tensor> out_tensors;
+  WarmupInputTensor(*in_tensor, &out_tensors);
+}
+
+void TensorflowModel::WarmupInputTensor(tf::Tensor in_tensor,
+                                        std::vector<tf::Tensor>* out_tensors) {
+  std::vector<std::pair<std::string, tf::Tensor>> inputs;
+  inputs.emplace_back(input_layer_, in_tensor);
+  if (model_info_["slice_beg_vector"]) {
+    // TFShareModel
+    auto slice_beg_vector = model_info_["slice_beg_vector"].as<std::string>();
+    auto slice_end_vector = model_info_["slice_len_vector"].as<std::string>();
+    num_suffixes_ = model_info_["suffix_models"].size();
+    tf::TensorShape shape;
+    shape.AddDim(num_suffixes_);
+    slice_beg_tensor_.reset(
+        new tf::Tensor(/* tf_allocator_, */ tf::DT_INT32, shape));
+    slice_end_tensor_.reset(
+        new tf::Tensor(/* tf_allocator_, */ tf::DT_INT32, shape));
+    set_slice_tensor(slice_beg_tensor_, std::vector<int32_t>(num_suffixes_, 0));
+    set_slice_tensor(slice_end_tensor_, std::vector<int32_t>(num_suffixes_, 1));
+    inputs.emplace_back(slice_beg_vector,
+                        slice_beg_tensor_->Slice(0, num_suffixes_));
+    inputs.emplace_back(slice_end_vector,
+                        slice_end_tensor_->Slice(0, num_suffixes_));
+  }
+  auto status = session_->Run(inputs, output_layers_, {}, out_tensors);
+  if (!status.ok()) {
+    LOG(FATAL) << "Failed to run " << model_session_id_ << ": "
+               << status.ToString();
+  }
+}
+
+TensorflowModel::~TensorflowModel() {
+  auto status = session_->Close();
+  if (!status.ok()) {
+    LOG(FATAL) << "Failed to close Tensorflow Session: " << status.ToString();
+  }
+}
 
 Shape TensorflowModel::InputShape() { return input_shape_; }
 

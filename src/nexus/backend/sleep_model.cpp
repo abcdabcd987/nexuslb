@@ -90,6 +90,15 @@ ArrayPtr SleepModel::CreateInputGpuArray() {
   return arr;
 }
 
+void SleepModel::WarmupInputArray(std::shared_ptr<Array> input_array) {
+  char* data = input_array->Data<char>();
+  size_t size =
+      type_size(input_array->data_type()) * input_array->num_elements();
+  for (size_t i = 0; i < size; ++i) {
+    data[i] = i & 0xFF;
+  }
+}
+
 std::unordered_map<std::string, ArrayPtr> SleepModel::GetOutputGpuArrays() {
   return {};
 }

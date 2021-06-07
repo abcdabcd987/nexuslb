@@ -99,8 +99,6 @@ class ModelHandler {
 
   void HandleDispatcherReply(const DispatchReply& reply);
 
-  bool FetchImage(QueryId query_id, ValueProto* output);
-
   std::vector<uint32_t> BackendList();
 
  private:

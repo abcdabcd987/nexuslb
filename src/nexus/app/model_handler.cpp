@@ -199,15 +199,6 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
   }
 }
 
-bool ModelHandler::FetchImage(QueryId query_id, ValueProto* output) {
-  auto iter = query_ctx_.find(query_id);
-  if (iter == query_ctx_.end()) {
-    return false;
-  }
-  *output = iter->second->backend_query_proto().input();
-  return true;
-}
-
 std::vector<uint32_t> ModelHandler::BackendList() {
   std::vector<uint32_t> ret;
   std::lock_guard<std::mutex> lock(route_mu_);

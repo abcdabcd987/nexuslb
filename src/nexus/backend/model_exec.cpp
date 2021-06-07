@@ -221,12 +221,6 @@ void ModelExecutor::DecreaseOpenRequests(int cnt) {
   // CHECK_GE(prev, cnt) << "Negative value in open requests";
 }
 
-void ModelExecutor::RemoveTask(std::shared_ptr<Task> task) {
-  task->stage = kPostprocess;
-  task_queue_.push(task);
-  processing_tasks_.erase(task->task_id);
-}
-
 void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   auto batch_task = GetBatchTaskByBatchPlan(plan);
   int dequeue_cnt = plan->proto().queries_size();
@@ -296,7 +290,8 @@ void ModelExecutor::DropBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
     auto task = tasks[i];
     if (task->AddVirtualOutput(input->index)) {
       completed_tasks.push_back(task);
-      RemoveTask(task);
+      task->stage = kPostprocess;
+      processing_tasks_.erase(task->task_id);
     }
   }
   // task_queue_.push is expensive. So batch push here.

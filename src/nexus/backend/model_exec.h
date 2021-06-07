@@ -73,8 +73,6 @@ class ModelExecutor {
 
   void DecreaseOpenRequests(int cnt);
 
-  void RemoveTask(std::shared_ptr<Task> task);
-
   std::unique_ptr<ModelInstance> model_;
   bool backup_;
   const ModelProfile* profile_;

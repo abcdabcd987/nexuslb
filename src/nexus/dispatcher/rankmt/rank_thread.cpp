@@ -200,7 +200,7 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   auto exec_elapse = EstimateExecElapse(mdata.profile, batch_size);
   auto finish_time = plan->exec_time + exec_elapse;
   plan->mdata = &cinfo->mdata;
-  CHECK(finish_time <= deadline)
+  CHECK(finish_time <= deadline + std::chrono::nanoseconds(1))
       << "diff = " << (finish_time - deadline).count() / 1e3 << "us"
       << " earliest_exec_time-candidate.latest_exec_time = "
       << (earliest_exec_time - cinfo->candidate.latest_exec_time).count() / 1e3

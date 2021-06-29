@@ -4,6 +4,7 @@
 
 #include <boost/asio.hpp>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -27,6 +28,7 @@ Frontend::Frontend(ario::PollerType poller_type, std::string rdma_dev,
       large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
       rdma_(rdma_dev, &executor_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
+      helper_executor_(ario::PollerType::kBlocking),
       rd_(),
       rand_gen_(rd_()) {
   rdma_.ExposeMemory(large_buffers_.data(), large_buffers_.pool_size());
@@ -43,7 +45,10 @@ Frontend::Frontend(ario::PollerType poller_type, std::string rdma_dev,
   }
 
   rdma_.ConnectTcp(dispatcher_ip_, sch_port);
-  rdma_ev_thread_ = std::thread(&ario::EpollExecutor::RunEventLoop, &executor_);
+  executor_threads_.emplace_back(&ario::EpollExecutor::RunEventLoop,
+                                 &executor_);
+  executor_threads_.emplace_back(&ario::EpollExecutor::RunEventLoop,
+                                 &helper_executor_);
   dispatcher_conn_ = promise_dispatcher_conn_.get_future().get();
 
   // Init Node ID and register frontend to scheduler
@@ -57,11 +62,17 @@ Frontend::~Frontend() {
 }
 
 void Frontend::Run(QueryProcessor* qp, size_t nthreads) {
+  // TODO: Unify workers and executor threads
   for (size_t i = 0; i < nthreads; ++i) {
     std::unique_ptr<Worker> worker(new Worker(qp, request_pool_));
     worker->Start();
     workers_.push_back(std::move(worker));
   }
+  for (size_t i = 1; i < nthreads; ++i) {
+    executor_threads_.emplace_back(&ario::EpollExecutor::RunEventLoop,
+                                   &helper_executor_);
+  }
+
   running_ = true;
   daemon_thread_ = std::thread(&Frontend::Daemon, this);
   LOG(INFO) << "Frontend server (id: " << node_id_ << ") is listening on "
@@ -75,6 +86,7 @@ void Frontend::Stop() {
   Unregister();
   // Stop all accept new connections
   ServerBase::Stop();
+  helper_executor_.StopEventLoop();
   executor_.StopEventLoop();
   rdma_.Stop();
   // Stop all frontend connections
@@ -92,8 +104,10 @@ void Frontend::Stop() {
   for (auto& worker : workers_) {
     worker->Join();
   }
+  for (auto& t : executor_threads_) {
+    t.join();
+  }
   daemon_thread_.join();
-  rdma_ev_thread_.join();
   LOG(INFO) << "Frontend server stopped";
 }
 
@@ -149,6 +163,17 @@ void Frontend::RdmaHandler::OnRdmaReadComplete(ario::RdmaQueuePair* conn,
 
 void Frontend::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
                                    ario::OwnedMemoryBlock buf) {
+  // Use helper executor to handle messages. Prevent starving RDMA event loop.
+  auto pbuf = std::make_shared<ario::OwnedMemoryBlock>(std::move(buf));
+  outer_.helper_executor_.PostBigCallback(
+      [this, conn, pbuf](ario::ErrorCode) {
+        OnRecvInternal(conn, std::move(*pbuf));
+      },
+      ario::ErrorCode::kOk);
+}
+
+void Frontend::RdmaHandler::OnRecvInternal(ario::RdmaQueuePair* conn,
+                                           ario::OwnedMemoryBlock buf) {
   auto view = buf.AsMessageView();
   ControlMessage msg;
   bool ok = msg.ParseFromArray(view.bytes(), view.bytes_length());

@@ -128,8 +128,6 @@ class RequestContext : public DeadlineItem,
   void HandleQueryResult(const QueryResultProto& result,
                          const ModelSession& model_session);
 
-  void HandleDispatcherReply(const DispatchReply& reply);
-
   void HandleError(uint32_t status, const std::string& error_msg);
 
   void SendReply();

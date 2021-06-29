@@ -103,6 +103,7 @@ class Frontend : public ServerBase, public MessageHandler {
    private:
     friend class Frontend;
     explicit RdmaHandler(Frontend& outer);
+    void OnRecvInternal(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf);
     Frontend& outer_;
   };
 
@@ -118,7 +119,6 @@ class Frontend : public ServerBase, public MessageHandler {
   ario::MemoryBlockAllocator large_buffers_;
   ario::RdmaManager rdma_;
   RdmaSender rdma_sender_;
-  std::thread rdma_ev_thread_;
   ario::RdmaQueuePair* dispatcher_conn_ = nullptr;
   uint16_t model_worker_port_ = 0;
   ario::RdmaQueuePair* model_worker_conn_ = nullptr;
@@ -129,6 +129,11 @@ class Frontend : public ServerBase, public MessageHandler {
   std::promise<RpcReply> promise_unregister_reply_;
   std::promise<LoadModelReply> promise_add_model_reply_;
   std::promise<ario::RdmaQueuePair*> promise_model_worker_conn_;
+
+  // Helper workers that handles replies from Dispatcher and Backend
+  // TODO: unify with the pre-existing Worker threads
+  ario::EpollExecutor helper_executor_;
+  std::vector<std::thread> executor_threads_;
 
   /*! \brief Indicator whether backend is running */
   std::atomic_bool running_;

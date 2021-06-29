@@ -168,13 +168,6 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result,
   }
 }
 
-void RequestContext::HandleDispatcherReply(const DispatchReply& reply) {
-  if (state_ == kError) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(mu_);
-}
-
 void RequestContext::HandleError(uint32_t status,
                                  const std::string& error_msg) {
   std::lock_guard<std::mutex> lock(mu_);

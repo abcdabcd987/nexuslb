@@ -335,6 +335,10 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
     if (it != sessions_.end()) {
       // Model already loaded. Just skip.
       reply->set_status(CtrlStatus::CTRL_OK);
+      auto model_index = it->second->model_index();
+      const auto& model_worker = model_workers_[model_index];
+      reply->set_model_worker_port(model_worker->tcp_port());
+      reply->set_model_index(model_index.t);
       return;
     }
   }

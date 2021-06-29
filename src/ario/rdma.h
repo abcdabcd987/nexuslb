@@ -133,6 +133,7 @@ class RdmaManager {
   WorkRequestID AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
                           size_t offset, size_t length);
   void PostReceive(RdmaQueuePair &conn);
+  void ReserveCQ();
 
   std::string dev_name_;
   int dev_port_ = 0;
@@ -146,6 +147,7 @@ class RdmaManager {
   ibv_comp_channel *comp_channel_ = nullptr;
   std::unique_ptr<CompletionChannelHandler> comp_channel_handler_;
   std::unique_ptr<CompletionQueuePoller> cq_poller_;
+  std::atomic<int> cnt_cq_pending_{0};
 
   std::mutex mr_mutex_;
   std::unordered_map<void *, ibv_mr *> mr_ /* GUARDED_BY(mr_mutex_) */;
@@ -224,9 +226,11 @@ class RdmaQueuePair {
   ibv_qp *qp_ = nullptr;
   RemoteMemoryRegion remote_mr_{};
   uint64_t tag_ = 0;
+  std::atomic<int> cnt_recv_pending_{0};
+  std::atomic<int> cnt_send_pending_{0};
 
   std::mutex wr_ctx_mutex_;
-  CircularCompletionQueue<OwnedMemoryBlock, 1024>
+  CircularCompletionQueue<OwnedMemoryBlock, 16384>
       recv_wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;
   CircularCompletionQueue<OwnedMemoryBlock, 16384>
       out_wr_ctx_ /* GUARDED_BY(wr_ctx_mutex_) */;

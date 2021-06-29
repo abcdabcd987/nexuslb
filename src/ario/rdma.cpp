@@ -9,6 +9,12 @@ namespace ario {
 
 namespace {
 
+constexpr int kQueuePairRecvBacklog = 1000;
+constexpr int kQueuePairSendSize = 1000;
+constexpr int kQueuePairRecvSize = kQueuePairRecvBacklog;
+constexpr int kCompletionQueueEntries =
+    (kQueuePairRecvSize + kQueuePairSendSize) * 50;
+
 struct InternalWrid {
   uint64_t seqnum;
   size_t qp_idx;
@@ -175,16 +181,13 @@ void RdmaManager::BuildProtectionDomain() {
 }
 
 void RdmaManager::BuildCompletionQueue() {
-  constexpr int kNumCompletionQueueEntries = 100;
-
   if (executor_.poller_type() == PollerType::kBlocking) {
     comp_channel_ = ibv_create_comp_channel(ctx_);
     if (!comp_channel_) die_perror("ibv_create_comp_channel");
     SetNonBlocking(comp_channel_->fd);
   }
 
-  cq_ = ibv_create_cq(ctx_, kNumCompletionQueueEntries, nullptr, comp_channel_,
-                      0);
+  cq_ = ibv_create_cq(ctx_, kCompletionQueueEntries, nullptr, comp_channel_, 0);
   if (!cq_) die_perror("ibv_create_cq");
 
   if (executor_.poller_type() == PollerType::kBlocking) {
@@ -194,8 +197,6 @@ void RdmaManager::BuildCompletionQueue() {
 }
 
 void RdmaQueuePair::BuildQueuePair() {
-  constexpr uint32_t kMaxSendQueueSize = 15000;
-  constexpr uint32_t kMaxRecvQueueSize = 1000;
   constexpr uint32_t kMaxSendScatterGatherElements = 1;
   constexpr uint32_t kMaxRecvScatterGatherElements = 1;
 
@@ -204,8 +205,8 @@ void RdmaQueuePair::BuildQueuePair() {
   attr.send_cq = manager_.cq();
   attr.recv_cq = manager_.cq();
   attr.qp_type = IBV_QPT_RC;
-  attr.cap.max_send_wr = kMaxSendQueueSize;
-  attr.cap.max_recv_wr = kMaxRecvQueueSize;
+  attr.cap.max_send_wr = kQueuePairSendSize;
+  attr.cap.max_recv_wr = kQueuePairRecvSize;
   attr.cap.max_send_sge = kMaxSendScatterGatherElements;
   attr.cap.max_recv_sge = kMaxRecvScatterGatherElements;
 
@@ -331,8 +332,8 @@ void RdmaQueuePair::TransitQueuePairToRTR(
   attr.path_mtu = IBV_MTU_1024;
   attr.dest_qp_num = msg.qp_num;
   attr.rq_psn = 0;
-  attr.max_dest_rd_atomic = 1;
-  attr.min_rnr_timer = 12;  // 0.640 ms
+  attr.max_dest_rd_atomic = 16;
+  attr.min_rnr_timer = 9;  // 0.24 ms
 
   if (msg.lid) {
     // Infiniband
@@ -355,13 +356,14 @@ void RdmaQueuePair::TransitQueuePairToRTS() {
   ibv_qp_attr attr;
   memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_RTS;
-  attr.timeout = 8;  // 1.048 ms
-  // attr.timeout = 19;   // 2147 ms
+  attr.timeout = 6;  // 262.144 us
+  attr.retry_cnt = 1;
+  attr.rnr_retry = 1;
   // attr.retry_cnt = 0;  // no retry
   // attr.rnr_retry = 0;  // no retry
-  attr.retry_cnt = 7;  // infinite retry
-  attr.rnr_retry = 7;  // infinite retry
-  attr.max_rd_atomic = 1;
+  // attr.retry_cnt = 7;  // infinite retry
+  // attr.rnr_retry = 7;  // infinite retry
+  attr.max_rd_atomic = 16;
 
   int ret = ibv_modify_qp(qp_, &attr,
                           IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT |
@@ -393,6 +395,13 @@ void RdmaManager::ExposeMemory(void *addr, size_t size) {
   mr_[addr] = mr;
 }
 
+void RdmaManager::ReserveCQ() {
+  auto pending = ++cnt_cq_pending_;
+  if (pending >= kCompletionQueueEntries) {
+    die("cnt_cq_pending_=" + std::to_string(pending));
+  }
+}
+
 void RdmaQueuePair::PostReceive() { manager_.PostReceive(*this); }
 
 void RdmaManager::PostReceive(RdmaQueuePair &conn) {
@@ -414,8 +423,14 @@ void RdmaManager::PostReceive(RdmaQueuePair &conn) {
   }
   wr.wr_id = InternalWrid{seqnum, conn.index_, false}.Encode();
 
+  ReserveCQ();
   int ret = ibv_post_recv(conn.qp_, &wr, &bad_wr);
   if (ret) die("ibv_post_recv");
+  if (++conn.cnt_recv_pending_ > kQueuePairRecvSize) {
+    fprintf(stderr, "conn.cnt_recv_pending_ > kQueuePairRecvSize. peer=%s:%d\n",
+            conn.peer_ip().c_str(), conn.peer_tcp_port());
+    die("conn.cnt_recv_pending_ > kQueuePairRecvSize");
+  }
 }
 
 void RdmaQueuePair::AsyncSend(OwnedMemoryBlock buf) {
@@ -445,8 +460,16 @@ void RdmaManager::AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf) {
   }
   wr.wr_id = InternalWrid{seqnum, conn.index_, true}.Encode();
 
+  ReserveCQ();
   int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die_perror("Connection::Send: ibv_post_send");
+  if (++conn.cnt_send_pending_ > kQueuePairSendSize) {
+    fprintf(stderr,
+            "conn.cnt_send_pending_=%d > kQueuePairSendSize. peer=%s:%d\n",
+            conn.cnt_send_pending_.load(), conn.peer_ip().c_str(),
+            conn.peer_tcp_port());
+    die("conn.cnt_send_pending_ > kQueuePairSendSize");
+  }
 }
 
 WorkRequestID RdmaQueuePair::AsyncRead(OwnedMemoryBlock buf, size_t offset,
@@ -480,8 +503,14 @@ WorkRequestID RdmaManager::AsyncRead(RdmaQueuePair &conn, OwnedMemoryBlock buf,
   }
   wr.wr_id = InternalWrid{seqnum, conn.index_, true}.Encode();
 
+  ReserveCQ();
   int ret = ibv_post_send(conn.qp_, &wr, &bad_wr);
   if (ret) die("Connection::PostRead: ibv_post_send");
+  if (++conn.cnt_send_pending_ > kQueuePairSendSize) {
+    fprintf(stderr, "conn.cnt_send_pending_ > kQueuePairSendSize. peer=%s:%d\n",
+            conn.peer_ip().c_str(), conn.peer_tcp_port());
+    die("conn.cnt_send_pending_ > kQueuePairSendSize");
+  }
   return WorkRequestID(wr.wr_id);
 }
 
@@ -539,6 +568,23 @@ void RdmaManager::PollCompletionQueue() {
   int n;
   do {
     n = ibv_poll_cq(cq_, kPollBatch, wc);
+    cnt_cq_pending_ -= n;
+    for (int i = 0; i < n; ++i) {
+      auto encoding = InternalWrid::Decode(wc[i].wr_id);
+      auto *conn = connections_.at(encoding.qp_idx).get();
+      if (!encoding.is_out) {
+        if (--conn->cnt_recv_pending_ <= 0) {
+          fprintf(stderr, "cnt_recv_pending_=%d peer=%s:%d\n",
+                  conn->cnt_recv_pending_.load(), conn->peer_ip().c_str(),
+                  conn->peer_tcp_port());
+          die("cnt_recv_pending_==0");
+        }
+
+        PostReceive(*conn);
+      } else {
+        --conn->cnt_send_pending_;
+      }
+    }
     for (int i = 0; i < n; ++i) {
       HandleWorkCompletion(&wc[i]);
     }
@@ -546,25 +592,26 @@ void RdmaManager::PollCompletionQueue() {
 }
 
 void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {
-  if (wc->status != IBV_WC_SUCCESS) {
-    fprintf(stderr, "COMPLETION FAILURE (%s WR #%lu) status[%d] = %s\n",
-            (wc->opcode & IBV_WC_RECV) ? "RECV" : "SEND", wc->wr_id, wc->status,
-            ibv_wc_status_str(wc->status));
-    die("wc->status != IBV_WC_SUCCESS");
-  }
   auto encoding = InternalWrid::Decode(wc->wr_id);
   auto *conn = connections_.at(encoding.qp_idx).get();
+  if (wc->status != IBV_WC_SUCCESS) {
+    const char *op = encoding.is_out ? "SEND" : "RECV";
+    const char *wc_status = ibv_wc_status_str(wc->status);
+    fprintf(stderr, "COMPLETION FAILURE (%s WR #%lu) peer=%s:%d status=%d %s\n",
+            op, encoding.seqnum, conn->peer_ip().c_str(), conn->peer_tcp_port(),
+            wc->status, wc_status);
+    die("wc->status != IBV_WC_SUCCESS");
+  }
   OwnedMemoryBlock buf;
   {
     std::lock_guard<std::mutex> lock(conn->wr_ctx_mutex_);
-    if ((wc->wr_id & 1) == 0) {
-      buf = std::move(conn->recv_wr_ctx_.Dequeue(encoding.seqnum));
-    } else {
+    if (encoding.is_out) {
       buf = std::move(conn->out_wr_ctx_.Dequeue(encoding.seqnum));
+    } else {
+      buf = std::move(conn->recv_wr_ctx_.Dequeue(encoding.seqnum));
     }
   }
   if (wc->opcode & IBV_WC_RECV) {
-    PostReceive(*conn);
     handler_->OnRecv(conn, std::move(buf));
     return;
   }
@@ -587,8 +634,7 @@ void RdmaManager::HandleWorkCompletion(ibv_wc *wc) {
 }
 
 void RdmaQueuePair::MarkConnected() {
-  static constexpr size_t kRecvBacklog = 512;
-  for (size_t i = 0; i < kRecvBacklog; ++i) {
+  for (int i = 0; i < kQueuePairRecvBacklog; ++i) {
     PostReceive();
   }
 

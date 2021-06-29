@@ -64,7 +64,7 @@ DEFINE_string(rdma_dev, "", "RDMA device name");
 DEFINE_uint32(rdma_port, 9002, "TCP port used to setup RDMA connection.");
 DEFINE_string(nexus_port, "9001", "Server port");
 DEFINE_string(sch_addr, "127.0.0.1", "Scheduler address");
-DEFINE_int32(nthread, 4, "Number of threads processing requests");
+DEFINE_int32(nthread, 8, "Number of threads processing requests");
 DEFINE_string(framework, "", "Framework (caffe2, caffe, darknet, tensorflow)");
 DEFINE_string(model, "", "Model name");
 DEFINE_int32(model_version, 1, "Model version");
@@ -75,7 +75,8 @@ DEFINE_int32(width, 0, "Image width");
 
 int main(int argc, char** argv) {
   // log to stderr
-  FLAGS_logtostderr = 1;
+  FLAGS_alsologtostderr = 1;
+  FLAGS_colorlogtostderr = 1;
   // Init glog
   google::InitGoogleLogging(argv[0]);
   // Parse command line flags

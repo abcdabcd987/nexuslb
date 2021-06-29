@@ -66,6 +66,8 @@ int main(int argc, char **argv) {
   sigaction(SIGINT, &sig_handle, NULL);
 
   // Init glog
+  FLAGS_alsologtostderr = 1;
+  FLAGS_colorlogtostderr = 1;
   google::InitGoogleLogging(argv[0]);
   // Parse command line flags
   google::ParseCommandLineFlags(&argc, &argv, true);

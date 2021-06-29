@@ -38,7 +38,8 @@ std::vector<int> ParseCores(const std::string& s) {
 }
 
 int main(int argc, char** argv) {
-  FLAGS_logtostderr = 1;
+  FLAGS_alsologtostderr = 1;
+  FLAGS_colorlogtostderr = 1;
   google::InitGoogleLogging(argv[0]);
   google::ParseCommandLineFlags(&argc, &argv, true);
   google::InstallFailureSignalHandler();

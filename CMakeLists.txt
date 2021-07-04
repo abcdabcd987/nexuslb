@@ -329,6 +329,12 @@ target_link_libraries(run_rankmt PUBLIC bench_dispatcher_obj)
 
 
 
+###### tools/test_preprocessing_scalability ######
+add_executable(test_preprocessing_scalability tools/test_preprocessing_scalability.cpp)
+target_link_libraries(test_preprocessing_scalability PUBLIC common)
+
+
+
 ###### tests ######
 add_executable(runtest
         tests/cpp/rps_meter_test.cpp

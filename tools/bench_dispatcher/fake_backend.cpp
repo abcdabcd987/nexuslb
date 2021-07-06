@@ -44,7 +44,7 @@ void FakeBackendDelegate::EnqueueBatchPlan(BatchPlanProto&& request) {
   TimePoint now = Clock::now();
   auto now_ns = now.time_since_epoch().count();
 
-  CHECK_LT(request.exec_time_ns(), request.expected_finish_time_ns())
+  CHECK_LE(request.exec_time_ns(), request.expected_finish_time_ns())
       << "Incorrect finish time. " << request.DebugString();
   LOG_IF(ERROR, now_ns > request.exec_time_ns())
       << "BatchPlan too late. " << request.DebugString();

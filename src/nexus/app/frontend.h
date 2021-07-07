@@ -130,7 +130,8 @@ class Frontend : public ServerBase, public MessageHandler {
   std::promise<LoadModelReply> promise_add_model_reply_;
   std::promise<ario::RdmaQueuePair*> promise_model_worker_conn_;
 
-  // Helper workers that handles replies from Dispatcher and Backend
+  // Helper workers that handles replies from Dispatcher and Backend.
+  // Also preprocess the client inputs.
   // TODO: unify with the pre-existing Worker threads
   ario::EpollExecutor helper_executor_;
   std::vector<std::thread> executor_threads_;

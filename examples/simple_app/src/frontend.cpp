@@ -34,7 +34,7 @@ class SimpleApp : public AppBase {
     model_ = GetModelHandler(framework_, model_name_, version_, latency_sla_ms_,
                              estimate_workload_, {image_height_, image_width_});
     auto func1 = [&](std::shared_ptr<RequestContext> ctx) {
-      auto output = model_->Execute(ctx, ctx->const_request().input());
+      auto output = model_->Execute(ctx);
       return std::vector<VariablePtr>{
           std::make_shared<Variable>("output", output)};
     };

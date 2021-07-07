@@ -105,8 +105,6 @@ class RequestContext : public DeadlineItem,
 
   double slack_ms() const { return slack_ms_; }
 
-  const QueryProto& backend_query_proto() const { return backend_query_proto_; }
-
   const TimePoint& frontend_recv_time() const { return frontend_recv_time_; }
 
   uint64_t rdma_read_offset() const { return rdma_read_offset_; }
@@ -118,6 +116,8 @@ class RequestContext : public DeadlineItem,
 
   void SetBackendQueryProto(QueryProto query_proto,
                             ario::OwnedMemoryBlock&& exposed_memory_block);
+
+  void PrepareImage(ario::OwnedMemoryBlock&& exposed_memory_block);
 
   ExecBlock* NextReadyBlock();
 
@@ -144,7 +144,6 @@ class RequestContext : public DeadlineItem,
   ReplyProto reply_;
   std::atomic<RequestState> state_;
   double slack_ms_;
-  QueryProto backend_query_proto_;
   bool has_backend_query_sent_ = false;
   TimePoint frontend_recv_time_;
 

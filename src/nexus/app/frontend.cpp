@@ -271,8 +271,14 @@ void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
         LOG(ERROR) << "UserRequest message comes from non-user connection";
         break;
       }
-      request_pool_.AddNewRequest(
-          std::make_shared<RequestContext>(user_sess, message, request_pool_));
+      auto req =
+          std::make_shared<RequestContext>(user_sess, message, request_pool_);
+      helper_executor_.PostBigCallback(
+          [this, req](ario::ErrorCode) {
+            req->PrepareImage(large_buffers_.Allocate());
+            request_pool_.AddNewRequest(req);
+          },
+          ario::ErrorCode::kOk);
       break;
     }
     default: {

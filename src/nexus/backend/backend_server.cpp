@@ -7,6 +7,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <opencv2/opencv.hpp>
 #include <string>
 #include <unordered_set>
 
@@ -307,24 +308,32 @@ void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
   }
   auto global_id = task->query.global_id();
 
-  // TODO: avoid deserialization
-  auto* input = task->query.mutable_input();
+  // TODO: refactor preprocessing
+  constexpr int kSize = 224;
   auto view = buf.AsMessageView();
-  bool ok = input->ParseFromArray(view.bytes(), view.bytes_length());
-  if (!ok) {
-    LOG(ERROR) << "Failed to deserialize input image. global_id=" << global_id
-               << ", wrid=" << wrid.DebugString();
-    return;
-  }
+  auto* beg = reinterpret_cast<unsigned char*>(view.bytes());
+  auto len = view.bytes_length() / sizeof(*beg);
+  CHECK_EQ(len, kSize * kSize * 3);
+  auto* cpu_device = DeviceManager::Singleton().GetCPUDevice();
+  auto in_arr = std::make_shared<Array>(DT_FLOAT, len, cpu_device);
+  cv::Mat img(kSize, kSize, CV_8UC3, beg);
+  cv::Mat fimg(kSize, kSize, CV_32FC3, in_arr->Data<void>());
+  img.convertTo(fimg, CV_32FC3);
+  task->AppendInput(in_arr);
 
   task->query.mutable_clock()->set_backend_got_image_ns(backend_got_image_ns);
   auto fetch_image_elapse_ns =
       backend_got_image_ns - task->query.clock().backend_fetch_image_ns();
-  LOG_IF(WARNING, fetch_image_elapse_ns > 2 * 1000 * 1000)
+  LOG_IF(WARNING, fetch_image_elapse_ns > 5 * 1000 * 1000)
       << "Took way too long time to fetch image. "
       << fetch_image_elapse_ns / 1000 << "us. global_id=" << global_id;
-  task->stage = Stage::kPreprocess;
-  task_queue_.push(std::move(task));
+
+  // Skip the preprocessing stage
+  // task->stage = Stage::kPreprocess;
+  // task_queue_.push(std::move(task));
+
+  task->stage = Stage::kForward;
+  MarkBatchPlanQueryPreprocessed(task);
 }
 
 void BackendServer::LoadModelEnqueue(const BackendLoadModelCommand& request) {

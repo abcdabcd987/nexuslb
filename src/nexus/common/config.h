@@ -12,7 +12,9 @@
 
 constexpr int kSmallBufferBlockBits = __builtin_ctzl(8 << 10);
 constexpr int kSmallBufferPoolBits = kSmallBufferBlockBits + 14;
-constexpr int kLargeBufferBlockBits = __builtin_ctzl(128 << 10);
-constexpr int kLargeBufferPoolBits = kLargeBufferBlockBits + 14;
+constexpr int kLargeBufferBlockBits = __builtin_ctzl(256 << 10);
+constexpr int kLargeBufferPoolBits = kLargeBufferBlockBits + 12;
+static_assert((1ULL << kLargeBufferBlockBits) > 3 * 224 * 224 * sizeof(char),
+              "kLargeBufferBlockBits too few");
 
 #endif  // NEXUS_CONFIG_H_

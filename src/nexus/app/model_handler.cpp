@@ -103,9 +103,8 @@ ModelHandler::~ModelHandler() {
 }
 
 std::shared_ptr<QueryResult> ModelHandler::Execute(
-    std::shared_ptr<RequestContext> ctx, const ValueProto& input,
-    std::vector<std::string> output_fields, uint32_t topk,
-    std::vector<RectProto> windows) {
+    std::shared_ptr<RequestContext> ctx, std::vector<std::string> output_fields,
+    uint32_t topk, std::vector<RectProto> windows) {
   uint64_t qid = global_query_id_.fetch_add(1, std::memory_order_relaxed);
   counter_->Increase(1);
   {
@@ -114,25 +113,29 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   }
 
   // Build the query proto
-  QueryProto query, query_without_input;
-  query.set_query_id(qid);
-  query.set_model_index(model_index_);
-  query.set_frontend_id(frontend_id_.t);
+  QueryProto query_without_input;
+  query_without_input.set_query_id(qid);
+  query_without_input.set_model_index(model_index_);
+  query_without_input.set_frontend_id(frontend_id_.t);
   for (auto field : output_fields) {
-    query.add_output_field(field);
+    query_without_input.add_output_field(field);
   }
   if (topk > 0) {
-    query.set_topk(topk);
+    query_without_input.set_topk(topk);
   }
   for (auto rect : windows) {
-    query.add_window()->CopyFrom(rect);
+    query_without_input.add_window()->CopyFrom(rect);
   }
   if (ctx->slack_ms() > 0) {
-    query.set_slack_ms(int(floor(ctx->slack_ms())));
+    query_without_input.set_slack_ms(int(floor(ctx->slack_ms())));
   }
 
+  // Input metadata
+  auto* input = query_without_input.mutable_input();
+  input->set_data_type(DT_TENSOR);
+
   // Punch clock
-  auto* clock = query.mutable_clock();
+  auto* clock = query_without_input.mutable_clock();
   auto frontend_recv_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                               ctx->frontend_recv_time().time_since_epoch())
                               .count();
@@ -142,12 +145,6 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
           Clock::now().time_since_epoch())
           .count();
   clock->set_frontend_dispatch_ns(frontend_dispatch_ns);
-
-  // Move `query`
-  query_without_input.CopyFrom(query);
-  query.mutable_input()->CopyFrom(input);
-  ctx->SetBackendQueryProto(std::move(query),
-                            input_memory_allocator_->Allocate());
 
   // Send to dispatcher
   ControlMessage msg;

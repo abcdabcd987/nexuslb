@@ -88,7 +88,7 @@ class ModelHandler {
   std::shared_ptr<IntervalCounter> counter() const { return counter_; }
 
   std::shared_ptr<QueryResult> Execute(
-      std::shared_ptr<RequestContext> ctx, const ValueProto& input,
+      std::shared_ptr<RequestContext> ctx,
       std::vector<std::string> output_fields = {}, uint32_t topk = 1,
       std::vector<RectProto> windows = {});
 

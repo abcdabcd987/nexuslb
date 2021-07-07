@@ -2,7 +2,10 @@
 
 #include <glog/logging.h>
 
+#include <opencv2/opencv.hpp>
+
 #include "nexus/app/exec_block.h"
+#include "nexus/common/image.h"
 #include "nexus/common/model_def.h"
 
 namespace nexus {
@@ -62,9 +65,8 @@ void RequestContext::SetExecBlocks(std::vector<ExecBlock*> blocks) {
 
 void RequestContext::SetBackendQueryProto(
     QueryProto query_proto, ario::OwnedMemoryBlock&& exposed_memory_block) {
-  backend_query_proto_ = std::move(query_proto);
   exposed_memory_block_ = std::move(exposed_memory_block);
-  const auto& input = backend_query_proto_.input();
+  const auto& input = query_proto.input();
   // TODO: avoid the serialization
   bool ok = input.SerializeToArray(exposed_memory_block_.data(),
                                    exposed_memory_block_.size());
@@ -213,6 +215,23 @@ void RequestContext::HandleErrorLocked(uint32_t status,
   ready_blocks_.clear();
   pending_blocks_.clear();
   SetState(kError);
+}
+
+void RequestContext::PrepareImage(
+    ario::OwnedMemoryBlock&& exposed_memory_block) {
+  exposed_memory_block_ = std::move(exposed_memory_block);
+
+  // TODO: use model input size instead of const number.
+  constexpr int kSize = 224;
+
+  cv::Mat image = DecodeImage(request_.input().image(), CO_RGB);
+  cv::Mat resized(kSize, kSize, CV_8UC3, exposed_memory_block_.data());
+  CHECK_GT(exposed_memory_block_.size(), resized.total() * resized.elemSize());
+  cv::resize(image, resized, cv::Size(kSize, kSize));
+
+  rdma_read_offset_ =
+      exposed_memory_block_.data() - exposed_memory_block_.allocator()->data();
+  rdma_read_length_ = resized.total() * resized.elemSize();
 }
 
 }  // namespace app

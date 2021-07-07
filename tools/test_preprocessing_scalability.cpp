@@ -9,6 +9,7 @@
 #include <opencv2/opencv.hpp>
 #include <random>
 #include <thread>
+#include <tuple>
 #include <utility>
 
 #include "nexus/common/image.h"
@@ -31,16 +32,7 @@ std::vector<unsigned char> GenerateRandomJPG(int rows, int cols) {
   return buf;
 }
 
-void Preprocess(const nexus::ValueProto& value, int resize,
-                std::vector<float>* out) {
-  cv::Mat image = nexus::DecodeImage(value.image(), nexus::CO_RGB);
-  cv::Mat fimg;
-  image.convertTo(fimg, CV_32FC3);
-  cv::Mat resized(resize, resize, CV_32FC3, out->data());
-  cv::resize(fimg, resized, cv::Size(resize, resize));
-}
-
-std::pair<double, double> CalcAvgStd(std::vector<long> xs) {
+std::pair<double, double> CalcAvgStd(std::vector<double> xs) {
   double sum = std::accumulate(xs.begin(), xs.end(), 0.0);
   double avg = sum / xs.size();
   double sqr_sum = std::inner_product(xs.begin(), xs.end(), xs.begin(), 0.0);
@@ -57,7 +49,7 @@ class Benchmark {
         resize_(resize),
         repeats_(repeats) {}
 
-  std::pair<double, double> Run() {
+  void Run() {
     warmup_repeats_ = static_cast<int>(repeats_ * 0.2);
     bench_repeats_ = static_cast<int>(repeats_ * 0.7);
     cooldown_repeats_ = static_cast<int>(repeats_ * 0.1);
@@ -72,7 +64,28 @@ class Benchmark {
       t.join();
     }
 
-    return CalcAvgStd(nano_elapses_);
+    std::vector<double> decode_micros, convert_micros, resize_micros;
+    for (const auto& [d1, d2, d3] : nano_elapses_) {
+      decode_micros.push_back(d1 / 1e3);
+      convert_micros.push_back(d2 / 1e3);
+      resize_micros.push_back(d3 / 1e3);
+    }
+    auto [decode_avg, decode_std] = CalcAvgStd(decode_micros);
+    auto [convert_avg, convert_std] = CalcAvgStd(convert_micros);
+    auto [resize_avg, resize_std] = CalcAvgStd(resize_micros);
+    auto total_avg = decode_avg + convert_avg + resize_avg;
+    auto total_std = decode_std + convert_std + resize_std;
+    printf(
+        "num_workers: %3d      "
+        "decode: %9.3f+/-%7.3fus      "
+        "convert: %9.3f+/-%7.3fus      "
+        "resize: %9.3f+/-%7.3fus      "
+        "total: %9.3f+/-%7.3fus      "
+        "\n",
+        num_workers_, decode_avg, decode_std, convert_avg, convert_std,
+        resize_avg, resize_std, total_avg, total_std);
+
+    return;
   }
 
  private:
@@ -85,24 +98,29 @@ class Benchmark {
     image_proto->set_format(nexus::ImageProto_ImageFormat_JPEG);
     image_proto->set_color(true);
 
-    int target_size = resize_;
-    std::vector<float> preprocessed(target_size * target_size * 3);
-    std::vector<long> es;
+    std::vector<float> preprocessed(resize_ * resize_ * 3);
+    std::vector<std::tuple<long, long, long>> es;
     es.reserve(bench_repeats_);
     std::this_thread::sleep_until(start_time_);
 
-    for (int i = 0; i < warmup_repeats_; ++i) {
-      Preprocess(value_proto, target_size, &preprocessed);
-    }
-    for (int i = 0; i < bench_repeats_; ++i) {
-      auto st = high_resolution_clock::now();
-      Preprocess(value_proto, target_size, &preprocessed);
-      auto ed = high_resolution_clock::now();
-      auto nanos = duration_cast<nanoseconds>(ed - st).count();
-      es.push_back(nanos);
-    }
-    for (int i = 0; i < cooldown_repeats_; ++i) {
-      Preprocess(value_proto, target_size, &preprocessed);
+    for (int i = -warmup_repeats_, end = bench_repeats_ + cooldown_repeats_;
+         i < end; ++i) {
+      auto t0 = high_resolution_clock::now();
+      cv::Mat image = nexus::DecodeImage(value_proto.image(), nexus::CO_RGB);
+      auto t1 = high_resolution_clock::now();
+      cv::Mat fimg;
+      image.convertTo(fimg, CV_32FC3);
+      auto t2 = high_resolution_clock::now();
+      cv::Mat resized(resize_, resize_, CV_32FC3, preprocessed.data());
+      cv::resize(fimg, resized, cv::Size(resize_, resize_));
+      auto t3 = high_resolution_clock::now();
+
+      if (0 <= i && i < bench_repeats_) {
+        auto d1 = duration_cast<nanoseconds>(t1 - t0).count();
+        auto d2 = duration_cast<nanoseconds>(t2 - t1).count();
+        auto d3 = duration_cast<nanoseconds>(t3 - t2).count();
+        es.emplace_back(d1, d2, d3);
+      }
     }
     {
       std::lock_guard lock(nano_elapses_mu_);
@@ -120,7 +138,7 @@ class Benchmark {
   int cooldown_repeats_;
   std::chrono::system_clock::time_point start_time_;
   std::mutex nano_elapses_mu_;
-  std::vector<long> nano_elapses_;
+  std::vector<std::tuple<long, long, long>> nano_elapses_;
 };
 
 DEFINE_int32(original_size, 224, "Client-side input image size");
@@ -136,13 +154,6 @@ int main(int argc, char** argv) {
   int ncores = std::thread::hardware_concurrency();
   for (int num_workers = 1; num_workers <= ncores; ++num_workers) {
     Benchmark b(jpg, num_workers, FLAGS_target_size, FLAGS_repeats);
-    auto [avg_ns, std_ns] = b.Run();
-    auto avg_us = avg_ns / 1e3;
-    auto std_us = std_ns / 1e3;
-    printf(
-        "num_workers:%3d    "
-        "avg:%9.3fus    "
-        "std:%9.3fus\n",
-        num_workers, avg_us, std_us);
+    b.Run();
   }
 }

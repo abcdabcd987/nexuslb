@@ -206,8 +206,13 @@ message DispatchRequest {
 }
 
 message DispatchReply {
+  message QueryReply {
+    uint64 query_id = 1;
+    QueryPunchClock clock = 2;
+  }
+
   uint32 model_index = 1;
-  repeated uint64 query_id_list = 2;
+  repeated QueryReply query_list = 2;
   CtrlStatus status = 3;
 }
 

@@ -224,7 +224,9 @@ void ModelThread::SendDroppedQueries(
       reply.set_model_index(model_index_.t);
       reply.set_status(CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY);
     }
-    reply.add_query_id_list(proto.query_id());
+    auto* q = reply.add_query_list();
+    q->set_query_id(proto.query_id());
+    q->mutable_clock()->CopyFrom(proto.clock());
   }
 
   for (auto& pair : replies) {

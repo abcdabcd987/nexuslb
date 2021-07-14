@@ -186,14 +186,15 @@ void ModelHandler::HandleDispatcherReply(const DispatchReply& reply) {
     if (reply.status() != CtrlStatus::CTRL_DISPATCHER_DROPPED_QUERY) {
       LOG(WARNING) << "Dispatcher returns failure: "
                    << CtrlStatus_Name(reply.status())
-                   << " query_id_list.size(): " << reply.query_id_list_size()
+                   << " query_list.size(): " << reply.query_list_size()
                    << " model_session: " << model_session_id_;
     }
     QueryResultProto result;
     result.set_model_index(model_index_.t);
     result.set_status(reply.status());
-    for (auto query_id : reply.query_id_list()) {
-      result.set_query_id(query_id);
+    for (auto query : reply.query_list()) {
+      result.set_query_id(query.query_id());
+      result.mutable_clock()->CopyFrom(query.clock());
       HandleBackendReply(result);
     }
   }

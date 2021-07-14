@@ -25,11 +25,11 @@ void FakeFrontendDelegate::ReportRequestDone(size_t cnt_done) {
 
 void FakeFrontendDelegate::MarkQueriesDroppedByDispatcher(
     DispatchReply&& request) {
-  for (auto query_id : request.query_id_list()) {
-    auto& qctx = queries_[query_id];
+  for (auto query : request.query_list()) {
+    auto& qctx = queries_[query.query_id()];
     qctx.status = QueryStatus::kDropped;
   }
-  ReportRequestDone(request.query_id_list_size());
+  ReportRequestDone(request.query_list_size());
 }
 
 void FakeFrontendDelegate::Reserve(size_t max_queries) {

@@ -159,7 +159,9 @@ void ModelWorker::HandleDispatch(DispatchRequest&& request,
   reply->set_status(status);
   if (status != CtrlStatus::CTRL_OK) {
     reply->set_model_index(request.model_index());
-    reply->add_query_id_list(request.query_id());
+    auto* q = reply->add_query_list();
+    q->set_query_id(request.query_id());
+    q->mutable_clock()->CopyFrom(*clock);
   }
 }
 

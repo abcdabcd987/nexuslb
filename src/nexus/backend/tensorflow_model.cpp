@@ -1,14 +1,16 @@
+#include "nexus/backend/tensorflow_model.h"
+
+#include <glog/logging.h>
+
 #include <boost/filesystem.hpp>
 #include <cstdint>
+#include <memory>
 #include <opencv2/opencv.hpp>
 #include <random>
-// #include <glog/logging.h>  //
-// https://github.com/tensorflow/tensorflow/issues/25913
+
 #include "nexus/backend/slice.h"
-#include "nexus/backend/tensorflow_model.h"
 #include "nexus/backend/utils.h"
 #include "nexus/common/image.h"
-#include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 
 namespace fs = boost::filesystem;
 
@@ -30,52 +32,34 @@ namespace backend {
 
 TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
                                  ModelIndex model_index)
-    : ModelInstance(gpu_id, config, model_index),
-      first_input_array_(true),
-      num_suffixes_(0) {
+    : ModelInstance(gpu_id, config, model_index), first_input_array_(true) {
   CHECK(model_info_["model_file"]) << "Missing model_file in the model info";
 
+  double per_process_gpu_memory_fraction;
   // Init session options
 #ifdef USE_GPU
-  auto& tf_option = gpu_option_;
-  auto gpu_opt = gpu_option_.config.mutable_gpu_options();
-  gpu_opt->set_visible_device_list(std::to_string(gpu_id));
-  gpu_opt->set_allocator_type("BFC");
+  auto visible_device_list = std::to_string(gpu_id);
   LOG(INFO) << "model memory usage: " << config.memory_usage() << " B";
-  // TODO: Figure out why TensorFlow doesn't when GPU memory limit is set.
-  // if (config.memory_usage() > 0) {
-  if (false) {
+  if (config.memory_usage() > 0) {
     double memory_usage = config.memory_usage();
-    gpu_opt->set_per_process_gpu_memory_fraction(memory_usage /
-                                                 gpu_device_->TotalMemory());
+    per_process_gpu_memory_fraction = memory_usage / gpu_device_->TotalMemory();
   } else {
-    // Need to set allow_growth, otherwise TensorFlow can't initialize:
-    //   failed to create cublas handle: CUBLAS_STATUS_NOT_INITIALIZED
-    LOG(INFO) << "set_allow_growth(true)";
-    gpu_opt->set_allow_growth(true);
+    per_process_gpu_memory_fraction = 0.0;
   }
 #else
+  per_process_gpu_memory_fraction = 0.0;
   auto& tf_option = cpu_option_;
   (*cpu_option_.config.mutable_device_count())["GPU"] = 0;
 #endif
 
   // Init session and load model
-  session_.reset(tf::NewSession(tf_option));
   fs::path model_dir = fs::path(model_info_["model_dir"].as<std::string>());
   fs::path model_file = model_dir / model_info_["model_file"].as<std::string>();
   CHECK(fs::exists(model_file))
       << "model file " << model_file << " doesn't exist";
-  tf::GraphDef graph_def;
-  tf::Status status;
-  status = tf::ReadBinaryProto(tf_option.env, model_file.string(), &graph_def);
-  if (!status.ok()) {
-    LOG(FATAL) << "Failed to load model " << model_file << " : "
-               << status.ToString();
-  }
-  status = session_->Create(graph_def);
-  if (!status.ok()) {
-    LOG(FATAL) << "Failed to add graph to session: " << status.ToString();
-  }
+  const auto& pb_path = model_file.string();
+  session_ = std::make_unique<tf::Session>(
+      visible_device_list, per_process_gpu_memory_fraction, pb_path);
 
   // Get the input and output shape
   if (model_session_.image_height() > 0) {
@@ -109,24 +93,13 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
     input_data_type_ = DT_FLOAT;
   }
 
-  // Get the GPU allocator for creating input buffer
-#ifdef USE_GPU
-  tf_allocator_ = tf::GPUProcessState::singleton()->GetGPUAllocator(
-      gpu_option_.config.gpu_options(), tf::TfGpuId(0), 0);
-#else
-  tf_allocator_ =
-      tf::ProcessState::singleton()->GetCPUAllocator(tf::port::kNUMANoAffinity);
-#endif
-
   // Dry run the model to get the outpue size
-  auto in_tensor = NewInputTensor()->Slice(0, 1);
-  std::vector<tf::Tensor> out_tensors;
-  WarmupInputTensor(in_tensor, &out_tensors);
+  auto in_tensor = NewInputTensor().Slice(0, 1);
+  auto out_tensors = WarmupInputTensor(in_tensor);
   for (uint i = 0; i < out_tensors.size(); ++i) {
-    tf::TensorShape tf_shape = out_tensors[i].shape();
     std::vector<int> dims;
-    for (int i = 0; i < tf_shape.dims(); ++i) {
-      dims.push_back(tf_shape.dim_size(i));
+    for (auto dim : out_tensors[i].shape()) {
+      dims.push_back(dim);
     }
     if (dims.size() == 1) {
       dims.push_back(1);
@@ -164,7 +137,7 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
 }
 
 void TensorflowModel::WarmupInputArray(std::shared_ptr<Array> input_array) {
-  auto* in_tensor = input_tensors_[input_array->tag()].get();
+  const auto& in_tensor = input_tensors_[input_array->tag()];
 
   std::vector<char> buf;
   size_t size =
@@ -185,45 +158,17 @@ void TensorflowModel::WarmupInputArray(std::shared_ptr<Array> input_array) {
   Memcpy(input_array->Data<char>(), input_array->device(), buf.data(),
          cpu_device_, size);
 
-  std::vector<tf::Tensor> out_tensors;
-  WarmupInputTensor(*in_tensor, &out_tensors);
+  (void)WarmupInputTensor(in_tensor);
 }
 
-void TensorflowModel::WarmupInputTensor(tf::Tensor in_tensor,
-                                        std::vector<tf::Tensor>* out_tensors) {
+std::vector<tf::Tensor> TensorflowModel::WarmupInputTensor(
+    tf::Tensor in_tensor) {
   std::vector<std::pair<std::string, tf::Tensor>> inputs;
   inputs.emplace_back(input_layer_, in_tensor);
-  if (model_info_["slice_beg_vector"]) {
-    // TFShareModel
-    auto slice_beg_vector = model_info_["slice_beg_vector"].as<std::string>();
-    auto slice_end_vector = model_info_["slice_len_vector"].as<std::string>();
-    num_suffixes_ = model_info_["suffix_models"].size();
-    tf::TensorShape shape;
-    shape.AddDim(num_suffixes_);
-    slice_beg_tensor_.reset(
-        new tf::Tensor(/* tf_allocator_, */ tf::DT_INT32, shape));
-    slice_end_tensor_.reset(
-        new tf::Tensor(/* tf_allocator_, */ tf::DT_INT32, shape));
-    set_slice_tensor(slice_beg_tensor_, std::vector<int32_t>(num_suffixes_, 0));
-    set_slice_tensor(slice_end_tensor_, std::vector<int32_t>(num_suffixes_, 1));
-    inputs.emplace_back(slice_beg_vector,
-                        slice_beg_tensor_->Slice(0, num_suffixes_));
-    inputs.emplace_back(slice_end_vector,
-                        slice_end_tensor_->Slice(0, num_suffixes_));
-  }
-  auto status = session_->Run(inputs, output_layers_, {}, out_tensors);
-  if (!status.ok()) {
-    LOG(FATAL) << "Failed to run " << model_session_id_ << ": "
-               << status.ToString();
-  }
+  return session_->Run(inputs, output_layers_);
 }
 
-TensorflowModel::~TensorflowModel() {
-  auto status = session_->Close();
-  if (!status.ok()) {
-    LOG(FATAL) << "Failed to close Tensorflow Session: " << status.ToString();
-  }
-}
+TensorflowModel::~TensorflowModel() {}
 
 Shape TensorflowModel::InputShape() { return input_shape_; }
 
@@ -232,15 +177,15 @@ std::unordered_map<std::string, Shape> TensorflowModel::OutputShapes() {
 }
 
 ArrayPtr TensorflowModel::CreateInputGpuArray() {
-  tf::Tensor* tensor;
+  tf::Tensor tensor;
   if (first_input_array_) {
-    tensor = input_tensors_[0].get();
+    tensor = input_tensors_[0];
     first_input_array_ = false;
   } else {
     tensor = NewInputTensor();
   }
-  void* gpu_data = tensor->data();
-  size_t nbytes = tensor->NumElements() * type_size(input_data_type_);
+  void* gpu_data = tensor.data();
+  size_t nbytes = tensor.NumElements() * type_size(input_data_type_);
 #ifdef USE_GPU
   auto& device = gpu_device_;
 #else
@@ -248,7 +193,7 @@ ArrayPtr TensorflowModel::CreateInputGpuArray() {
 #endif
   auto buf = std::make_shared<Buffer>(gpu_data, nbytes, device);
   auto arr =
-      std::make_shared<Array>(input_data_type_, tensor->NumElements(), buf);
+      std::make_shared<Array>(input_data_type_, tensor.NumElements(), buf);
   arr->set_tag(input_tensors_.size() - 1);
   return arr;
 }
@@ -322,14 +267,8 @@ void TensorflowModel::Preprocess(std::shared_ptr<Task> task) {
 void TensorflowModel::Forward(std::shared_ptr<BatchTask> batch_task) {
   size_t batch_size = batch_task->batch_size();
   auto in_tensor =
-      input_tensors_[batch_task->GetInputArray()->tag()]->Slice(0, batch_size);
-  std::vector<tf::Tensor> out_tensors;
-  tf::Status status = session_->Run({{input_layer_, in_tensor}}, output_layers_,
-                                    {}, &out_tensors);
-  if (!status.ok()) {
-    LOG(ERROR) << "Failed to run tensorflow: " << status.ToString();
-    return;
-  }
+      input_tensors_[batch_task->GetInputArray()->tag()].Slice(0, batch_size);
+  auto out_tensors = session_->Run({{input_layer_, in_tensor}}, output_layers_);
   std::unordered_map<std::string, Slice> slices;
   for (uint i = 0; i < output_layers_.size(); ++i) {
     const auto& name = output_layers_[i];
@@ -375,28 +314,29 @@ void TensorflowModel::Postprocess(std::shared_ptr<Task> task) {
 }
 
 uint64_t TensorflowModel::GetPeakBytesInUse() {
-  auto stats = tf_allocator_->GetStats();
-  return stats->peak_bytes_in_use;
+  return session_->GetPeakBytesInUse();
 }
 
-uint64_t TensorflowModel::GetBytesInUse() {
-  auto stats = tf_allocator_->GetStats();
-  return stats->bytes_in_use;
-}
+uint64_t TensorflowModel::GetBytesInUse() { return session_->GetBytesInUse(); }
 
-tf::Tensor* TensorflowModel::NewInputTensor() {
-  tf::TensorShape shape;
+tf::Tensor TensorflowModel::NewInputTensor() {
+  std::vector<size_t> shape;
   for (auto dim : input_shape_.dims()) {
-    shape.AddDim(dim);
+    shape.push_back(dim);
   }
-  tf::Tensor* tensor;
-  if (input_data_type_ == DT_UINT8) {
-    tensor = new tf::Tensor(tf_allocator_, tf::DT_UINT8, shape);
-  } else {
-    tensor = new tf::Tensor(tf_allocator_, tf::DT_FLOAT, shape);
+  tf::DataType dtype;
+  switch (input_data_type_) {
+    case DT_UINT8:
+      dtype = tf::DataType::DT_UINT8;
+      break;
+    case DT_FLOAT:
+      dtype = tf::DataType::DT_FLOAT;
+      break;
+    default:
+      LOG(FATAL) << "Unknown dtype " << static_cast<int>(input_data_type_);
   }
-  input_tensors_.emplace_back(tensor);
-  return tensor;
+  input_tensors_.emplace_back(session_->NewTensor(dtype, shape));
+  return input_tensors_.back();
 }
 
 void TensorflowModel::MarshalDetectionResult(const QueryProto& query,
@@ -452,14 +392,6 @@ void TensorflowModel::MarshalDetectionResult(const QueryProto& query,
       }
     }
   }
-}
-
-void TensorflowModel::set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst,
-                                       const std::vector<int32_t>& src) {
-  CHECK_EQ(dst->dtype(), tf::DT_INT32);
-  CHECK_EQ(dst->NumElements(), src.size());
-  Memcpy(dst->data(), cpu_device_, src.data(), cpu_device_,
-         sizeof(int32_t) * src.size());
 }
 
 }  // namespace backend

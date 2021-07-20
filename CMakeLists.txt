@@ -187,24 +187,24 @@ add_executable(backend
         src/nexus/backend/backend_main.cpp)
 target_link_libraries(backend PRIVATE backend_obj)
 
-## backend: CUDA support ##
-if(USE_GPU)
-    target_compile_definitions(common PUBLIC USE_GPU)
-    target_include_directories(common PUBLIC ${CUDA_PATH}/include)
-    target_link_libraries(common PUBLIC
-            ${CUDA_PATH}/lib64/stubs/libcuda.so
-            ${CUDA_PATH}/lib64/libcudart.so
-            ${CUDA_PATH}/lib64/libcurand.so)
-endif()
-
 ## backend: TensorFlow support ##
 if(USE_TENSORFLOW)
-    target_compile_definitions(backend_obj PRIVATE USE_TENSORFLOW)
+    add_library(tensorflow_wrapper src/nexus/backend/tensorflow_wrapper.cpp)
+    target_include_directories(tensorflow_wrapper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(tensorflow_wrapper PRIVATE ${LIBTF_DIR}/tensorflow/include)
+    target_include_directories(tensorflow_wrapper PRIVATE ${LIBTF_DIR}/protobuf/include)
+    target_link_libraries(tensorflow_wrapper PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_cc.so)
+    target_link_libraries(tensorflow_wrapper PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_framework.so)
+
+    # TensorFlow is currently built with C++14. Some TensorFlow APIs expose
+    # pre-adopted std types with absl. To avoid weird ABI compatibility issues,
+    # compile the wrapper with the same C++ standard as TensorFlow.
+    target_compile_features(tensorflow_wrapper PRIVATE cxx_std_14)
+
+    target_compile_definitions(backend_obj PUBLIC USE_TENSORFLOW)
     target_sources(backend_obj PRIVATE
             src/nexus/backend/tensorflow_model.cpp)
-    target_include_directories(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/include)
-    target_link_libraries(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_cc.so)
-    target_link_libraries(backend_obj PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_framework.so)
+    target_link_libraries(backend_obj PUBLIC tensorflow_wrapper)
 endif()
 
 ## backend: Caffe2 support ##
@@ -270,6 +270,17 @@ if(USE_DARKNET)
     target_include_directories(backend_obj PRIVATE ${DARKNET_SRC_ROOT}/include)
     target_link_libraries(backend_obj PRIVATE ${DARKNET_SO})
     add_dependencies(backend_obj darknet)
+endif()
+
+## backend: CUDA support ##
+if(USE_GPU)
+    target_compile_definitions(common PUBLIC USE_GPU)
+    target_compile_definitions(tensorflow_wrapper PUBLIC USE_GPU)
+    target_include_directories(common PUBLIC ${CUDA_PATH}/include)
+    target_link_libraries(common PUBLIC
+            ${CUDA_PATH}/lib64/stubs/libcuda.so
+            ${CUDA_PATH}/lib64/libcudart.so
+            ${CUDA_PATH}/lib64/libcurand.so)
 endif()
 
 

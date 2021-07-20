@@ -2,10 +2,7 @@
 #define NEXUS_BACKEND_TENSORFLOW_MODEL_H_
 
 #include "nexus/backend/model_ins.h"
-// Tensorflow headers
-#include "tensorflow/core/public/session.h"
-
-namespace tf = tensorflow;
+#include "nexus/backend/tensorflow_wrapper.h"
 
 namespace nexus {
 namespace backend {
@@ -40,18 +37,14 @@ class TensorflowModel : public ModelInstance {
   uint64_t GetBytesInUse() override;
 
  private:
-  tf::Tensor* NewInputTensor();
+  tf::Tensor NewInputTensor();
 
-  void WarmupInputTensor(tf::Tensor in_tensor,
-                         std::vector<tf::Tensor>* out_tensors);
+  std::vector<tf::Tensor> WarmupInputTensor(tf::Tensor in_tensor);
 
   void MarshalDetectionResult(const QueryProto& query,
                               std::shared_ptr<Output> output, int im_height,
                               int im_width, QueryResultProto* result);
 
-  tf::SessionOptions gpu_option_;
-  tf::SessionOptions cpu_option_;
-  std::unique_ptr<tf::Session> session_;
   int image_height_;
   int image_width_;
   std::string input_layer_;
@@ -64,17 +57,10 @@ class TensorflowModel : public ModelInstance {
   std::vector<float> input_mean_;
   std::vector<float> input_std_;
   std::unordered_map<int, std::string> classnames_;
-  tf::Allocator* tf_allocator_;
-  std::vector<std::unique_ptr<tf::Tensor> > input_tensors_;
+  std::vector<tf::Tensor> input_tensors_;
   bool first_input_array_;
 
-  // supports for TFShareModel
-  friend class TFShareModel;
-  size_t num_suffixes_;
-  std::unique_ptr<tf::Tensor> slice_beg_tensor_;
-  std::unique_ptr<tf::Tensor> slice_end_tensor_;
-  void set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst,
-                        const std::vector<int32_t>& src);
+  std::unique_ptr<tf::Session> session_;
 };
 
 }  // namespace backend

@@ -3,7 +3,12 @@
 #include <memory>
 #include <string>
 
+#ifdef USE_GPU
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
+#else
+#include "tensorflow/core/common_runtime/process_state.h"
+#endif
+
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/public/session.h"
 
@@ -116,8 +121,8 @@ Session::Session(const std::string& visible_device_list,
     gpu_opt->set_allow_growth(true);
   }
 #else
-  auto& tf_option = cpu_option_;
-  (*cpu_option_.config.mutable_device_count())["GPU"] = 0;
+  auto& tf_option = impl_->cpu_option;
+  (*tf_option.config.mutable_device_count())["GPU"] = 0;
 #endif
 
   // Init session and load model
@@ -140,8 +145,8 @@ Session::Session(const std::string& visible_device_list,
       tensorflow::GPUProcessState::singleton()->GetGPUAllocator(
           impl_->gpu_option.config.gpu_options(), tensorflow::TfGpuId(0), 0);
 #else
-  tf_allocator_ =
-      tf::ProcessState::singleton()->GetCPUAllocator(tf::port::kNUMANoAffinity);
+  impl_->tf_allocator = tensorflow::ProcessState::singleton()->GetCPUAllocator(
+      tensorflow::port::kNUMANoAffinity);
 #endif
 }
 

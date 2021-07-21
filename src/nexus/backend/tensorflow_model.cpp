@@ -48,8 +48,7 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
   }
 #else
   per_process_gpu_memory_fraction = 0.0;
-  auto& tf_option = cpu_option_;
-  (*cpu_option_.config.mutable_device_count())["GPU"] = 0;
+  std::string visible_device_list = "";
 #endif
 
   // Init session and load model

@@ -51,7 +51,7 @@ add_library(ario
         src/ario/utils.cpp)
 target_include_directories(ario PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_features(ario PUBLIC cxx_std_17)
+target_compile_options(ario PUBLIC -std=c++17)
 target_link_libraries(ario PRIVATE Threads::Threads)
 target_link_libraries(ario PRIVATE ibverbs)
 set_target_properties(ario PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -107,7 +107,7 @@ target_include_directories(common PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party
         ${GENERATED_SRC_DIR}/src)
-target_compile_features(common PUBLIC cxx_std_17)
+target_compile_options(common PUBLIC -std=c++17)
 target_link_libraries(common PUBLIC ario)
 target_link_libraries(common PUBLIC
         yaml-cpp gflags glog::glog protobuf::libprotobuf
@@ -199,7 +199,7 @@ if(USE_TENSORFLOW)
     # TensorFlow is currently built with C++14. Some TensorFlow APIs expose
     # pre-adopted std types with absl. To avoid weird ABI compatibility issues,
     # compile the wrapper with the same C++ standard as TensorFlow.
-    target_compile_features(tensorflow_wrapper PRIVATE cxx_std_14)
+    target_compile_options(tensorflow_wrapper PRIVATE -std=c++14)
 
     target_compile_definitions(backend_obj PUBLIC USE_TENSORFLOW)
     target_sources(backend_obj PRIVATE
@@ -343,6 +343,12 @@ target_link_libraries(run_rankmt PUBLIC bench_dispatcher_obj)
 ###### tools/test_preprocessing_scalability ######
 add_executable(test_preprocessing_scalability tools/test_preprocessing_scalability.cpp)
 target_link_libraries(test_preprocessing_scalability PUBLIC common)
+
+
+
+###### tools/send_workload ######
+add_executable(send_workload tools/send_workload.cpp)
+target_link_libraries(send_workload PUBLIC common)
 
 
 

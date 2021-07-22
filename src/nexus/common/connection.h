@@ -40,6 +40,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
   // constructor
   explicit Connection(boost::asio::ip::tcp::socket socket,
                       MessageHandler* handler);
+  virtual ~Connection();
   /*! \brief starts processing packets received from socket */
   virtual void Start();
   /*! \brief stops the socket */
@@ -71,7 +72,7 @@ class Connection : public std::enable_shared_from_this<Connection> {
   // std::shared_ptr<Message> recv_message_;
   char msg_header_buffer_[MESSAGE_HEADER_SIZE];
   /*! \brief Queue for outbound messages */
-  std::deque<std::shared_ptr<Message> > write_queue_;
+  std::deque<std::shared_ptr<Message>> write_queue_;
   /*! \brief Mutex for write_queue_ */
   std::mutex write_queue_mutex_;
 };

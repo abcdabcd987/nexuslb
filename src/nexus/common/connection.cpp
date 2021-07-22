@@ -23,6 +23,12 @@ void Connection::Stop() {
   socket_.close();
 }
 
+Connection::~Connection() {
+  if (socket_.is_open()) {
+    Stop();
+  }
+}
+
 void Connection::Write(std::shared_ptr<Message> msg) {
   std::lock_guard<std::mutex> lock(write_queue_mutex_);
   bool write_in_progress = !write_queue_.empty();

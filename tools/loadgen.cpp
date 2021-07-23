@@ -90,15 +90,22 @@ class WorkloadSender {
       : options_(std::move(options)),
         message_handler_(this),
         timer_(io_context_),
-        output_fd_(io_context_, STDIN_FILENO) {
+        output_fd_(io_context_, STDOUT_FILENO) {
+    output_fd_.non_blocking(true);
     PrepareRequestTemplate();
   }
 
   ~WorkloadSender() { Stop(); }
 
   void Run() {
+    done_ = false;
     Connect();
     StartSend();
+    while (!done_) {
+      io_context_.poll();
+    }
+
+    // Cleanup
     io_context_.run();
   }
 
@@ -197,11 +204,11 @@ class WorkloadSender {
     timer_.async_wait([this](const boost::system::error_code& ec) {
       if (ec) return;
       LOG(INFO) << "Start sending...";
-      ContinueSend();
+      PostNextRequest();
     });
   }
 
-  void ContinueSend() {
+  void PostNextRequest() {
     if (next_time_ >= wp_end_time_) {
       if (wp_idx_ == options_.workload.size()) {
         LOG(INFO) << "Finished sending";
@@ -229,32 +236,41 @@ class WorkloadSender {
     next_time_ += std::chrono::nanoseconds(static_cast<long>(gap * 1e9));
     uint32_t reqid = request_proto_.req_id() + 1;
     request_proto_.set_req_id(reqid);
-    auto msg =
+    msg_to_send_ =
         std::make_shared<Message>(kUserRequest, request_proto_.ByteSizeLong());
-    msg->EncodeBody(request_proto_);
-    long expire_ns = next_time_.time_since_epoch().count();
+    msg_to_send_->EncodeBody(request_proto_);
+
     timer_.expires_at(next_time_);
-    timer_.async_wait(
-        [this, msg, reqid, expire_ns](const boost::system::error_code& ec) {
-          if (ec) return;
-          long now_ns = Clock::now().time_since_epoch().count();
-          conn_->Write(msg);
+    timer_.async_wait([this](const boost::system::error_code& ec) {
+      if (ec) return;
+      DoSend();
+    });
+  }
 
-          std::vector<char> buf;
-          buf.resize(5 + 10 + 20 * 2);
-          int n = snprintf(buf.data(), buf.size(), "SEND %u %ld %ld\n", reqid,
-                           expire_ns, now_ns);
-          CHECK_LE(n, buf.size()) << "Buffer size too small";
-          buf.resize(n);
-          WriteOutput(std::move(buf));
+  void DoSend() {
+    auto now = Clock::now();
+    CHECK(now >= next_time_);
+    conn_->Write(msg_to_send_);
+    msg_to_send_.reset();
 
-          ContinueSend();
-        });
+    std::vector<char> buf;
+    buf.resize(5 + 10 + 20 * 2);
+    uint32_t reqid = request_proto_.req_id();
+    long expire_ns = next_time_.time_since_epoch().count();
+    long now_ns = now.time_since_epoch().count();
+    int n = snprintf(buf.data(), buf.size(), "SEND %u %ld %ld\n", reqid,
+                     expire_ns, now_ns);
+    CHECK_LE(n, buf.size()) << "Buffer size too small";
+    buf.resize(n);
+    WriteOutput(std::move(buf));
+
+    PostNextRequest();
   }
 
   void FinishSend() {
     conn_->Stop();
     conn_.reset();
+    done_ = true;
   }
 
   void HandleReply(ReplyProto reply) {
@@ -309,11 +325,14 @@ class WorkloadSender {
   std::deque<std::vector<char>> output_queue_;
   boost::asio::posix::stream_descriptor output_fd_;
 
+  bool done_;
   RequestProto request_proto_;
   std::unique_ptr<GapGenerator> gapgen_;
   size_t wp_idx_;
   TimePoint wp_end_time_;
   TimePoint next_time_;
+
+  std::shared_ptr<Message> msg_to_send_;
 };
 
 DEFINE_string(host, "127.0.0.1", "Frontend IP");

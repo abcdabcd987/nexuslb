@@ -1,5 +1,6 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include <boost/asio.hpp>
@@ -16,6 +17,7 @@
 #include <opencv2/opencv.hpp>
 #include <random>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -89,24 +91,31 @@ class WorkloadSender {
   explicit WorkloadSender(Options options)
       : options_(std::move(options)),
         message_handler_(this),
-        timer_(io_context_),
-        output_fd_(io_context_, STDOUT_FILENO) {
-    output_fd_.non_blocking(true);
+        timer_(main_io_context_) {
     PrepareRequestTemplate();
   }
 
   ~WorkloadSender() { Stop(); }
 
   void Run() {
+    auto output_work = boost::asio::make_work_guard(output_io_context_);
+    std::thread output_thread([this] {
+      pthread_setname_np(pthread_self(), "OutputThread");
+      output_io_context_.run();
+    });
+
     done_ = false;
     Connect();
     StartSend();
     while (!done_) {
-      io_context_.poll();
+      main_io_context_.poll();
     }
 
     // Cleanup
-    io_context_.run();
+    main_io_context_.run();
+    output_work.reset();
+    output_io_context_.run();
+    output_thread.join();
   }
 
  private:
@@ -120,13 +129,15 @@ class WorkloadSender {
       if (message->type() != kUserReply) {
         LOG(FATAL) << "Received unknown message type " << message->type();
       }
-      ReplyProto proto;
-      bool ok = proto.ParseFromArray(message->body(), message->body_length());
-      if (!ok) {
-        LOG(FATAL) << "Failed to parse ReplyProto. message->body_length()="
-                   << message->body_length();
-      }
-      outer_.HandleReply(std::move(proto));
+      boost::asio::defer(outer_.output_io_context_, [this, message] {
+        ReplyProto proto;
+        bool ok = proto.ParseFromArray(message->body(), message->body_length());
+        if (!ok) {
+          LOG(FATAL) << "Failed to parse ReplyProto. message->body_length()="
+                     << message->body_length();
+        }
+        outer_.OutputReply(std::move(proto));
+      });
     }
 
     void HandleError(std::shared_ptr<Connection> conn,
@@ -176,8 +187,8 @@ class WorkloadSender {
   }
 
   void Connect() {
-    boost::asio::ip::tcp::resolver resolver(io_context_);
-    boost::asio::ip::tcp::socket socket(io_context_);
+    boost::asio::ip::tcp::resolver resolver(main_io_context_);
+    boost::asio::ip::tcp::socket socket(main_io_context_);
     auto endpoints =
         resolver.resolve(options_.host, std::to_string(options_.port));
     boost::asio::connect(socket, endpoints);
@@ -253,16 +264,12 @@ class WorkloadSender {
     conn_->Write(msg_to_send_);
     msg_to_send_.reset();
 
-    std::vector<char> buf;
-    buf.resize(5 + 10 + 20 * 2);
     uint32_t reqid = request_proto_.req_id();
     long expire_ns = next_time_.time_since_epoch().count();
-    long now_ns = now.time_since_epoch().count();
-    int n = snprintf(buf.data(), buf.size(), "SEND %u %ld %ld\n", reqid,
-                     expire_ns, now_ns);
-    CHECK_LE(n, buf.size()) << "Buffer size too small";
-    buf.resize(n);
-    WriteOutput(std::move(buf));
+    long send_ns = now.time_since_epoch().count();
+    boost::asio::defer(output_io_context_, [this, reqid, expire_ns, send_ns] {
+      printf("SEND %u %ld %ld\n", reqid, expire_ns, send_ns);
+    });
 
     PostNextRequest();
   }
@@ -273,57 +280,25 @@ class WorkloadSender {
     done_ = true;
   }
 
-  void HandleReply(ReplyProto reply) {
-    std::vector<char> buf;
-    buf.resize(6 + 10 + 12 * 20 + 1);
+  void OutputReply(ReplyProto reply) {
     CHECK_GE(reply.query_latency_size(), 0) << "Missing query_latency field";
     const auto& clock = reply.query_latency(0).clock();
-    int n = snprintf(
-        buf.data(), buf.size(),
-        "REPLY %u %d %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld\n",
-        reply.req_id(), reply.status(), clock.frontend_recv_ns(),
-        clock.frontend_dispatch_ns(), clock.dispatcher_recv_ns(),
-        clock.dispatcher_sched_ns(), clock.dispatcher_dispatch_ns(),
-        clock.backend_recv_ns(), clock.backend_fetch_image_ns(),
-        clock.backend_got_image_ns(), clock.backend_exec_ns(),
-        clock.backend_finish_ns(), clock.backend_reply_ns(),
-        clock.frontend_got_reply_ns());
-    CHECK_LE(n, buf.size()) << "Buffer size too small";
-    buf.resize(n);
-    WriteOutput(std::move(buf));
-  }
-
-  void WriteOutput(std::vector<char> buf) {
-    output_queue_.emplace_back(std::move(buf));
-    if (output_queue_.size() == 1) {
-      AsyncWriteOutput();
-    }
-  }
-
-  void AsyncWriteOutput() {
-    boost::asio::async_write(
-        output_fd_, boost::asio::buffer(output_queue_.front()),
-        [this](const boost::system::error_code& ec,
-               std::size_t bytes_transferred) {
-          if (ec) {
-            LOG(ERROR) << "Failed to write to output: " << ec
-                       << " Bytes transferred: " << bytes_transferred;
-          }
-          output_queue_.pop_front();
-          if (!output_queue_.empty()) {
-            AsyncWriteOutput();
-          }
-        });
+    printf("REPLY %u %d %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld\n",
+           reply.req_id(), reply.status(), clock.frontend_recv_ns(),
+           clock.frontend_dispatch_ns(), clock.dispatcher_recv_ns(),
+           clock.dispatcher_sched_ns(), clock.dispatcher_dispatch_ns(),
+           clock.backend_recv_ns(), clock.backend_fetch_image_ns(),
+           clock.backend_got_image_ns(), clock.backend_exec_ns(),
+           clock.backend_finish_ns(), clock.backend_reply_ns(),
+           clock.frontend_got_reply_ns());
   }
 
   Options options_;
   MessageHandler message_handler_;
-  boost::asio::io_context io_context_;
+  boost::asio::io_context main_io_context_;
   boost::asio::system_timer timer_;
   std::shared_ptr<Connection> conn_;
-
-  std::deque<std::vector<char>> output_queue_;
-  boost::asio::posix::stream_descriptor output_fd_;
+  boost::asio::io_context output_io_context_;
 
   bool done_;
   RequestProto request_proto_;

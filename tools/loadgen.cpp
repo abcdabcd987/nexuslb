@@ -269,6 +269,7 @@ class WorkloadSender {
     long send_ns = now.time_since_epoch().count();
     boost::asio::defer(output_io_context_, [this, reqid, expire_ns, send_ns] {
       printf("SEND %u %ld %ld\n", reqid, expire_ns, send_ns);
+      fflush(stdout);
     });
 
     PostNextRequest();
@@ -291,6 +292,7 @@ class WorkloadSender {
            clock.backend_got_image_ns(), clock.backend_exec_ns(),
            clock.backend_finish_ns(), clock.backend_reply_ns(),
            clock.frontend_got_reply_ns());
+    fflush(stdout);
   }
 
   Options options_;

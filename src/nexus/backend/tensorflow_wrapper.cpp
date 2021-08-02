@@ -143,7 +143,8 @@ Session::Session(const std::string& visible_device_list,
 #ifdef USE_GPU
   impl_->tf_allocator =
       tensorflow::GPUProcessState::singleton()->GetGPUAllocator(
-          impl_->gpu_option.config.gpu_options(), tensorflow::TfGpuId(0), 0);
+          impl_->gpu_option.config.gpu_options(), tensorflow::TfDeviceId(0), 0,
+          {});
 #else
   impl_->tf_allocator = tensorflow::ProcessState::singleton()->GetCPUAllocator(
       tensorflow::port::kNUMANoAffinity);

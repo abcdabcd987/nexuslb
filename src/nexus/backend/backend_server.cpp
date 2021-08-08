@@ -427,6 +427,8 @@ void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,
 
   // Add batchplan
   auto plan = std::make_shared<BatchPlanContext>(std::move(req));
+  plan->stats().set_backend_id(node_id_);
+  plan->stats().set_backend_recv_ns(backend_recv_ns);
   {
     std::lock_guard<std::mutex> lock(mu_pending_plans_);
     if (pending_plans_.count(plan->plan_id())) {

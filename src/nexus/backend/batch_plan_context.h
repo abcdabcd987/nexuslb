@@ -22,10 +22,7 @@ class BatchPlanContext {
   const BatchPlanProto& proto() const { return proto_; }
   PlanId plan_id() const { return plan_id_; }
   std::shared_ptr<BatchTask> batch_task() const { return batch_task_; }
-  TimePoint enqueue_time() const { return enqueue_time_; }
-  void set_enqueue_time(TimePoint enqueue_time) {
-    enqueue_time_ = enqueue_time;
-  }
+  BatchPlanStats& stats() { return stats_; }
 
   void SetInputArray(std::shared_ptr<Array> input_array);
   std::shared_ptr<Array> ReleaseInputArray();
@@ -46,7 +43,7 @@ class BatchPlanContext {
   std::shared_ptr<Array> input_array_;
   std::shared_ptr<BatchTask> batch_task_;
   bool has_populated_ = false;
-  TimePoint enqueue_time_;
+  BatchPlanStats stats_;
 };
 
 }  // namespace backend

@@ -79,7 +79,7 @@ void GpuExecutorPlanFollower::RemoveModel(
 void GpuExecutorPlanFollower::AddBatchPlan(
     std::shared_ptr<BatchPlanContext> plan) {
   auto now = Clock::now();
-  plan->set_enqueue_time(now);
+  plan->stats().set_prepared_ns(now.time_since_epoch().count());
   std::lock_guard<std::mutex> lock(mutex_);
   plans_.push_back(plan);
   std::push_heap(plans_.begin(), plans_.end(),
@@ -118,9 +118,11 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
     plan = std::move(plans_.back());
     plans_.pop_back();
   }
+  plan->stats().set_actual_exec_ns(start_time.time_since_epoch().count());
   TimePoint exec_time(nanoseconds(plan->proto().exec_time_ns()));
   auto queue_delay_us =
-      duration_cast<microseconds>(start_time - plan->enqueue_time()).count();
+      (start_time.time_since_epoch().count() - plan->stats().prepared_ns()) /
+      1000;
   auto start_delay_us =
       duration_cast<microseconds>(start_time - exec_time).count();
   {
@@ -160,8 +162,7 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
   auto finish_time = Clock::now();
   auto elapse_us =
       duration_cast<microseconds>(finish_time - start_time).count();
-  auto finish_time_ns =
-      duration_cast<nanoseconds>(finish_time.time_since_epoch()).count();
+  auto finish_time_ns = finish_time.time_since_epoch().count();
   auto finish_delay_us =
       (finish_time_ns - plan->proto().expected_finish_time_ns()) / 1000;
   VLOG(1) << "BatchPlan finished. plan_id=" << plan->proto().plan_id()

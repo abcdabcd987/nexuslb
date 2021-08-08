@@ -144,6 +144,7 @@ void RequestContext::HandleQueryResult(const QueryResultProto& result,
   query_latency->mutable_clock()->CopyFrom(result.clock());
   query_latency->mutable_clock()->set_frontend_got_reply_ns(
       frontend_got_reply_ns);
+  query_latency->mutable_batchplan_stats()->CopyFrom(result.batchplan_stats());
 
   double latency = recv_ts;
   slack_ms_ += model_session.latency_sla() - latency / 1e3;

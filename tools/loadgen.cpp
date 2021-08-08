@@ -202,7 +202,9 @@ class WorkloadSender {
     if (options_.sttime) {
       st_time = TimePoint(
           std::chrono::nanoseconds(static_cast<long>(options_.sttime * 1e9)));
-      LOG_IF(FATAL, st_time > now) << "Start too late. Give up.";
+      LOG_IF(FATAL, st_time <= now)
+          << "Start too late. Give up. diff=" << (now - st_time).count() / 1e6
+          << "ms";
     } else {
       st_time = now;
     }
@@ -292,6 +294,19 @@ class WorkloadSender {
            clock.backend_got_image_ns(), clock.backend_exec_ns(),
            clock.backend_finish_ns(), clock.backend_reply_ns(),
            clock.frontend_got_reply_ns());
+    fflush(stdout);
+
+    const auto& bpstats = reply.query_latency(0).batchplan_stats();
+    if (!bpstats.batch_size()) {
+      return;
+    }
+    printf("BATCH %lu %u %u %ld %ld %ld %ld %ld %ld %ld %ld %d\n",
+           bpstats.plan_id(), bpstats.batch_size(), bpstats.backend_id(),
+           bpstats.deadline_ns(), bpstats.expected_exec_ns(),
+           bpstats.expected_finish_ns(), bpstats.dispatcher_dispatch_ns(),
+           bpstats.backend_recv_ns(), bpstats.prepared_ns(),
+           bpstats.actual_exec_ns(), bpstats.actual_finish_ns(),
+           bpstats.status());
     fflush(stdout);
   }
 

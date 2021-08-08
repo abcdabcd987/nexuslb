@@ -11,6 +11,7 @@
 #include "nexus/backend/share_prefix_model.h"
 #include "nexus/common/device.h"
 #include "nexus/common/model_db.h"
+#include "nexus/proto/control.pb.h"
 
 #ifdef USE_TENSORFLOW
 #include "nexus/backend/tf_share_model.h"
@@ -272,6 +273,11 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   for (auto& task : tasks) {
     task->query.mutable_clock()->set_backend_finish_ns(backend_finish_ns);
   }
+
+  // Attach stats to the first query
+  plan->stats().set_actual_finish_ns(backend_finish_ns);
+  plan->stats().set_status(CtrlStatus::CTRL_OK);
+  tasks.front()->result.mutable_batchplan_stats()->CopyFrom(plan->stats());
 }
 
 void ModelExecutor::DropBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
@@ -292,6 +298,7 @@ void ModelExecutor::DropBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
       completed_tasks.push_back(task);
       task->stage = kPostprocess;
       processing_tasks_.erase(task->task_id);
+      task->result.set_status(CtrlStatus::CTRL_BACKEND_DROPPED_QUERY);
     }
   }
   // task_queue_.push is expensive. So batch push here.
@@ -305,6 +312,11 @@ void ModelExecutor::DropBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   for (auto& task : tasks) {
     task->query.mutable_clock()->set_backend_finish_ns(backend_finish_ns);
   }
+
+  // Attach stats to the first query
+  plan->stats().set_actual_finish_ns(backend_finish_ns);
+  plan->stats().set_status(CtrlStatus::CTRL_BACKEND_DROPPED_QUERY);
+  tasks.front()->result.mutable_batchplan_stats()->CopyFrom(plan->stats());
 }
 
 std::shared_ptr<BatchTask> ModelExecutor::GetBatchTaskByBatchPlan(

@@ -160,6 +160,7 @@ message QueryResultProto {
   uint64 queuing_us = 21;
   // Timestamps of important events.
   QueryPunchClock clock = 6;
+  BatchPlanStats batchplan_stats = 7;
 
   bool use_backup = 22;
 }
@@ -180,6 +181,7 @@ message QueryLatency {
   uint64 backend_queuing_us = 6;
   // Timestamps of important events.
   QueryPunchClock clock = 8;
+  BatchPlanStats batchplan_stats = 9;
 
   bool use_backup = 7;
 }
@@ -197,4 +199,21 @@ message QueryPunchClock {
   int64 backend_finish_ns = 10;
   int64 backend_reply_ns = 11;
   int64 frontend_got_reply_ns = 12;
+}
+
+message BatchPlanStats {
+  uint64 plan_id = 1;
+  uint32 batch_size = 2;
+  uint32 backend_id = 3;
+  int64 deadline_ns = 4;
+  int64 expected_exec_ns = 5;
+  int64 expected_finish_ns = 6;
+
+  int64 dispatcher_dispatch_ns = 7;
+  int64 backend_recv_ns = 8;
+  int64 prepared_ns = 9;
+  int64 actual_exec_ns = 10;
+  int64 actual_finish_ns = 11;
+
+  int32 status = 12;
 }

@@ -19,6 +19,14 @@ BatchPlanContext::BatchPlanContext(BatchPlanProto proto)
   }
   pending_queries_ = global_ids_;
   batch_task_ = std::make_shared<BatchTask>(proto_.queries_size());
+
+  stats_.set_plan_id(proto_.plan_id());
+  stats_.set_batch_size(proto_.queries_size());
+  stats_.set_deadline_ns(proto_.deadline_ns());
+  stats_.set_expected_exec_ns(proto_.exec_time_ns());
+  stats_.set_expected_finish_ns(proto_.expected_finish_time_ns());
+  const auto& qclock = proto_.queries(0).query_without_input().clock();
+  stats_.set_dispatcher_dispatch_ns(qclock.dispatcher_dispatch_ns());
 }
 
 BatchPlanContext::~BatchPlanContext() {

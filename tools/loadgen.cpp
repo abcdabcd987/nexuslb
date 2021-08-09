@@ -2,6 +2,7 @@
 #include <glog/logging.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <yaml-cpp/yaml.h>
 
 #include <boost/asio.hpp>
 #include <chrono>
@@ -13,6 +14,7 @@
 #include <deque>
 #include <exception>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <opencv2/opencv.hpp>
 #include <random>
@@ -22,6 +24,7 @@
 #include <vector>
 
 #include "nexus/common/connection.h"
+#include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/util.h"
 #include "nexus/proto/nnquery.pb.h"
@@ -83,40 +86,30 @@ struct Options {
   std::vector<WorkloadPoint> workload;
   std::function<std::unique_ptr<GapGenerator>(double rps)> construct_gapgen;
 
-  static Options FromGflags();
+  static Options FromYaml(size_t cfgidx, const YAML::Node& config);
 };
 
 class WorkloadSender {
  public:
-  explicit WorkloadSender(Options options)
-      : options_(std::move(options)),
+  explicit WorkloadSender(boost::asio::io_context* main_io_context,
+                          boost::asio::io_context* output_io_context,
+                          size_t sender_idx, Options options)
+      : sender_idx_(sender_idx),
+        options_(std::move(options)),
+        model_sess_id_(ModelSessionToString(options_.model_session)),
         message_handler_(this),
+        main_io_context_(*CHECK_NOTNULL(main_io_context)),
+        output_io_context_(*CHECK_NOTNULL(output_io_context)),
         timer_(main_io_context_) {
     PrepareRequestTemplate();
+    done_ = false;
+    Connect();
+    StartSend();
   }
 
   ~WorkloadSender() { Stop(); }
 
-  void Run() {
-    auto output_work = boost::asio::make_work_guard(output_io_context_);
-    std::thread output_thread([this] {
-      pthread_setname_np(pthread_self(), "OutputThread");
-      output_io_context_.run();
-    });
-
-    done_ = false;
-    Connect();
-    StartSend();
-    while (!done_) {
-      main_io_context_.poll();
-    }
-
-    // Cleanup
-    main_io_context_.run();
-    output_work.reset();
-    output_io_context_.run();
-    output_thread.join();
-  }
+  bool IsDone() { return done_; }
 
  private:
   class MessageHandler : public ::nexus::MessageHandler {
@@ -216,7 +209,7 @@ class WorkloadSender {
     timer_.expires_at(st_time);
     timer_.async_wait([this](const boost::system::error_code& ec) {
       if (ec) return;
-      LOG(INFO) << "Start sending...";
+      LOG(INFO) << "[" << model_sess_id_ << "] Start sending...";
       PostNextRequest();
     });
   }
@@ -224,7 +217,7 @@ class WorkloadSender {
   void PostNextRequest() {
     if (next_time_ >= wp_end_time_) {
       if (wp_idx_ == options_.workload.size()) {
-        LOG(INFO) << "Finished sending";
+        LOG(INFO) << "[" << model_sess_id_ << "] Finished sending";
         auto cleanup_time =
             wp_end_time_ + std::chrono::milliseconds(
                                options_.model_session.latency_sla() + 500);
@@ -236,7 +229,8 @@ class WorkloadSender {
         return;
       }
       const auto& wp = options_.workload[wp_idx_];
-      LOG(INFO) << "Next WorkloadPoint idx=" << wp_idx_ << " rps=" << wp.rps
+      LOG(INFO) << "[" << model_sess_id_
+                << "] Next WorkloadPoint idx=" << wp_idx_ << " rps=" << wp.rps
                 << " duration=" << wp.duration;
       gapgen_ = options_.construct_gapgen(wp.rps);
       next_time_ = wp_end_time_;
@@ -270,7 +264,7 @@ class WorkloadSender {
     long expire_ns = next_time_.time_since_epoch().count();
     long send_ns = now.time_since_epoch().count();
     boost::asio::defer(output_io_context_, [this, reqid, expire_ns, send_ns] {
-      printf("SEND %u %ld %ld\n", reqid, expire_ns, send_ns);
+      printf("SEND %lu %u %ld %ld\n", sender_idx_, reqid, expire_ns, send_ns);
       fflush(stdout);
     });
 
@@ -286,36 +280,38 @@ class WorkloadSender {
   void OutputReply(ReplyProto reply) {
     CHECK_GE(reply.query_latency_size(), 0) << "Missing query_latency field";
     const auto& clock = reply.query_latency(0).clock();
-    printf("REPLY %u %d %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld\n",
-           reply.req_id(), reply.status(), clock.frontend_recv_ns(),
-           clock.frontend_dispatch_ns(), clock.dispatcher_recv_ns(),
-           clock.dispatcher_sched_ns(), clock.dispatcher_dispatch_ns(),
-           clock.backend_recv_ns(), clock.backend_fetch_image_ns(),
-           clock.backend_got_image_ns(), clock.backend_exec_ns(),
-           clock.backend_finish_ns(), clock.backend_reply_ns(),
-           clock.frontend_got_reply_ns());
+    printf("REPLY %lu %u %d %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld\n",
+           sender_idx_, reply.req_id(), reply.status(),
+           clock.frontend_recv_ns(), clock.frontend_dispatch_ns(),
+           clock.dispatcher_recv_ns(), clock.dispatcher_sched_ns(),
+           clock.dispatcher_dispatch_ns(), clock.backend_recv_ns(),
+           clock.backend_fetch_image_ns(), clock.backend_got_image_ns(),
+           clock.backend_exec_ns(), clock.backend_finish_ns(),
+           clock.backend_reply_ns(), clock.frontend_got_reply_ns());
     fflush(stdout);
 
     const auto& bpstats = reply.query_latency(0).batchplan_stats();
     if (!bpstats.batch_size()) {
       return;
     }
-    printf("BATCH %lu %u %u %ld %ld %ld %ld %ld %ld %ld %ld %d\n",
-           bpstats.plan_id(), bpstats.batch_size(), bpstats.backend_id(),
-           bpstats.deadline_ns(), bpstats.expected_exec_ns(),
-           bpstats.expected_finish_ns(), bpstats.dispatcher_dispatch_ns(),
-           bpstats.backend_recv_ns(), bpstats.prepared_ns(),
-           bpstats.actual_exec_ns(), bpstats.actual_finish_ns(),
-           bpstats.status());
+    printf("BATCH %lu %lu %u %u %ld %ld %ld %ld %ld %ld %ld %ld %d\n",
+           sender_idx_, bpstats.plan_id(), bpstats.batch_size(),
+           bpstats.backend_id(), bpstats.deadline_ns(),
+           bpstats.expected_exec_ns(), bpstats.expected_finish_ns(),
+           bpstats.dispatcher_dispatch_ns(), bpstats.backend_recv_ns(),
+           bpstats.prepared_ns(), bpstats.actual_exec_ns(),
+           bpstats.actual_finish_ns(), bpstats.status());
     fflush(stdout);
   }
 
+  size_t sender_idx_;
   Options options_;
+  std::string model_sess_id_;
   MessageHandler message_handler_;
-  boost::asio::io_context main_io_context_;
+  boost::asio::io_context& main_io_context_;
   boost::asio::system_timer timer_;
   std::shared_ptr<Connection> conn_;
-  boost::asio::io_context output_io_context_;
+  boost::asio::io_context& output_io_context_;
 
   bool done_;
   RequestProto request_proto_;
@@ -327,47 +323,47 @@ class WorkloadSender {
   std::shared_ptr<Message> msg_to_send_;
 };
 
-DEFINE_string(host, "127.0.0.1", "Frontend IP");
-DEFINE_int32(port, 9001, "Frontend port");
-DEFINE_double(sttime, 0, "Start time in unix epoch. 0 to start now.");
-DEFINE_string(framework, "tensorflow", "Model framework");
-DEFINE_string(model, "", "Model name");
-DEFINE_int32(slo, 0, "Model latency SLO in milliseconds");
-DEFINE_int32(width, 224, "Input image width");
-DEFINE_int32(height, 224, "Input image height");
-DEFINE_string(imgext, ".jpg", "Image encoding");
-DEFINE_int64(seed, 0xabcdabcd987LL, "Random seed");
-DEFINE_string(gap, "const", "Request interval gap. Choices: ['const', 'exp']");
-DEFINE_string(workload, "", "Format: '<RPS>x<DURATION>,<RPS>x<DURATION>,...'");
-
-Options Options::FromGflags() {
-  if (FLAGS_model.empty()) {
-    fprintf(stderr, "Must specify `-model`\n");
-    std::exit(1);
-  }
-  if (!FLAGS_slo) {
-    fprintf(stderr, "Must specify `-slo`\n");
-    std::exit(1);
-  }
-  if (FLAGS_workload.empty()) {
-    fprintf(stderr, "Must specify `-workload`\n");
-    std::exit(1);
-  }
-
+Options Options::FromYaml(size_t cfgidx, const YAML::Node& config) {
   Options opt;
-  opt.host = FLAGS_host;
-  opt.port = FLAGS_port;
-  opt.sttime = FLAGS_sttime;
-  opt.model_session.set_framework(FLAGS_framework);
-  opt.model_session.set_model_name(FLAGS_model);
   opt.model_session.set_version(1);
-  opt.model_session.set_latency_sla(FLAGS_slo);
-  opt.width = FLAGS_width;
-  opt.height = FLAGS_height;
-  opt.imgext = FLAGS_imgext;
-  opt.seed = FLAGS_seed;
-  opt.gap = FLAGS_gap;
 
+  // Frontend IP
+  opt.host = config["host"].as<std::string>("127.0.0.1");
+
+  // Frontend port
+  opt.port = config["port"].as<int>(9001);
+
+  // Start time in unix epoch. 0 to start now.
+  opt.sttime = config["sttime"].as<double>(0.0);
+
+  // Model framework
+  opt.model_session.set_framework(
+      config["framework"].as<std::string>("tensorflow"));
+
+  // Model name
+  LOG_IF(FATAL, !config["model"]) << "Must specify `model`. cfgidx=" << cfgidx;
+  opt.model_session.set_model_name(config["model"].as<std::string>());
+
+  // Model latency SLO in milliseconds
+  LOG_IF(FATAL, !config["slo"]) << "Must specify `slo`. cfgidx=" << cfgidx;
+  opt.model_session.set_latency_sla(config["slo"].as<int>());
+
+  // Input image width
+  opt.width = config["width"].as<int>(224);
+
+  // Input image height
+  opt.height = config["height"].as<int>(224);
+
+  // Image encoding
+  opt.imgext = config["imgext"].as<std::string>(".jpg");
+
+  // Random seed
+  opt.seed = config["seed"].as<int64_t>(0xabcdabcd987LL);
+
+  // Request interval gap. Choices: ['const', 'exp']
+  opt.gap = config["gap"].as<std::string>("const");
+
+  // Gap factory
   {
     std::unordered_map<std::string, decltype(opt.construct_gapgen)> gap_factory;
     gap_factory.emplace("const", [](double rps) {
@@ -378,30 +374,21 @@ Options Options::FromGflags() {
     });
     auto iter = gap_factory.find(opt.gap);
     if (iter == gap_factory.end()) {
-      fprintf(stderr, "Unknown choice for `-gap`: %s\n", opt.gap.c_str());
-      std::exit(1);
+      LOG(FATAL) << "Unknown choice for `gap`: " << opt.gap;
     }
     opt.construct_gapgen = iter->second;
   }
 
-  std::vector<std::string> wp_strings, tokens;
-  SplitString(FLAGS_workload, ',', &wp_strings);
-  for (const auto& wpstr : wp_strings) {
-    SplitString(wpstr, 'x', &tokens);
-    if (tokens.size() != 2) {
-      fprintf(stderr, "Expecting 2 tokens but got %zu from string `%s`\n",
-              tokens.size(), wpstr.c_str());
-      std::exit(1);
-    }
-    double rps, duration;
-    try {
-      rps = std::stod(tokens[0]);
-      duration = std::stod(tokens[1]);
-    } catch (const std::exception& e) {
-      fprintf(stderr, "Failed to parse two floating points from string `%s`\n",
-              wpstr.c_str());
-      std::exit(1);
-    }
+  // Workload
+  const auto& workload = config["workload"];
+  LOG_IF(FATAL, !workload.IsSequence())
+      << "Must specify `workload` as an array. cfgidx=" << cfgidx;
+  for (const auto& node : workload) {
+    LOG_IF(FATAL, !node.IsMap()) << "Entries of `workload` must be a map, "
+                                    "specifying `rps` and `duration`. cfgidx="
+                                 << cfgidx;
+    auto rps = node["rps"].as<double>();
+    auto duration = node["duration"].as<double>();
     opt.workload.push_back({rps, duration});
   }
 
@@ -413,8 +400,50 @@ int main(int argc, char** argv) {
   FLAGS_colorlogtostderr = 1;
   google::InitGoogleLogging(argv[0]);
   google::ParseCommandLineFlags(&argc, &argv, false);
-  auto options = Options::FromGflags();
   google::InstallFailureSignalHandler();
 
-  WorkloadSender(options).Run();
+  // Parse
+  auto config = YAML::Load(std::cin);
+  LOG_IF(FATAL, !config.IsSequence())
+      << "Root of the YAML config must be an array.";
+  std::vector<Options> options_list;
+  for (size_t i = 0; i < config.size(); ++i) {
+    options_list.push_back(Options::FromYaml(i, config[i]));
+  }
+
+  // Setup IO tasks
+  boost::asio::io_context main_io_context;
+  boost::asio::io_context output_io_context;
+  std::vector<std::unique_ptr<WorkloadSender>> senders;
+  for (size_t i = 0; i < options_list.size(); ++i) {
+    senders.emplace_back(std::make_unique<WorkloadSender>(
+        &main_io_context, &output_io_context, i, options_list[i]));
+  }
+
+  // Spawn output thread
+  auto output_work = boost::asio::make_work_guard(output_io_context);
+  std::thread output_thread([&output_io_context] {
+    pthread_setname_np(pthread_self(), "OutputThread");
+    output_io_context.run();
+  });
+
+  // Event loop
+  for (;;) {
+    main_io_context.poll();
+
+    size_t cnt_done = 0;
+    for (auto& sender : senders) {
+      cnt_done += static_cast<size_t>(sender->IsDone());
+    }
+    if (cnt_done == senders.size()) {
+      break;
+    }
+  }
+
+  // Cleanup
+  senders.clear();
+  main_io_context.run();
+  output_work.reset();
+  output_io_context.run();
+  output_thread.join();
 }

@@ -4,7 +4,7 @@
   model: resnet_0
   slo: 100
   gap: const
-  workload:
+  trace:
   - {rps: 1.0, duration: 1.0}
   - {rps: 2.0, duration: 1.0}
   - {rps: 4.0, duration: 1.0}

@@ -68,7 +68,7 @@ class ExpGapGenerator : public GapGenerator {
   std::uniform_real_distribution<double> uniform_;
 };
 
-struct WorkloadPoint {
+struct TracePoint {
   double rps;
   double duration;
 };
@@ -83,7 +83,7 @@ struct Options {
   std::string imgext;
   int64_t seed;
   std::string gap;
-  std::vector<WorkloadPoint> workload;
+  std::vector<TracePoint> trace;
   std::function<std::unique_ptr<GapGenerator>(double rps)> construct_gapgen;
 
   static Options FromYaml(size_t cfgidx, const YAML::Node& config);
@@ -202,9 +202,9 @@ class WorkloadSender {
       st_time = now;
     }
 
-    wp_idx_ = 0;
+    tp_idx_ = 0;
     next_time_ = st_time;
-    wp_end_time_ = st_time;
+    tp_end_time_ = st_time;
 
     timer_.expires_at(st_time);
     timer_.async_wait([this](const boost::system::error_code& ec) {
@@ -215,11 +215,11 @@ class WorkloadSender {
   }
 
   void PostNextRequest() {
-    if (next_time_ >= wp_end_time_) {
-      if (wp_idx_ == options_.workload.size()) {
+    if (next_time_ >= tp_end_time_) {
+      if (tp_idx_ == options_.trace.size()) {
         LOG(INFO) << "[" << model_sess_id_ << "] Finished sending";
         auto cleanup_time =
-            wp_end_time_ + std::chrono::milliseconds(
+            tp_end_time_ + std::chrono::milliseconds(
                                options_.model_session.latency_sla() + 500);
         timer_.expires_at(cleanup_time);
         timer_.async_wait([this](const boost::system::error_code& ec) {
@@ -228,15 +228,14 @@ class WorkloadSender {
         });
         return;
       }
-      const auto& wp = options_.workload[wp_idx_];
-      LOG(INFO) << "[" << model_sess_id_
-                << "] Next WorkloadPoint idx=" << wp_idx_ << " rps=" << wp.rps
-                << " duration=" << wp.duration;
-      gapgen_ = options_.construct_gapgen(wp.rps);
-      next_time_ = wp_end_time_;
-      wp_end_time_ +=
-          std::chrono::nanoseconds(static_cast<long>(wp.duration * 1e9));
-      wp_idx_ += 1;
+      const auto& tp = options_.trace[tp_idx_];
+      LOG(INFO) << "[" << model_sess_id_ << "] Next TracePoint idx=" << tp_idx_
+                << " rps=" << tp.rps << " duration=" << tp.duration;
+      gapgen_ = options_.construct_gapgen(tp.rps);
+      next_time_ = tp_end_time_;
+      tp_end_time_ +=
+          std::chrono::nanoseconds(static_cast<long>(tp.duration * 1e9));
+      tp_idx_ += 1;
     }
 
     double gap = gapgen_->Next();
@@ -316,8 +315,8 @@ class WorkloadSender {
   bool done_;
   RequestProto request_proto_;
   std::unique_ptr<GapGenerator> gapgen_;
-  size_t wp_idx_;
-  TimePoint wp_end_time_;
+  size_t tp_idx_;
+  TimePoint tp_end_time_;
   TimePoint next_time_;
 
   std::shared_ptr<Message> msg_to_send_;
@@ -379,17 +378,17 @@ Options Options::FromYaml(size_t cfgidx, const YAML::Node& config) {
     opt.construct_gapgen = iter->second;
   }
 
-  // Workload
-  const auto& workload = config["workload"];
-  LOG_IF(FATAL, !workload.IsSequence())
-      << "Must specify `workload` as an array. cfgidx=" << cfgidx;
-  for (const auto& node : workload) {
-    LOG_IF(FATAL, !node.IsMap()) << "Entries of `workload` must be a map, "
+  // Trace
+  const auto& trace = config["trace"];
+  LOG_IF(FATAL, !trace.IsSequence())
+      << "Must specify `trace` as an array. cfgidx=" << cfgidx;
+  for (const auto& node : trace) {
+    LOG_IF(FATAL, !node.IsMap()) << "Entries of `trace` must be a map, "
                                     "specifying `rps` and `duration`. cfgidx="
                                  << cfgidx;
     auto rps = node["rps"].as<double>();
     auto duration = node["duration"].as<double>();
-    opt.workload.push_back({rps, duration});
+    opt.trace.push_back({rps, duration});
   }
 
   return opt;

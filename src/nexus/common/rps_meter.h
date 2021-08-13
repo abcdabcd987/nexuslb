@@ -23,6 +23,7 @@ class RpsMeter {
 
   int64_t window_span_ns_;
   int64_t earliest_time_ns_;
+  double hack_rps_;
 
   // TODO: use a circular buffer
   std::deque<size_t> counters_;

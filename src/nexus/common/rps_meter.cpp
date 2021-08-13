@@ -3,11 +3,15 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <optional>
+#include <string>
 
-DEFINE_double(hack_rpsmeter, 0, "");
+#include "nexus/common/util.h"
+
+DEFINE_string(hack_rpsmeter, "", "");
 
 namespace nexus {
 
@@ -17,13 +21,24 @@ int64_t ns(TimePoint time) {
              time.time_since_epoch())
       .count();
 }
+
+std::atomic<size_t> cnt_objects = 0;
+
 }  // namespace
 
 RpsMeter::RpsMeter(double window_span_second, size_t history_length,
                    TimePoint start_time)
     : window_span_ns_(static_cast<int64_t>(window_span_second * 1e9)),
       earliest_time_ns_(ns(start_time)),
-      counters_(history_length, 0) {}
+      counters_(history_length, 0) {
+  size_t idx = cnt_objects++;
+  std::vector<std::string> tokens;
+  SplitString(FLAGS_hack_rpsmeter, ',', &tokens);
+  LOG_IF(FATAL, idx >= tokens.size())
+      << "Not enough entries of `-hack_rpsmeter` specified.";
+  hack_rps_ = std::stod(tokens[idx]);
+  LOG(WARNING) << "RpsMeter created with hack_rps_=" << hack_rps_;
+}
 
 void RpsMeter::PopLeft(int64_t time_ns) {
   while (earliest_time_ns_ + counters_.size() * window_span_ns_ <= time_ns) {
@@ -52,8 +67,7 @@ void RpsMeter::Hit(TimePoint time) {
 
 std::optional<AvgStd> RpsMeter::Get(TimePoint now) {
   // FIXME
-  CHECK_NE(FLAGS_hack_rpsmeter, 0.0);
-  return {{FLAGS_hack_rpsmeter, 0.0}};
+  return {{hack_rps_, 0.0}};
 
   auto time_ns = ns(now);
   if (time_ns < earliest_time_ns_) {

@@ -20,8 +20,8 @@
 
 using namespace ario;
 
-constexpr size_t kRdmaBufPoolBits = __builtin_ctzl(1 << 30);
-constexpr size_t kRdmaBufBlockBits = __builtin_ctzl(128 << 10);
+constexpr size_t kRdmaBufPoolBits = __builtin_ctzl(16UL << 30);
+constexpr size_t kRdmaBufBlockBits = __builtin_ctzl(8 << 20);
 
 #pragma pack(push, 1)
 struct RpcMessage {
@@ -833,10 +833,12 @@ class IncastHandler : public ario::RdmaEventHandler {
   void BenchMore() {
     if (cnt_done_test_ == options_.warmups + options_.tests) {
       fprintf(stderr, "Benchmark done.\n");
+      bench_finish_time_ = Clock::now();
       BenchmarkDone();
       return;
     } else if (cnt_done_test_ == options_.warmups) {
       fprintf(stderr, "Start to benchmark.\n");
+      bench_start_time_ = Clock::now();
     } else if (cnt_done_test_ == 0) {
       fprintf(stderr, "Start to warmup.\n");
     }
@@ -866,12 +868,26 @@ class IncastHandler : public ario::RdmaEventHandler {
     executor_.StopEventLoop();
     ReportProgress(true);
 
+    auto elapse_ns = (bench_finish_time_ - bench_start_time_).count();
+    double elapse = elapse_ns / 1e9;
+    auto bench_packets =
+        servers_.size() * options_.tests * options_.concurrent_reads;
+    auto avg_pps = bench_packets / elapse;
+    auto avg_gbps = bench_packets * options_.read_size * 1.0 / elapse_ns * 8;
+    printf("num_servers: %lu\n", servers_.size());
+    printf("concurrent_reads per server: %lu\n", options_.concurrent_reads);
+    printf("num_packets per server: %lu\n", options_.tests);
+    printf("read_size: %lu\n", options_.read_size);
+    printf("mode: INCAST READ\n");
+    printf("avg bandwidth: %.3f Gbps\n", avg_gbps);
+    printf("avg rate: %.3f kpps\n", avg_pps / 1000);
+
     std::sort(test_elapse_ns_.begin(), test_elapse_ns_.end());
     auto pp = [this](double p) {
       size_t idx = std::floor(test_elapse_ns_.size() * p / 100.);
       double latency_us = test_elapse_ns_[idx] / 1e3;
-      double throughput_gbps = target_complete_ * options_.read_size /
-                               (test_elapse_ns_[idx] / 1e9) / 1e9;
+      double throughput_gbps = target_complete_ * options_.read_size * 1.0 /
+                               test_elapse_ns_[idx] * 8;
       printf("p%-5.2f: %4.0f us (%6.3f Gbps)\n", p, latency_us,
              throughput_gbps);
     };
@@ -921,6 +937,8 @@ class IncastHandler : public ario::RdmaEventHandler {
   size_t target_complete_;
   size_t cnt_complete_;
   TimePoint test_start_time_;
+  TimePoint bench_start_time_;
+  TimePoint bench_finish_time_;
 };
 
 void BenchIncastMain(int argc, char **argv) {

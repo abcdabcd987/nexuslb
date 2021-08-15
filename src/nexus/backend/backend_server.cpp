@@ -40,6 +40,7 @@ BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
       large_buffers_(kLargeBufferPoolBits, kLargeBufferBlockBits),
       rdma_(rdma_dev_, &executor_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
+      helper_executor_(ario::PollerType::kBlocking),
       running_(false),
       rand_gen_(rd_()) {
 #ifdef USE_GPU
@@ -67,7 +68,23 @@ BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
     sch_addr.resize(sch_colon_idx);
   }
   rdma_.ConnectTcp(sch_addr, sch_port);
-  rdma_ev_thread_ = std::thread(&ario::EpollExecutor::RunEventLoop, &executor_);
+  executor_threads_.emplace_back([this] {
+    pthread_setname_np(pthread_self(), "MainExecutor");
+    executor_.RunEventLoop();
+  });
+  if (num_workers == 0) {
+    if (cores.empty()) {
+      num_workers = 7;
+    } else {
+      num_workers = cores.size();
+    }
+  }
+  for (size_t i = 0; i < num_workers; ++i) {
+    executor_threads_.emplace_back([this] {
+      pthread_setname_np(pthread_self(), "HelperExecutor");
+      helper_executor_.RunEventLoop();
+    });
+  }
   dispatcher_conn_ = promise_dispatcher_conn_.get_future().get();
 
   // Init GPU executor
@@ -92,13 +109,6 @@ BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
   }
 
   // Init workers
-  if (num_workers == 0) {
-    if (cores.empty()) {
-      num_workers = 4;
-    } else {
-      num_workers = cores.size();
-    }
-  }
   for (size_t i = 0; i < num_workers; ++i) {
     std::unique_ptr<Worker> worker(
         new Worker(i, this, rdma_sender_, task_queue_));
@@ -128,7 +138,9 @@ void BackendServer::Run() {
             << "port " << rdma_port_;
 
   // Block forever
-  rdma_ev_thread_.join();
+  for (auto& t : executor_threads_) {
+    t.join();
+  }
 }
 
 void BackendServer::Stop() {
@@ -159,7 +171,9 @@ void BackendServer::Stop() {
   if (model_table_thread_.joinable()) {
     model_table_thread_.join();
   }
-  rdma_ev_thread_.join();
+  for (auto& t : executor_threads_) {
+    t.join();
+  }
 
   LOG(INFO) << "Backend server stopped";
 }
@@ -184,11 +198,26 @@ void BackendServer::RdmaHandler::OnRemoteMemoryRegionReceived(
 void BackendServer::RdmaHandler::OnRdmaReadComplete(
     ario::RdmaQueuePair* conn, ario::WorkRequestID wrid,
     ario::OwnedMemoryBlock buf) {
-  outer_.HandleFetchImageReply(wrid, std::move(buf));
+  // outer_.HandleFetchImageReply(wrid, std::move(buf));
+  // return;
+
+  // Use helper executor to handle messages. Prevent starving RDMA event loop.
+  auto now = Clock::now();
+  auto pbuf = std::make_shared<ario::OwnedMemoryBlock>(std::move(buf));
+  outer_.helper_executor_.PostBigCallback(
+      [this, wrid, pbuf, now = now](ario::ErrorCode) {
+        outer_.HandleFetchImageReply(wrid, std::move(*pbuf), now);
+      },
+      ario::ErrorCode::kOk);
 }
 
 void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
                                         ario::OwnedMemoryBlock buf) {
+  OnRecvInternal(conn, std::move(buf));
+}
+
+void BackendServer::RdmaHandler::OnRecvInternal(ario::RdmaQueuePair* conn,
+                                                ario::OwnedMemoryBlock buf) {
   auto view = buf.AsMessageView();
   ControlMessage req;
   bool ok = req.ParseFromArray(view.bytes(), view.bytes_length());
@@ -289,11 +318,10 @@ void BackendServer::RdmaHandler::OnError(ario::RdmaQueuePair* conn,
 }
 
 void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
-                                          ario::OwnedMemoryBlock buf) {
-  auto backend_got_image_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          Clock::now().time_since_epoch())
-          .count();
+                                          ario::OwnedMemoryBlock buf,
+                                          TimePoint got_image_time) {
+  auto backend_prep_dequeue_ns = Clock::now().time_since_epoch().count();
+  auto backend_got_image_ns = got_image_time.time_since_epoch().count();
   std::shared_ptr<Task> task;
   {
     std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
@@ -308,6 +336,12 @@ void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
   }
   auto global_id = task->query.global_id();
 
+  auto fetch_image_elapse_ns =
+      backend_got_image_ns - task->query.clock().backend_fetch_image_ns();
+  LOG_IF(WARNING, fetch_image_elapse_ns > 5 * 1000 * 1000)
+      << "Took way too long time to fetch image. "
+      << fetch_image_elapse_ns / 1000 << "us. global_id=" << global_id;
+
   // TODO: refactor preprocessing
   constexpr int kSize = 224;
   auto view = buf.AsMessageView();
@@ -320,20 +354,20 @@ void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
   cv::Mat fimg(kSize, kSize, CV_32FC3, in_arr->Data<void>());
   img.convertTo(fimg, CV_32FC3);
   task->AppendInput(in_arr);
-
-  task->query.mutable_clock()->set_backend_got_image_ns(backend_got_image_ns);
-  auto fetch_image_elapse_ns =
-      backend_got_image_ns - task->query.clock().backend_fetch_image_ns();
-  LOG_IF(WARNING, fetch_image_elapse_ns > 5 * 1000 * 1000)
-      << "Took way too long time to fetch image. "
-      << fetch_image_elapse_ns / 1000 << "us. global_id=" << global_id;
-
   // Skip the preprocessing stage
   // task->stage = Stage::kPreprocess;
   // task_queue_.push(std::move(task));
+  auto backend_preprocessed_ns = Clock::now().time_since_epoch().count();
 
   task->stage = Stage::kForward;
   MarkBatchPlanQueryPreprocessed(task);
+  auto backend_memcpy_ns = Clock::now().time_since_epoch().count();
+
+  auto* clock = task->query.mutable_clock();
+  clock->set_backend_got_image_ns(backend_got_image_ns);
+  clock->set_backend_prep_dequeue_ns(backend_prep_dequeue_ns);
+  clock->set_backend_preprocessed_ns(backend_preprocessed_ns);
+  clock->set_backend_memcpy_ns(backend_memcpy_ns);
 }
 
 void BackendServer::LoadModelEnqueue(const BackendLoadModelCommand& request) {

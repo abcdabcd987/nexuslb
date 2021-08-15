@@ -44,6 +44,7 @@ void Worker::Stop() {
 }
 
 void Worker::Run() {
+  pthread_setname_np(pthread_self(), "LegacyWorker");
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   LOG(INFO) << "Worker " << index_ << " starts";
   auto timeout = std::chrono::milliseconds(50);

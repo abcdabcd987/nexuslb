@@ -195,10 +195,13 @@ message QueryPunchClock {
   int64 backend_recv_ns = 6;
   int64 backend_fetch_image_ns = 7;
   int64 backend_got_image_ns = 8;
-  int64 backend_exec_ns = 9;
-  int64 backend_finish_ns = 10;
-  int64 backend_reply_ns = 11;
-  int64 frontend_got_reply_ns = 12;
+  int64 backend_prep_dequeue_ns = 9;
+  int64 backend_preprocessed_ns = 10;
+  int64 backend_memcpy_ns = 11;
+  int64 backend_exec_ns = 12;
+  int64 backend_finish_ns = 13;
+  int64 backend_reply_ns = 14;
+  int64 frontend_got_reply_ns = 15;
 }
 
 message BatchPlanStats {

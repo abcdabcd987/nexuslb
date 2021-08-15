@@ -279,14 +279,17 @@ class WorkloadSender {
   void OutputReply(ReplyProto reply) {
     CHECK_GE(reply.query_latency_size(), 0) << "Missing query_latency field";
     const auto& clock = reply.query_latency(0).clock();
-    printf("REPLY %lu %u %d %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld\n",
-           sender_idx_, reply.req_id(), reply.status(),
-           clock.frontend_recv_ns(), clock.frontend_dispatch_ns(),
-           clock.dispatcher_recv_ns(), clock.dispatcher_sched_ns(),
-           clock.dispatcher_dispatch_ns(), clock.backend_recv_ns(),
-           clock.backend_fetch_image_ns(), clock.backend_got_image_ns(),
-           clock.backend_exec_ns(), clock.backend_finish_ns(),
-           clock.backend_reply_ns(), clock.frontend_got_reply_ns());
+    printf(
+        "REPLY %lu %u %d %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld "
+        "%ld %ld\n",
+        sender_idx_, reply.req_id(), reply.status(), clock.frontend_recv_ns(),
+        clock.frontend_dispatch_ns(), clock.dispatcher_recv_ns(),
+        clock.dispatcher_sched_ns(), clock.dispatcher_dispatch_ns(),
+        clock.backend_recv_ns(), clock.backend_fetch_image_ns(),
+        clock.backend_got_image_ns(), clock.backend_prep_dequeue_ns(),
+        clock.backend_preprocessed_ns(), clock.backend_memcpy_ns(),
+        clock.backend_exec_ns(), clock.backend_finish_ns(),
+        clock.backend_reply_ns(), clock.frontend_got_reply_ns());
     fflush(stdout);
 
     const auto& bpstats = reply.query_latency(0).batchplan_stats();

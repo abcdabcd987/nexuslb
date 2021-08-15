@@ -79,7 +79,8 @@ class BackendServer {
 
   bool EnqueueQuery(std::shared_ptr<Task> task);
   void HandleFetchImageReply(ario::WorkRequestID wrid,
-                             ario::OwnedMemoryBlock buf);
+                             ario::OwnedMemoryBlock buf,
+                             TimePoint got_image_time);
 
   class RdmaHandler : public ario::RdmaEventHandler {
    public:
@@ -93,6 +94,8 @@ class BackendServer {
     void OnError(ario::RdmaQueuePair* conn, ario::RdmaError error) override;
 
    private:
+    void OnRecvInternal(ario::RdmaQueuePair* conn, ario::OwnedMemoryBlock buf);
+
     friend class BackendServer;
     explicit RdmaHandler(BackendServer& outer);
     BackendServer& outer_;
@@ -113,13 +116,17 @@ class BackendServer {
   ario::MemoryBlockAllocator large_buffers_;
   ario::RdmaManager rdma_;
   RdmaSender rdma_sender_;
-  std::thread rdma_ev_thread_;
   ario::RdmaQueuePair* dispatcher_conn_ = nullptr;
 
   // Ugly promises because ario doesn't have RPC
   std::promise<ario::RdmaQueuePair*> promise_dispatcher_conn_;
   std::promise<RegisterReply> promise_register_reply_;
   std::promise<RpcReply> promise_unregister_reply_;
+
+  // Helper workers that handles replies.
+  // TODO: unify with the pre-existing Worker threads
+  ario::EpollExecutor helper_executor_;
+  std::vector<std::thread> executor_threads_;
 
   /*! \brief Interval to update stats to scheduler in seconds */
   uint32_t beacon_interval_sec_;

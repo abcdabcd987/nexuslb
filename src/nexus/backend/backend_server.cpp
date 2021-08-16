@@ -28,6 +28,9 @@ DEFINE_int32(occupancy_valid, 10, "Backup backend occupancy valid time in ms");
 namespace nexus {
 namespace backend {
 
+BackendServer::ConnContext::ConnContext(ario::RdmaQueuePair* conn)
+    : conn(*CHECK_NOTNULL(conn)), cnt_flying_image_fetch(0) {}
+
 BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
                              uint16_t port, std::string sch_addr, int gpu_id,
                              size_t num_workers, std::vector<int> cores)
@@ -198,9 +201,6 @@ void BackendServer::RdmaHandler::OnRemoteMemoryRegionReceived(
 void BackendServer::RdmaHandler::OnRdmaReadComplete(
     ario::RdmaQueuePair* conn, ario::WorkRequestID wrid,
     ario::OwnedMemoryBlock buf) {
-  // outer_.HandleFetchImageReply(wrid, std::move(buf));
-  // return;
-
   // Use helper executor to handle messages. Prevent starving RDMA event loop.
   auto now = Clock::now();
   auto pbuf = std::make_shared<ario::OwnedMemoryBlock>(std::move(buf));
@@ -209,11 +209,43 @@ void BackendServer::RdmaHandler::OnRdmaReadComplete(
         outer_.HandleFetchImageReply(wrid, std::move(*pbuf), now);
       },
       ario::ErrorCode::kOk);
+
+  // Post remaining READ ops.
+  std::shared_ptr<ConnContext> frontend_connctx;
+  {
+    std::lock_guard lock(outer_.mu_connections_);
+    auto it = outer_.map_connection_nodeid_.find(conn);
+    if (it != outer_.map_connection_nodeid_.end()) {
+      auto frontend_id = it->second;
+      auto iter = outer_.node_connections_.find(frontend_id);
+      if (iter != outer_.node_connections_.end()) {
+        frontend_connctx = iter->second;
+      }
+    }
+  }
+  if (!frontend_connctx) {
+    LOG(ERROR) << "Lost connection to Frontend " << conn->peer_ip() << ":"
+               << conn->peer_tcp_port() << "."
+               << " TODO: clear pending tasks.";
+    return;
+  }
+  {
+    std::lock_guard lock(frontend_connctx->mutex);
+    --frontend_connctx->cnt_flying_image_fetch;
+  }
+  outer_.PostImageFetch(frontend_connctx);
 }
 
 void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
                                         ario::OwnedMemoryBlock buf) {
-  OnRecvInternal(conn, std::move(buf));
+  // Use helper executor to handle messages. Prevent starving RDMA event loop.
+  auto now = Clock::now();
+  auto pbuf = std::make_shared<ario::OwnedMemoryBlock>(std::move(buf));
+  outer_.helper_executor_.PostBigCallback(
+      [this, conn, pbuf](ario::ErrorCode) {
+        OnRecvInternal(conn, std::move(*pbuf));
+      },
+      ario::ErrorCode::kOk);
 }
 
 void BackendServer::RdmaHandler::OnRecvInternal(ario::RdmaQueuePair* conn,
@@ -285,7 +317,8 @@ void BackendServer::RdmaHandler::OnRecvInternal(ario::RdmaQueuePair* conn,
       const auto& msg = req.tell_node_id();
       auto node_id = NodeId(msg.node_id());
       VLOG(1) << "kConnFrontBack: frontend_id=" << node_id.t;
-      outer_.node_connections_[node_id] = conn;
+      std::lock_guard<std::mutex> lock(outer_.mu_connections_);
+      outer_.node_connections_[node_id] = std::make_shared<ConnContext>(conn);
       outer_.map_connection_nodeid_[conn] = node_id;
       break;
     }
@@ -417,8 +450,9 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
 }
 
 bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
-  ario::RdmaQueuePair* frontend_conn;
+  std::shared_ptr<ConnContext> frontend_connctx;
   {
+    std::lock_guard<std::mutex> lock(mu_connections_);
     auto frontend_id = NodeId(task->query.frontend_id());
     auto iter = node_connections_.find(frontend_id);
     if (iter == node_connections_.end()) {
@@ -431,26 +465,44 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
       // TODO: SendReply
       return false;
     }
-    frontend_conn = iter->second;
+    frontend_connctx = iter->second;
   }
-  task->SetConnection(frontend_conn);
-
-  // RDMA READ input image from Frontend
-  auto backend_fetch_image_ns =
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          Clock::now().time_since_epoch())
-          .count();
-  task->query.mutable_clock()->set_backend_fetch_image_ns(
-      backend_fetch_image_ns);
-  auto global_id = task->query.global_id();
-  auto wrid =
-      frontend_conn->AsyncRead(large_buffers_.Allocate(),
-                               task->rdma_read_offset, task->rdma_read_length);
-  {
-    std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
-    tasks_pending_fetch_image_[wrid] = task;
-  }
+  task->SetConnection(&frontend_connctx->conn);
+  frontend_connctx->pending_image_fetch_task.push_back(task);
+  PostImageFetch(frontend_connctx);
   return true;
+}
+
+void BackendServer::PostImageFetch(std::shared_ptr<ConnContext> ctx) {
+  constexpr size_t kMaxFlying = 1;
+
+  for (;;) {
+    std::shared_ptr<Task> task;
+    {
+      std::lock_guard lock(ctx->mutex);
+      if (ctx->pending_image_fetch_task.empty()) break;
+      if (ctx->cnt_flying_image_fetch == kMaxFlying) break;
+      task = ctx->pending_image_fetch_task.front();
+      ctx->pending_image_fetch_task.pop_front();
+      ++ctx->cnt_flying_image_fetch;
+    }
+
+    // RDMA READ input image from Frontend
+    auto backend_fetch_image_ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Clock::now().time_since_epoch())
+            .count();
+    task->query.mutable_clock()->set_backend_fetch_image_ns(
+        backend_fetch_image_ns);
+    auto global_id = task->query.global_id();
+    auto wrid =
+        ctx->conn.AsyncRead(large_buffers_.Allocate(), task->rdma_read_offset,
+                            task->rdma_read_length);
+    {
+      std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
+      tasks_pending_fetch_image_[wrid] = task;
+    }
+  }
 }
 
 void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,

@@ -4,6 +4,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <random>
 #include <set>
@@ -101,6 +102,19 @@ class BackendServer {
     BackendServer& outer_;
   };
 
+  struct ConnContext {
+    ario::RdmaQueuePair& conn;
+    std::mutex mutex;
+
+    size_t cnt_flying_image_fetch /* GUARDED_BY(mutex) */;
+    std::deque<std::shared_ptr<Task>>
+        pending_image_fetch_task /* GUARDED_BY(mutex) */;
+
+    ConnContext(ario::RdmaQueuePair* conn);
+  };
+
+  void PostImageFetch(std::shared_ptr<ConnContext> ctx);
+
  private:
   /*! \brief GPU device index */
   int gpu_id_;
@@ -139,7 +153,7 @@ class BackendServer {
 
   /*! \brief Connection pool. Guraded by mu_connections_. */
   std::unordered_set<ario::RdmaQueuePair*> all_connections_;
-  std::unordered_map<NodeId, ario::RdmaQueuePair*> node_connections_;
+  std::unordered_map<NodeId, std::shared_ptr<ConnContext>> node_connections_;
   std::unordered_map<ario::RdmaQueuePair*, NodeId> map_connection_nodeid_;
   /*! \brief Mutex for connections_ */
   std::mutex mu_connections_;

@@ -332,7 +332,7 @@ void RdmaQueuePair::TransitQueuePairToRTR(
   attr.path_mtu = IBV_MTU_1024;
   attr.dest_qp_num = msg.qp_num;
   attr.rq_psn = 0;
-  attr.max_dest_rd_atomic = 16;
+  attr.max_dest_rd_atomic = 1;
   attr.min_rnr_timer = 9;  // 0.24 ms
 
   if (msg.lid) {
@@ -363,7 +363,7 @@ void RdmaQueuePair::TransitQueuePairToRTS() {
   // attr.rnr_retry = 0;  // no retry
   // attr.retry_cnt = 7;  // infinite retry
   // attr.rnr_retry = 7;  // infinite retry
-  attr.max_rd_atomic = 16;
+  attr.max_rd_atomic = 1;
 
   int ret = ibv_modify_qp(qp_, &attr,
                           IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT |

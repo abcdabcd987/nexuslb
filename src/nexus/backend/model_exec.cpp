@@ -109,6 +109,7 @@ std::shared_ptr<Array> ModelExecutor::AcquireInputArray() {
 }
 
 void ModelExecutor::ReleaseInputArray(std::shared_ptr<Array> array) {
+  CHECK(array != nullptr);
   std::lock_guard lock(input_arrays_mutex_);
   CHECK(input_arrays_.count(array) > 0) << "Invalid array";
   CHECK(idle_input_arrays_.count(array) == 0) << "Already idle";
@@ -125,6 +126,7 @@ std::shared_ptr<Array> ModelExecutor::AcquirePinnedMemory() {
 }
 
 void ModelExecutor::ReleasePinnedMemory(std::shared_ptr<Array> array) {
+  CHECK(array != nullptr);
   std::lock_guard lock(input_arrays_mutex_);
   CHECK(pinned_arrays_.count(array) > 0) << "Invalid array";
   CHECK(idle_pinned_arrays_.count(array) == 0) << "Already idle";

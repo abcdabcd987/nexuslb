@@ -329,16 +329,18 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
   }
 
   auto model_sess_id = ModelSessionToString(request.model_session());
-  VLOG(1) << "HandleLoadModel: model_sess_id=" << model_sess_id;
   {
     auto it = sessions_.find(model_sess_id);
     if (it != sessions_.end()) {
       // Model already loaded. Just skip.
       reply->set_status(CtrlStatus::CTRL_OK);
       auto model_index = it->second->model_index();
-      const auto& model_worker = model_workers_[model_index];
-      reply->set_model_worker_port(model_worker->tcp_port());
       reply->set_model_index(model_index.t);
+      auto& model_worker = GetModelWorker(request.model_session());
+      reply->set_model_worker_port(model_worker.tcp_port());
+      LOG(INFO) << "Model already loaded. model_sess_id=" << model_sess_id
+                << " model_worker_port=" << reply->model_worker_port()
+                << " model_index=" << reply->model_index();
       return;
     }
   }
@@ -351,6 +353,9 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
   model_worker.AddModelSession(entrance);
   reply->set_model_worker_port(model_worker.tcp_port());
   reply->set_model_index(entrance.model_index().t);
+  LOG(INFO) << "Loaded new model. model_sess_id=" << model_sess_id
+            << " model_worker_port=" << reply->model_worker_port()
+            << " model_index=" << reply->model_index();
 
   // Add the model session
   auto sctx = std::make_shared<ModelSessionContext>(request.model_session(),

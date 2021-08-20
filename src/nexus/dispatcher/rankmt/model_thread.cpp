@@ -259,7 +259,6 @@ TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
 
   // Prepare the batchplan
   BatchPlanProto proto;
-  EnqueueQueryCommand query;
   proto.set_plan_id(cmd.plan_id.t);
   proto.set_model_index(model_index_);
   proto.set_exec_time_ns(
@@ -272,13 +271,13 @@ TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   proto.set_expected_finish_time_ns(
       duration_cast<nanoseconds>(finish_time.time_since_epoch()).count());
   for (auto& qctx : inputs) {
-    auto* query_without_input = query.mutable_query_without_input();
+    auto* query = proto.add_queries();
+    auto* query_without_input = query->mutable_query_without_input();
     query_without_input->Swap(qctx->request.mutable_query_without_input());
-    query_without_input->clear_model_index();
-    query.set_rdma_read_offset(qctx->request.rdma_read_offset());
-    query.set_rdma_read_length(qctx->request.rdma_read_length());
+    query_without_input->set_model_index(model_index_.t);
+    query->set_rdma_read_offset(qctx->request.rdma_read_offset());
+    query->set_rdma_read_length(qctx->request.rdma_read_length());
     qctx->request.Clear();
-    *proto.add_queries() = std::move(query);
   }
   VLOG(1) << "BatchPlan:  " << model_session_.model_name()
           << " id=" << cmd.plan_id.t << " backend=" << cmd.backend_id

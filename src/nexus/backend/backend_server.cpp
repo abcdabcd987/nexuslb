@@ -461,7 +461,8 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   model_table_[request.model_index()] = model;
   gpu_executor_->AddModel(model);
   LOG(INFO) << "Load model instance " << model_sess_id
-            << ", max_batch: " << config.max_batch();
+            << ", max_batch: " << config.max_batch()
+            << ", model_index: " << request.model_index();
 }
 
 bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
@@ -542,7 +543,7 @@ void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,
 
   // Acquire input array
   CHECK_GT(model_table_.size(), req.model_index());
-  auto model_executor = model_table_[req.model_index()];
+  auto model_executor = model_table_[plan->proto().model_index()];
   CHECK(model_executor != nullptr);
   plan->SetInputArray(model_executor->AcquireInputArray());
   auto pinned = model_executor->AcquirePinnedMemory();

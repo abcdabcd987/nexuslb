@@ -23,9 +23,12 @@ class BatchPlanContext {
   PlanId plan_id() const { return plan_id_; }
   std::shared_ptr<BatchTask> batch_task() const { return batch_task_; }
   BatchPlanStats& stats() { return stats_; }
+  std::shared_ptr<Array> pinned_memory() { return pinned_memory_; }
 
   void SetInputArray(std::shared_ptr<Array> input_array);
+  void SetPinnedMemory(std::shared_ptr<Array> pinned_memory);
   std::shared_ptr<Array> ReleaseInputArray();
+  std::shared_ptr<Array> ReleasePinnedMemory();
   void MarkQueryDropped(GlobalId global_id);
   void AddPreprocessedTask(std::shared_ptr<Task> task);
   bool IsReadyToRun() const;
@@ -41,6 +44,7 @@ class BatchPlanContext {
   std::unordered_set<GlobalId> dropped_queries_;
   std::vector<std::shared_ptr<Task>> preprocessed_task_;
   std::shared_ptr<Array> input_array_;
+  std::shared_ptr<Array> pinned_memory_;
   std::shared_ptr<BatchTask> batch_task_;
   bool has_populated_ = false;
   BatchPlanStats stats_;

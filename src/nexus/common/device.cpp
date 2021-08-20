@@ -26,6 +26,10 @@ CPUDevice::CPUDevice() : Device(kCPU) {
   }
 }
 
+void *CPUDevice::Allocate(size_t nbytes) { return malloc(nbytes); }
+
+void CPUDevice::Free(void *buf) { free(buf); }
+
 #ifdef USE_GPU
 
 GPUDevice::GPUDevice(int gpu_id) : Device(kGPU), gpu_id_(gpu_id) {
@@ -52,9 +56,23 @@ GPUDevice::GPUDevice(int gpu_id) : Device(kGPU), gpu_id_(gpu_id) {
     uuid_ = uuid_hex;
   }
 
+  NEXUS_CUDA_CHECK(cudaStreamCreate(&h2d_stream_));
+
   LOG(INFO) << "GPU " << gpu_id << " " << device_name_ << "(" << uuid_ << ")"
             << ": total memory " << total_memory_ / 1024. / 1024. / 1024.
             << "GB";
+}
+
+GPUDevice::~GPUDevice() { NEXUS_CUDA_CHECK(cudaStreamDestroy(h2d_stream_)); }
+
+void GPUDevice::SyncHostToDevice() {
+  NEXUS_CUDA_CHECK(cudaStreamSynchronize(h2d_stream_));
+}
+
+void GPUDevice::AsyncMemcpyHostToDevice(void *dst, const void *src,
+                                        size_t nbytes) {
+  NEXUS_CUDA_CHECK(
+      cudaMemcpyAsync(dst, src, nbytes, cudaMemcpyHostToDevice, h2d_stream_));
 }
 
 void *GPUDevice::Allocate(size_t nbytes) {

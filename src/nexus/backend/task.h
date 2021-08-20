@@ -128,6 +128,7 @@ class Task : public DeadlineItem, public std::enable_shared_from_this<Task> {
   QueryProto query;
   uint64_t rdma_read_offset = 0;
   uint64_t rdma_read_length = 0;
+  int index_in_batchplan = -1;
   /*! \brief Query result */
   QueryResultProto result;
   /*! \brief Model instance to execute for the task */

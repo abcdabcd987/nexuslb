@@ -46,7 +46,9 @@ class ModelExecutor {
   void UpdateBackupBackends(const ModelInstanceConfig& config);
 
   std::shared_ptr<Array> AcquireInputArray();
+  std::shared_ptr<Array> AcquirePinnedMemory();
   void ReleaseInputArray(std::shared_ptr<Array> array);
+  void ReleasePinnedMemory(std::shared_ptr<Array> array);
 
   bool Preprocess(std::shared_ptr<Task> task, bool force = false);
 
@@ -87,8 +89,16 @@ class ModelExecutor {
                       std::vector<std::shared_ptr<Input>>, CompareDeadlineItem>
       input_queue_;
   /*! \brief Input array allocated in GPU memory to hold batch inputs. */
-  std::unordered_set<std::shared_ptr<Array>> input_arrays_;
-  std::unordered_set<std::shared_ptr<Array>> idle_input_arrays_;
+  std::mutex input_arrays_mutex_;
+  std::unordered_set<std::shared_ptr<Array>>
+      input_arrays_ /* GUARDED_BY(input_arrays_mutex_) */;
+  std::unordered_set<std::shared_ptr<Array>>
+      idle_input_arrays_ /* GUARDED_BY(input_arrays_mutex_) */;
+  // Pinned memory for CUDA
+  std::unordered_set<std::shared_ptr<Array>>
+      pinned_arrays_ /* GUARDED_BY(input_arrays_mutex_) */;
+  std::unordered_set<std::shared_ptr<Array>>
+      idle_pinned_arrays_ /* GUARDED_BY(input_arrays_mutex_) */;
   /*! \brief Batch index. */
   std::atomic<uint64_t> batch_id_;
   /*! \brief Number of open requests. */

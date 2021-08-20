@@ -31,6 +31,8 @@ class Device {
 
   bool operator==(const Device& other) const { return name() == other.name(); }
 
+  virtual ~Device() = default;
+
  protected:
   Device(DeviceType type) : type_(type) {}
   // disable copy
@@ -43,12 +45,9 @@ class Device {
 
 class CPUDevice : public Device {
  public:
-  void* Allocate(size_t nbytes) final {
-    void* buf = malloc(nbytes);
-    return buf;
-  }
+  void* Allocate(size_t nbytes) override;
 
-  void Free(void* buf) final { free(buf); }
+  void Free(void* buf) override;
 
   std::string name() const override { return cpu_model_; }
 
@@ -69,13 +68,18 @@ class CPUDevice : public Device {
 
 class GPUDevice : public Device {
  public:
+  ~GPUDevice();
+
   int gpu_id() const { return gpu_id_; }
 
-  void* Allocate(size_t nbytes) final;
+  void* Allocate(size_t nbytes) override;
 
-  void Free(void* buf) final;
+  void Free(void* buf) override;
 
-  std::string name() const final { return name_; }
+  void SyncHostToDevice();
+  void AsyncMemcpyHostToDevice(void* dst, const void* src, size_t nbytes);
+
+  std::string name() const override { return name_; }
 
   std::string device_name() const { return device_name_; }
 
@@ -95,6 +99,7 @@ class GPUDevice : public Device {
   std::string device_name_;
   std::string uuid_;
   size_t total_memory_;
+  cudaStream_t h2d_stream_;
 };
 
 #endif

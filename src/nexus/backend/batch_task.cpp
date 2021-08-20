@@ -61,8 +61,14 @@ void BatchTask::AppendInput(std::shared_ptr<Input> input,
   auto in_arr = input->array;
   const char* src_data = in_arr->Data<char>();
   size_t nbytes = in_arr->num_elements() * type_size(input_array_->data_type());
-  Memcpy(input_write_pt_, input_array_->device(), src_data, in_arr->device(),
-         nbytes);
+
+  // TODO: schedule h2d and d2h memcpy
+  auto* dst_device = input_array_->device();
+  if (auto* gpu_device = dynamic_cast<GPUDevice*>(dst_device)) {
+    gpu_device->AsyncMemcpyHostToDevice(input_write_pt_, src_data, nbytes);
+  } else {
+    Memcpy(input_write_pt_, dst_device, src_data, in_arr->device(), nbytes);
+  }
   input_write_pt_ += nbytes;
 }
 

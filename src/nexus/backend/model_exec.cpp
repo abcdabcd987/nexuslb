@@ -64,18 +64,43 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
     auto input_array = model_->CreateInputGpuArray();
     // model_->WarmupInputArray(input_array);  // Not effective
     input_arrays_.insert(input_array);
+
+    // Allocate CUDA pinned memory
+    auto size = input_array->buffer()->nbytes();
+    void* buf = nullptr;
+#ifdef USE_GPU
+    NEXUS_CUDA_CHECK(cudaMallocHost(&buf, size));
+#else
+    buf = malloc(size);
+#endif
+    auto buffer = std::make_shared<Buffer>(buf, size, nullptr, false);
+    auto array = std::make_shared<Array>(input_array->data_type(),
+                                         input_array->num_elements(), buffer);
+    pinned_arrays_.insert(array);
   }
   LOG(INFO) << "Finish warming up input array for "
             << model_->model_session_id();
   idle_input_arrays_ = input_arrays_;
+  idle_pinned_arrays_ = pinned_arrays_;
 }
 
 ModelExecutor::~ModelExecutor() {
   MetricRegistry::Singleton().RemoveMetric(req_counter_);
   MetricRegistry::Singleton().RemoveMetric(drop_counter_);
+  for (auto& array : pinned_arrays_) {
+    void* buf = array->buffer()->data();
+#ifdef USE_GPU
+    NEXUS_CUDA_CHECK(cudaFreeHost(buf));
+#else
+    free(buf);
+#endif
+  }
+  pinned_arrays_.clear();
+  idle_pinned_arrays_.clear();
 }
 
 std::shared_ptr<Array> ModelExecutor::AcquireInputArray() {
+  std::lock_guard lock(input_arrays_mutex_);
   LOG_IF(FATAL, idle_input_arrays_.empty()) << "No more idle input arrays";
   auto iter = idle_input_arrays_.begin();
   auto ret = *iter;
@@ -84,9 +109,26 @@ std::shared_ptr<Array> ModelExecutor::AcquireInputArray() {
 }
 
 void ModelExecutor::ReleaseInputArray(std::shared_ptr<Array> array) {
+  std::lock_guard lock(input_arrays_mutex_);
   CHECK(input_arrays_.count(array) > 0) << "Invalid array";
   CHECK(idle_input_arrays_.count(array) == 0) << "Already idle";
   idle_input_arrays_.insert(std::move(array));
+}
+
+std::shared_ptr<Array> ModelExecutor::AcquirePinnedMemory() {
+  std::lock_guard lock(input_arrays_mutex_);
+  LOG_IF(FATAL, idle_pinned_arrays_.empty()) << "No more idle input arrays";
+  auto iter = idle_pinned_arrays_.begin();
+  auto ret = *iter;
+  idle_pinned_arrays_.erase(iter);
+  return ret;
+}
+
+void ModelExecutor::ReleasePinnedMemory(std::shared_ptr<Array> array) {
+  std::lock_guard lock(input_arrays_mutex_);
+  CHECK(pinned_arrays_.count(array) > 0) << "Invalid array";
+  CHECK(idle_pinned_arrays_.count(array) == 0) << "Already idle";
+  idle_pinned_arrays_.insert(std::move(array));
 }
 
 double ModelExecutor::GetRequestRate() {
@@ -240,9 +282,19 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   for (auto iter : model_->OutputShapes()) {
     output_sizes.emplace(iter.first, iter.second.NumElements(1));
   }
+  // TODO: Pinned memory for output.
+  // TODO: Schedule h2d & d2h memcpy.
   batch_task->CreateOutputArrays(output_sizes,
                                  DeviceManager::Singleton().GetCPUDevice());
+  // Make sure input has been copied to GPU
+  if (auto* gpu_device =
+          dynamic_cast<GPUDevice*>(batch_task->GetInputArray()->device())) {
+    gpu_device->SyncHostToDevice();
+  }
+
+  // Heavy work
   model_->Forward(batch_task);
+
   {
     std::lock_guard<std::mutex> lock(time_mu_);
     last_exec_finish_ = Clock::now();
@@ -266,6 +318,7 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   task_queue_.batch_push(completed_tasks);
 
   ReleaseInputArray(plan->ReleaseInputArray());
+  ReleasePinnedMemory(plan->ReleasePinnedMemory());
 
   auto backend_finish_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                Clock::now().time_since_epoch())
@@ -305,6 +358,7 @@ void ModelExecutor::DropBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   task_queue_.batch_push(completed_tasks);
 
   ReleaseInputArray(plan->ReleaseInputArray());
+  ReleasePinnedMemory(plan->ReleasePinnedMemory());
 
   auto backend_finish_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                Clock::now().time_since_epoch())

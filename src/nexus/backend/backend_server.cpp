@@ -369,6 +369,20 @@ void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
   }
   auto global_id = task->query.global_id();
 
+  CHECK(task->plan_id.has_value());
+  auto plan_id = task->plan_id.value();
+  std::shared_ptr<BatchPlanContext> plan;
+  {
+    std::lock_guard<std::mutex> lock(mu_pending_plans_);
+    auto iter = pending_plans_.find(plan_id);
+    if (iter == pending_plans_.end()) {
+      LOG(ERROR) << "Cannot find pending plan. plan_id=" << plan_id.t
+                 << ", global_id=" << task->query.global_id();
+      return;
+    }
+    plan = iter->second;
+  }
+
   auto fetch_image_elapse_ns =
       backend_got_image_ns - task->query.clock().backend_fetch_image_ns();
   LOG_IF(WARNING, fetch_image_elapse_ns > 5 * 1000 * 1000)
@@ -382,7 +396,8 @@ void BackendServer::HandleFetchImageReply(ario::WorkRequestID wrid,
   auto len = view.bytes_length() / sizeof(*beg);
   CHECK_EQ(len, kSize * kSize * 3);
   auto* cpu_device = DeviceManager::Singleton().GetCPUDevice();
-  auto in_arr = std::make_shared<Array>(DT_FLOAT, len, cpu_device);
+  auto in_arr =
+      plan->pinned_memory()->Slice(len * task->index_in_batchplan, len);
   cv::Mat img(kSize, kSize, CV_8UC3, beg);
   cv::Mat fimg(kSize, kSize, CV_32FC3, in_arr->Data<void>());
   img.convertTo(fimg, CV_32FC3);
@@ -530,11 +545,15 @@ void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,
   auto model_executor = model_table_[req.model_index()];
   CHECK(model_executor != nullptr);
   plan->SetInputArray(model_executor->AcquireInputArray());
+  auto pinned = model_executor->AcquirePinnedMemory();
+  plan->SetPinnedMemory(pinned);
 
   // Enqueue queries
   reply->set_status(CtrlStatus::CTRL_OK);
-  for (const auto& query : plan->proto().queries()) {
+  for (int i = 0; i < plan->proto().queries_size(); ++i) {
+    const auto& query = plan->proto().queries(i);
     auto task = std::make_shared<Task>(nullptr, model_executor);
+    task->index_in_batchplan = i;
     task->SetQuery(query.query_without_input(), query.rdma_read_offset(),
                    query.rdma_read_length());
     task->query.set_model_index(plan->proto().model_index());

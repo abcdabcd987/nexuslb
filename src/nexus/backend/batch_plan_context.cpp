@@ -34,14 +34,27 @@ BatchPlanContext::~BatchPlanContext() {
 }
 
 void BatchPlanContext::SetInputArray(std::shared_ptr<Array> input_array) {
+  CHECK(input_array_ == nullptr);
   input_array_ = std::move(input_array);
   batch_task_->SetInputArray(input_array_);
+}
+
+void BatchPlanContext::SetPinnedMemory(std::shared_ptr<Array> pinned_memory) {
+  CHECK(pinned_memory_ == nullptr);
+  pinned_memory_ = std::move(pinned_memory);
 }
 
 std::shared_ptr<Array> BatchPlanContext::ReleaseInputArray() {
   CHECK(input_array_ != nullptr);
   auto ret = input_array_;
   input_array_ = nullptr;
+  return ret;
+}
+
+std::shared_ptr<Array> BatchPlanContext::ReleasePinnedMemory() {
+  CHECK(pinned_memory_ != nullptr);
+  auto ret = pinned_memory_;
+  pinned_memory_ = nullptr;
   return ret;
 }
 
@@ -80,6 +93,7 @@ void BatchPlanContext::AddPreprocessedTask(std::shared_ptr<Task> task) {
   // Memory copy
   CHECK(input_array_ != nullptr) << "input_array_ was not set";
   for (auto& input : task->inputs) {
+    // TODO: instead of appending, use the index inside batchplan.
     batch_task_->AppendInput(input, task);
   }
 }

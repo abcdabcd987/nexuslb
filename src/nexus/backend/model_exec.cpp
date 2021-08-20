@@ -291,6 +291,7 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
           dynamic_cast<GPUDevice*>(batch_task->GetInputArray()->device())) {
     gpu_device->SyncHostToDevice();
   }
+  plan->stats().set_input_synced_ns(Clock::now().time_since_epoch().count());
 
   // Heavy work
   model_->Forward(batch_task);

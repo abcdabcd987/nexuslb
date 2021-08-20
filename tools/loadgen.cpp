@@ -296,13 +296,14 @@ class WorkloadSender {
     if (!bpstats.batch_size()) {
       return;
     }
-    printf("BATCH %lu %lu %u %u %ld %ld %ld %ld %ld %ld %ld %ld %d\n",
+    printf("BATCH %lu %lu %u %u %ld %ld %ld %ld %ld %ld %ld %ld %ld %d\n",
            sender_idx_, bpstats.plan_id(), bpstats.batch_size(),
            bpstats.backend_id(), bpstats.deadline_ns(),
            bpstats.expected_exec_ns(), bpstats.expected_finish_ns(),
            bpstats.dispatcher_dispatch_ns(), bpstats.backend_recv_ns(),
            bpstats.prepared_ns(), bpstats.actual_exec_ns(),
-           bpstats.actual_finish_ns(), bpstats.status());
+           bpstats.input_synced_ns(), bpstats.actual_finish_ns(),
+           bpstats.status());
     fflush(stdout);
   }
 

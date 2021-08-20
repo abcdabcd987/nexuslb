@@ -216,7 +216,8 @@ message BatchPlanStats {
   int64 backend_recv_ns = 8;
   int64 prepared_ns = 9;
   int64 actual_exec_ns = 10;
-  int64 actual_finish_ns = 11;
+  int64 input_synced_ns = 11;
+  int64 actual_finish_ns = 12;
 
-  int32 status = 12;
+  int32 status = 13;
 }

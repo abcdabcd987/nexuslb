@@ -70,10 +70,12 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
     void* buf = nullptr;
 #ifdef USE_GPU
     NEXUS_CUDA_CHECK(cudaMallocHost(&buf, size));
+    Device* device = gpu_device;
 #else
     buf = malloc(size);
+    Device* device = cpu;
 #endif
-    auto buffer = std::make_shared<Buffer>(buf, size, nullptr, false);
+    auto buffer = std::make_shared<Buffer>(buf, size, device, false);
     auto array = std::make_shared<Array>(input_array->data_type(),
                                          input_array->num_elements(), buffer);
     pinned_arrays_.insert(array);
@@ -289,10 +291,12 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   batch_task->CreateOutputArrays(output_sizes,
                                  DeviceManager::Singleton().GetCPUDevice());
   // Make sure input has been copied to GPU
+#ifdef USE_GPU
   if (auto* gpu_device =
           dynamic_cast<GPUDevice*>(batch_task->GetInputArray()->device())) {
     gpu_device->SyncHostToDevice();
   }
+#endif
   plan->stats().set_input_synced_ns(Clock::now().time_since_epoch().count());
 
   // Heavy work

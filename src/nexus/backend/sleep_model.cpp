@@ -30,7 +30,7 @@ inline void SpinSleepFor(const std::chrono::duration<Rep, Period>& duration) {
 
 template <class Rep, class Period>
 inline void SleepFor(const std::chrono::duration<Rep, Period>& duration) {
-  BlockSleepFor(duration);
+  SpinSleepFor(duration);
 }
 
 }  // namespace

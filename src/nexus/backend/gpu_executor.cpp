@@ -162,6 +162,10 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
   auto finish_time = Clock::now();
   auto elapse_us =
       duration_cast<microseconds>(finish_time - start_time).count();
+  auto expected_elapse_us =
+      (plan->proto().expected_finish_time_ns() - plan->proto().exec_time_ns()) /
+      1000;
+  auto exec_delay_us = elapse_us - expected_elapse_us;
   auto finish_time_ns = finish_time.time_since_epoch().count();
   auto finish_delay_us =
       (finish_time_ns - plan->proto().expected_finish_time_ns()) / 1000;
@@ -171,12 +175,13 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
           << ", start_delay=" << start_delay_us << "us"
           << ", elapse=" << elapse_us << "us"
           << ", finish_delay=" << finish_delay_us << "us";
-  if (finish_delay_us > 100) {
+  if (finish_delay_us > 1000) {
     LOG(WARNING) << "Huge finish delay. " << model_name
                  << ". plan_id=" << plan->proto().plan_id()
                  << ", queue_delay=" << queue_delay_us << "us"
                  << ", start_delay=" << start_delay_us << "us"
-                 << ", finish_delay=" << finish_delay_us << "us";
+                 << ", finish_delay=" << finish_delay_us << "us"
+                 << ", exec_delay=" << exec_delay_us << "us";
   }
   UpdateTimer();
   is_executing_.clear();

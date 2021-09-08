@@ -64,11 +64,16 @@ void BatchTask::AppendInput(std::shared_ptr<Input> input,
 
   // TODO: schedule h2d and d2h memcpy
   auto* dst_device = input_array_->device();
+#ifdef USE_GPU
   if (auto* gpu_device = dynamic_cast<GPUDevice*>(dst_device)) {
     gpu_device->AsyncMemcpyHostToDevice(input_write_pt_, src_data, nbytes);
   } else {
+    // TODO: Schedule async memcpy for host memory.
+    //       This memcpy has to be non-blocking.
+    //       Otherwise will incur long start_delay for a batchplan.
     Memcpy(input_write_pt_, dst_device, src_data, in_arr->device(), nbytes);
   }
+#endif
   input_write_pt_ += nbytes;
 }
 

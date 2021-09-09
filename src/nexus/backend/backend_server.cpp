@@ -484,7 +484,10 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
     frontend_connctx = iter->second;
   }
   task->SetConnection(&frontend_connctx->conn);
-  frontend_connctx->pending_image_fetch_task.push_back(task);
+  {
+    std::lock_guard lock(frontend_connctx->mutex);
+    frontend_connctx->pending_image_fetch_task.push_back(task);
+  }
   PostImageFetch(frontend_connctx);
   return true;
 }

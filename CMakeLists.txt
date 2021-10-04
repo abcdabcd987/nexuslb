@@ -189,12 +189,15 @@ target_link_libraries(backend PRIVATE backend_obj)
 
 ## backend: TensorFlow support ##
 if(USE_TENSORFLOW)
+    add_library(tensorflow_cc INTERFACE)
+    target_include_directories(tensorflow_cc INTERFACE ${LIBTF_DIR}/tensorflow/include)
+    target_include_directories(tensorflow_cc INTERFACE ${LIBTF_DIR}/protobuf/include)
+    target_link_libraries(tensorflow_cc INTERFACE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_cc.so)
+    target_link_libraries(tensorflow_cc INTERFACE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_framework.so)
+
     add_library(tensorflow_wrapper src/nexus/backend/tensorflow_wrapper.cpp)
     target_include_directories(tensorflow_wrapper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_include_directories(tensorflow_wrapper PRIVATE ${LIBTF_DIR}/tensorflow/include)
-    target_include_directories(tensorflow_wrapper PRIVATE ${LIBTF_DIR}/protobuf/include)
-    target_link_libraries(tensorflow_wrapper PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_cc.so)
-    target_link_libraries(tensorflow_wrapper PRIVATE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_framework.so)
+    target_link_libraries(tensorflow_wrapper PUBLIC tensorflow_cc)
 
     # TensorFlow is currently built with C++14. Some TensorFlow APIs expose
     # pre-adopted std types with absl. To avoid weird ABI compatibility issues,
@@ -337,6 +340,16 @@ target_link_libraries(bench_rankmt PUBLIC bench_dispatcher_obj)
 ###### tools/run_rankmt ######
 add_executable(run_rankmt tools/bench_dispatcher/run_rankmt_main.cpp)
 target_link_libraries(run_rankmt PUBLIC bench_dispatcher_obj)
+
+
+
+###### tools/test_gpu_mem_sharing ######
+if(USE_GPU AND USE_TENSORFLOW)
+    add_executable(test_gpu_mem_sharing tools/test_gpu_mem_sharing.cpp)
+    target_link_libraries(test_gpu_mem_sharing PUBLIC common)
+    target_link_libraries(test_gpu_mem_sharing PUBLIC tensorflow_wrapper)
+    target_link_libraries(test_gpu_mem_sharing PUBLIC tensorflow_cc)
+endif()
 
 
 

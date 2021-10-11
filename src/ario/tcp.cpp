@@ -4,8 +4,11 @@
 #include <netdb.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include "ario/epoll.h"
@@ -51,11 +54,13 @@ class TcpSocket::Impl {
 
   Impl(EpollExecutor &executor, int fd, std::string peer_ip,
        uint16_t peer_port);
+  void AssertConnected();
   bool DoRead();
   bool DoWrite();
   void OnReadAvailable();
   void OnWriteAvailable();
   void Shutdown();
+  void Close();
 
   EpollExecutor &executor_;
   EpollHandler epoll_handler_;
@@ -78,7 +83,16 @@ TcpSocket::Impl::Impl(EpollExecutor &executor, int fd, std::string peer_ip,
       peer_port_(peer_port),
       fd_(fd) {}
 
-TcpSocket::Impl::~Impl() { Shutdown(); }
+TcpSocket::Impl::~Impl() {
+  Shutdown();
+  Close();
+}
+
+void TcpSocket::Impl::AssertConnected() {
+  if (fd_ == -1) {
+    die("TcpSocket not connected.");
+  }
+}
 
 bool TcpSocket::Impl::DoRead() {
   auto &ctx = *read_context_;
@@ -94,7 +108,7 @@ bool TcpSocket::Impl::DoRead() {
       }
       return false;
     } else if (nbytes == 0) {
-      Shutdown();
+      Close();
       return true;
     }
     nleft -= nbytes;
@@ -120,7 +134,7 @@ bool TcpSocket::Impl::DoWrite() {
       }
       return false;
     } else if (nbytes == 0) {
-      Shutdown();
+      Close();
       return true;
     }
     nleft -= nbytes;
@@ -169,6 +183,12 @@ void TcpSocket::Impl::OnWriteAvailable() {
 
 void TcpSocket::Impl::Shutdown() {
   if (fd_ != -1) {
+    shutdown(fd_, SHUT_RDWR);
+  }
+}
+
+void TcpSocket::Impl::Close() {
+  if (fd_ != -1) {
     close(fd_);
     fd_ = -1;
   }
@@ -184,7 +204,14 @@ void TcpSocket::Impl::EpollHandler::HandleEpollEvent(uint32_t epoll_events) {
   if (epoll_events & EPOLLOUT) {
     super_.OnWriteAvailable();
   }
-  if (epoll_events & ~(EPOLLIN | EPOLLOUT)) {
+  if (epoll_events & EPOLLHUP) {
+    super_.Shutdown();
+    super_.Close();
+  }
+  if (epoll_events & EPOLLERR) {
+    super_.Close();
+  }
+  if (epoll_events & ~(EPOLLIN | EPOLLOUT | EPOLLHUP | EPOLLERR)) {
     fprintf(stderr,
             "TcpSocket::Impl::EpollHandler: Unhandled epoll event: 0x%08x\n",
             epoll_events);
@@ -210,6 +237,7 @@ bool TcpSocket::IsValid() const { return impl_.get() != nullptr; }
 void TcpSocket::AsyncRead(MutableBuffer buffer,
                           std::function<void(int err, size_t len)> &&handler) {
   std::lock_guard<std::mutex> lock(impl_->mutex_);
+  impl_->AssertConnected();
   if (impl_->read_context_.has_value())
     die("Another AsyncRead is in progress.");
   impl_->read_context_.emplace(buffer, std::move(handler));
@@ -222,6 +250,7 @@ void TcpSocket::AsyncRead(MutableBuffer buffer,
 void TcpSocket::AsyncWrite(ConstBuffer buffer,
                            std::function<void(int err, size_t len)> &&handler) {
   std::lock_guard<std::mutex> lock(impl_->mutex_);
+  impl_->AssertConnected();
   if (impl_->write_context_.has_value())
     die("Another AsyncWrite is in progress.");
   impl_->write_context_.emplace(buffer, std::move(handler));
@@ -263,6 +292,16 @@ void TcpSocket::Connect(EpollExecutor &executor, const std::string &host,
   SetNonBlocking(fd);
   impl_.reset(new TcpSocket::Impl(executor, fd, host, port));
   AddEpollWatch();
+}
+
+void TcpSocket::Shutdown() {
+  std::lock_guard<std::mutex> lock(impl_->mutex_);
+  impl_->Shutdown();
+}
+
+void TcpSocket::Close() {
+  std::lock_guard<std::mutex> lock(impl_->mutex_);
+  impl_->Close();
 }
 
 void TcpSocket::AddEpollWatch() {
@@ -343,12 +382,12 @@ void TcpAcceptor::DoAccept() {
   lock.unlock();
   char str_addr[INET_ADDRSTRLEN];
   inet_ntop(AF_INET, &client_addr.sin_addr, str_addr, sizeof(str_addr));
-  fprintf(stderr, "New TCP connection from: %s:%d\n", str_addr,
-          ntohs(client_addr.sin_port));
+  uint16_t port = ntohs(client_addr.sin_port);
+  fprintf(stderr, "New TCP connection from: %s:%u\n", str_addr, port);
 
   SetNonBlocking(client_fd);
-  auto impl = std::unique_ptr<TcpSocket::Impl>(new TcpSocket::Impl(
-      executor_, client_fd, str_addr, client_addr.sin_port));
+  auto impl = std::unique_ptr<TcpSocket::Impl>(
+      new TcpSocket::Impl(executor_, client_fd, str_addr, port));
   TcpSocket peer(std::move(impl));
   peer.AddEpollWatch();
   handler(0, std::move(peer));

@@ -1,6 +1,7 @@
 #include "ario/rdma.h"
 
 #include <cstdio>
+#include <cstring>
 #include <memory>
 
 #include "ario/utils.h"
@@ -133,7 +134,7 @@ void RdmaManager::TcpAccept() {
       die("TcpAccept AsyncAccept");
     }
 
-    AddConnection(std::move(peer));
+    AddConnection(std::move(peer), false);
     TcpAccept();
   });
 }
@@ -143,18 +144,21 @@ void RdmaManager::ConnectTcp(const std::string &host, uint16_t port) {
   tcp_socket_.Connect(executor_, host, port);
   fprintf(stderr, "TCP socket connected to %s:%d\n",
           tcp_socket_.peer_ip().c_str(), tcp_socket_.peer_port());
-  AddConnection(std::move(tcp_socket_));
+  AddConnection(std::move(tcp_socket_), true);
 }
 
-void RdmaManager::AddConnection(TcpSocket tcp) {
+void RdmaManager::AddConnection(TcpSocket tcp, bool is_initiator) {
   auto conn = new RdmaQueuePair(RdmaManagerAccessor(*this), std::move(tcp),
-                                connections_.size());
+                                connections_.size(), is_initiator);
   connections_.emplace_back(conn);
 }
 
 RdmaQueuePair::RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp,
-                             size_t index)
-    : manager_(manager), tcp_(std::move(tcp)), index_(index) {
+                             size_t index, bool is_initiator)
+    : manager_(manager),
+      tcp_(std::move(tcp)),
+      index_(index),
+      is_initiator_(is_initiator) {
   int ret;
   is_connected_ = false;
 
@@ -247,12 +251,15 @@ void RdmaQueuePair::RecvConnInfo() {
   MutableBuffer buf(msg.get(), sizeof(*msg));
   tcp_.AsyncRead(buf, [msg = std::move(msg), this](int err, size_t) {
     if (err) {
-      fprintf(stderr, "RecvConnInfo: AsyncRead err = %d\n", err);
+      fprintf(stderr, "RecvConnInfo: AsyncRead err = %d (%s), peer=%s:%u.\n",
+              err, std::strerror(err), peer_ip().c_str(), peer_tcp_port());
       die("RecvConnInfo AsyncRead callback");
     }
     if (msg->type != RdmaManagerMessage::Type::kConnInfo) {
-      fprintf(stderr, "RecvConnInfo: AsyncRead msg->type = %d\n",
-              static_cast<int>(msg->type));
+      fprintf(stderr,
+              "RecvConnInfo: AsyncRead msg->type = %d (%s), peer=%s:%u.\n",
+              static_cast<int>(msg->type), std::strerror(err),
+              peer_ip().c_str(), peer_tcp_port());
       die("RecvConnInfo AsyncRead callback");
     }
 
@@ -261,26 +268,34 @@ void RdmaQueuePair::RecvConnInfo() {
     MarkConnected();
     manager_.handler()->OnConnected(this);
     RecvMemoryRegion();
-    if (manager_.explosed_mr()) {
-      SendMemoryRegion();
-    }
+    SendMemoryRegion();
   });
 }
 
 void RdmaQueuePair::SendMemoryRegion() {
   auto msg = std::make_shared<RdmaManagerMessage>();
   msg->type = RdmaManagerMessage::Type::kMemoryRegion;
-  msg->payload.mr.addr =
-      reinterpret_cast<uint64_t>(manager_.explosed_mr()->addr);
-  msg->payload.mr.size = manager_.explosed_mr()->length;
-  msg->payload.mr.rkey = manager_.explosed_mr()->rkey;
+  const auto *mr = manager_.explosed_mr();
+  if (mr) {
+    msg->payload.mr.addr = reinterpret_cast<uint64_t>(mr->addr);
+    msg->payload.mr.size = mr->length;
+    msg->payload.mr.rkey = mr->rkey;
+  } else {
+    msg->payload.mr.addr = 0;
+    msg->payload.mr.size = 0;
+    msg->payload.mr.rkey = 0;
+  }
 
   ConstBuffer buf(msg.get(), sizeof(*msg));
-  tcp_.AsyncWrite(buf, [msg = std::move(msg)](int err, size_t) {
+  tcp_.AsyncWrite(buf, [this, msg = std::move(msg)](int err, size_t) {
     if (err) {
       fprintf(stderr, "SendMemoryRegion: AsyncWrite err = %d\n", err);
       die("SendMemoryRegion AsyncWrite callback");
     }
+
+    // Maybe replace by Promise?
+    send_memory_region_done_ = true;
+    ShutdownTcp();
   });
 }
 
@@ -290,21 +305,34 @@ void RdmaQueuePair::RecvMemoryRegion() {
   tcp_.AsyncRead(buf, [msg = std::move(msg), this](int err, size_t) {
     if (err) {
       fprintf(stderr,
-              "RecvMemoryRegion: AsyncRead err = %d. "
-              "TODO: handler client disconnect.\n",
-              err);
+              "RecvMemoryRegion: AsyncRead err = %d (%s), peer=%s:%u.\n", err,
+              std::strerror(err), peer_ip().c_str(), peer_tcp_port());
       return;
     }
     if (msg->type != RdmaManagerMessage::Type::kMemoryRegion) {
-      fprintf(stderr, "RecvMemoryRegion: AsyncRead msg->type = %d\n",
-              static_cast<int>(msg->type));
+      fprintf(stderr, "RecvMemoryRegion: AsyncRead msg->type = %d peer=%s:%u\n",
+              static_cast<int>(msg->type), peer_ip().c_str(), peer_tcp_port());
       return;
     }
 
     remote_mr_ = msg->payload.mr;
-    manager_.handler()->OnRemoteMemoryRegionReceived(this, remote_mr_.addr,
-                                                     remote_mr_.size);
+    if (remote_mr_.size) {
+      manager_.handler()->OnRemoteMemoryRegionReceived(this, remote_mr_.addr,
+                                                       remote_mr_.size);
+    }
+
+    // Maybe replace by Promise?
+    recv_memory_region_done_ = true;
+    ShutdownTcp();
   });
+}
+
+void RdmaQueuePair::ShutdownTcp() {
+  if (!recv_memory_region_done_) return;
+  if (!send_memory_region_done_) return;
+  fprintf(stderr, "Close TCP Connection to %s:%u\n", tcp_.peer_ip().c_str(),
+          tcp_.peer_port());
+  tcp_.Shutdown();
 }
 
 void RdmaQueuePair::TransitQueuePairToInit() {

@@ -126,7 +126,7 @@ class RdmaManager {
   void PollCompletionQueue();
   void HandleWorkCompletion(ibv_wc *wc);
 
-  void AddConnection(TcpSocket tcp);
+  void AddConnection(TcpSocket tcp, bool is_initiator);
   void TcpAccept();
 
   void AsyncSend(RdmaQueuePair &conn, OwnedMemoryBlock buf);
@@ -205,7 +205,8 @@ class RdmaQueuePair {
  private:
   friend class RdmaManager;
 
-  RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp, size_t index);
+  RdmaQueuePair(RdmaManagerAccessor manager, TcpSocket tcp, size_t index,
+                bool is_initiator);
   void MarkConnected();
   void SendMemoryRegions();
   void BuildQueuePair();
@@ -213,6 +214,7 @@ class RdmaQueuePair {
   void RecvConnInfo();
   void SendMemoryRegion();
   void RecvMemoryRegion();
+  void ShutdownTcp();
   void TransitQueuePairToInit();
   void TransitQueuePairToRTR(const RdmaManagerMessage::ConnInfo &msg);
   void TransitQueuePairToRTS();
@@ -222,12 +224,17 @@ class RdmaQueuePair {
   RdmaManagerAccessor manager_;
   TcpSocket tcp_;
   size_t index_;
+  bool is_initiator_;
   bool is_connected_ = false;
   ibv_qp *qp_ = nullptr;
   RemoteMemoryRegion remote_mr_{};
   uint64_t tag_ = 0;
   std::atomic<int> cnt_recv_pending_{0};
   std::atomic<int> cnt_send_pending_{0};
+
+  // For shutdown tcp. Maybe replace by Promise?
+  bool recv_memory_region_done_ = false;
+  bool send_memory_region_done_ = false;
 
   std::mutex wr_ctx_mutex_;
   CircularCompletionQueue<OwnedMemoryBlock, 16384>

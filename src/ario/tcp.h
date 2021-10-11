@@ -22,6 +22,8 @@ class TcpSocket {
                  std::function<void(int err, size_t len)> &&handler);
   void AsyncWrite(ConstBuffer buffer,
                   std::function<void(int err, size_t len)> &&handler);
+  void Shutdown();
+  void Close();
 
   const std::string &peer_ip() const;
   uint16_t peer_port() const;

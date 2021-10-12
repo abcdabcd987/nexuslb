@@ -382,5 +382,7 @@ target_link_libraries(ario_test PRIVATE ario)
 
 
 ###### examples/simple_app ######
-add_executable(simple examples/simple_app/src/frontend.cpp)
+add_executable(simple examples/simple_app/src/simple.cpp)
 target_link_libraries(simple PRIVATE nexus gflags)
+add_executable(multimodel examples/simple_app/src/multimodel.cpp)
+target_link_libraries(multimodel PRIVATE nexus gflags)

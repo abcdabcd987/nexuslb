@@ -14,7 +14,7 @@ constexpr int kQueuePairRecvBacklog = 1000;
 constexpr int kQueuePairSendSize = 1000;
 constexpr int kQueuePairRecvSize = kQueuePairRecvBacklog;
 constexpr int kCompletionQueueEntries =
-    (kQueuePairRecvSize + kQueuePairSendSize) * 50;
+    (kQueuePairRecvSize + kQueuePairSendSize) * 100;
 
 struct InternalWrid {
   uint64_t seqnum;
@@ -256,10 +256,8 @@ void RdmaQueuePair::RecvConnInfo() {
       die("RecvConnInfo AsyncRead callback");
     }
     if (msg->type != RdmaManagerMessage::Type::kConnInfo) {
-      fprintf(stderr,
-              "RecvConnInfo: AsyncRead msg->type = %d (%s), peer=%s:%u.\n",
-              static_cast<int>(msg->type), std::strerror(err),
-              peer_ip().c_str(), peer_tcp_port());
+      fprintf(stderr, "RecvConnInfo: AsyncRead msg->type = %d, peer=%s:%u.\n",
+              static_cast<int>(msg->type), peer_ip().c_str(), peer_tcp_port());
       die("RecvConnInfo AsyncRead callback");
     }
 

@@ -11,7 +11,7 @@
 #define EPOCH_INTERVAL_SEC 10
 
 constexpr int kSmallBufferBlockBits = __builtin_ctzl(8 << 10);
-constexpr int kSmallBufferPoolBits = kSmallBufferBlockBits + 14;
+constexpr int kSmallBufferPoolBits = kSmallBufferBlockBits + 18;
 constexpr int kLargeBufferBlockBits = __builtin_ctzl(256 << 10);
 constexpr int kLargeBufferPoolBits = kLargeBufferBlockBits + 12;
 static_assert((1ULL << kLargeBufferBlockBits) > 3 * 224 * 224 * sizeof(char),

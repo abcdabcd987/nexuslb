@@ -120,14 +120,16 @@ class Frontend : public ServerBase, public MessageHandler {
   ario::RdmaManager rdma_;
   RdmaSender rdma_sender_;
   ario::RdmaQueuePair* dispatcher_conn_ = nullptr;
-  uint16_t model_worker_port_ = 0;
-  ario::RdmaQueuePair* model_worker_conn_ = nullptr;
 
   // Ugly promises because ario doesn't have RPC
   std::promise<ario::RdmaQueuePair*> promise_dispatcher_conn_;
   std::promise<RegisterReply> promise_register_reply_;
   std::promise<RpcReply> promise_unregister_reply_;
+
+  // Context for connecting to Model Worker.
+  std::mutex model_worker_estabilish_mutex_;
   std::promise<LoadModelReply> promise_add_model_reply_;
+  std::atomic<uint16_t> model_worker_port_ = 0;
   std::promise<ario::RdmaQueuePair*> promise_model_worker_conn_;
 
   // Helper workers that handles replies from Dispatcher and Backend.

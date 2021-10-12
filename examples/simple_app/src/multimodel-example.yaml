@@ -1,0 +1,5 @@
+- framework: tensorflow
+  model: resnet_0
+  slo: 100
+  width: 224
+  height: 224

@@ -118,8 +118,7 @@ void Frontend::RdmaHandler::OnConnected(ario::RdmaQueuePair* conn) {
     outer_.promise_dispatcher_conn_.set_value(conn);
     return;
   }
-  if (!outer_.model_worker_conn_ &&
-      conn->peer_ip() == outer_.dispatcher_conn_->peer_ip() &&
+  if (conn->peer_ip() == outer_.dispatcher_conn_->peer_ip() &&
       conn->peer_tcp_port() == outer_.model_worker_port_) {
     outer_.promise_model_worker_conn_.set_value(conn);
     return;
@@ -346,21 +345,29 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req) {
   ControlMessage request;
   request.mutable_add_model()->CopyFrom(req);
 
+  // Use a lock to ensure there's only one connection being estabilished.
+  std::unique_lock lock(model_worker_estabilish_mutex_);
+
   // Send AddModel to Dispatcher
   rdma_sender_.SendMessage(dispatcher_conn_, request);
   auto reply = std::move(promise_add_model_reply_.get_future().get());
+  promise_add_model_reply_ = {};
   if (reply.status() != CTRL_OK) {
     LOG(ERROR) << "Load model error: " << CtrlStatus_Name(reply.status());
     return nullptr;
   }
   ModelIndex model_index(reply.model_index());
 
-  // Connect to the ModelWorker
+  // Connect to the ModelWorker.
   model_worker_port_ = reply.model_worker_port();
   LOG(INFO) << "Connecting to ModelWorker. port " << model_worker_port_;
   rdma_.ConnectTcp(dispatcher_ip_, model_worker_port_);
-  model_worker_conn_ = promise_model_worker_conn_.get_future().get();
+  auto* model_worker_conn = promise_model_worker_conn_.get_future().get();
   LOG(INFO) << "ModelWorker connected.";
+  model_worker_port_ = 0;
+  promise_model_worker_conn_ = {};
+
+  lock.unlock();
 
   // Sanity check
   auto m = GetModel(model_index);
@@ -370,7 +377,7 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req) {
   // Add to model pool
   auto model_handler = std::make_shared<ModelHandler>(
       req.model_session(), model_index, backend_pool_, node_id_,
-      model_worker_conn_, rdma_sender_, &large_buffers_);
+      model_worker_conn, rdma_sender_, &large_buffers_);
   if (model_pool_.size() <= model_index.t) {
     model_pool_.resize(model_index.t + 1);
   }

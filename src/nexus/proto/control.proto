@@ -44,9 +44,10 @@ message ControlMessage {
 }
 
 enum NodeType {
-  FRONTEND_NODE = 0;
-  BACKEND_NODE = 1;
-  DISPATCHER_NODE = 2;
+  UNKNOWN_NODE = 0;
+  FRONTEND_NODE = 1;
+  BACKEND_NODE = 2;
+  DISPATCHER_NODE = 3;
 }
 
 enum CtrlStatus {

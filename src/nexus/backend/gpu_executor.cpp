@@ -130,6 +130,7 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (models_.size() <= model_index || !models_[model_index]) {
       LOG(ERROR) << "Cannot find ModelIndex " << model_index;
+      std::lock_guard<std::mutex> lock(mutex_);
       UpdateTimer();
       return;
     }
@@ -147,6 +148,7 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
     LOG(ERROR) << "Intolerable start delay: " << start_delay_us
                << "us. Drop current batch plan_id=" << plan->plan_id();
     model->DropBatchPlan(plan);
+    std::lock_guard<std::mutex> lock(mutex_);
     UpdateTimer();
     return;
   }
@@ -183,7 +185,10 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
                  << ", finish_delay=" << finish_delay_us << "us"
                  << ", exec_delay=" << exec_delay_us << "us";
   }
-  UpdateTimer();
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    UpdateTimer();
+  }
   is_executing_.clear();
 }
 

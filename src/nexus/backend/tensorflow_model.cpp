@@ -46,6 +46,9 @@ TensorflowModel::TensorflowModel(int gpu_id, const ModelInstanceConfig& config,
   } else {
     per_process_gpu_memory_fraction = 0.0;
   }
+
+  // Force allow_growth
+  per_process_gpu_memory_fraction = 0.0;
 #else
   per_process_gpu_memory_fraction = 0.0;
   std::string visible_device_list = "";

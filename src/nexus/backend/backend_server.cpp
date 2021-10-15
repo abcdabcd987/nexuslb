@@ -442,17 +442,27 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
     return;
   }
 
+  // Hack: limit max batch
+  constexpr uint32_t kMaxBatch = 75;
+  uint32_t max_batch = request.max_batch();
+  if (max_batch > kMaxBatch) {
+    LOG(WARNING) << "Limiting max_batch. actual=" << max_batch
+                 << ", kMaxBatch=" << kMaxBatch
+                 << ", model_session=" << model_sess_id;
+    max_batch = kMaxBatch;
+  }
+
   // Temporary adaptor to use existing ModelExecutor constructor.
   ModelInstanceConfig config;
   *config.add_model_session() = request.model_session();
   config.set_batch(1);
-  config.set_max_batch(request.max_batch());
+  config.set_max_batch(max_batch);
 
   auto profile_id = ModelSessionToProfileID(request.model_session());
   auto* profile = ModelDatabase::Singleton().GetModelProfile(
       gpu_name_, gpu_uuid_, profile_id);
   if (!profile) return;
-  auto memory_usage = profile->GetMemoryUsage(request.max_batch());
+  auto memory_usage = profile->GetMemoryUsage(config.max_batch());
   config.set_memory_usage(memory_usage);
 
   // Load new model instance
@@ -461,7 +471,7 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
   model_table_[request.model_index()] = model;
   gpu_executor_->AddModel(model);
   LOG(INFO) << "Load model instance " << model_sess_id
-            << ", max_batch: " << config.max_batch()
+            << ", max_batch: " << model->model()->max_batch()
             << ", model_index: " << request.model_index();
 }
 

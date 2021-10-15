@@ -60,7 +60,7 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
   // Create multiple input arrays. When one is used by forwarding, memcpy can
   // still happen to another.
   LOG(INFO) << "Warming up input array for " << model_->model_session_id();
-  for (int i = 0; i < 10; ++i) {
+  for (int i = 0; i < 8; ++i) {
     auto input_array = model_->CreateInputGpuArray();
     // model_->WarmupInputArray(input_array);  // Not effective
     input_arrays_.insert(input_array);
@@ -302,6 +302,9 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   // Heavy work
   model_->Forward(batch_task);
 
+  ReleaseInputArray(plan->ReleaseInputArray());
+  ReleasePinnedMemory(plan->ReleasePinnedMemory());
+
   {
     std::lock_guard<std::mutex> lock(time_mu_);
     last_exec_finish_ = Clock::now();
@@ -324,9 +327,6 @@ void ModelExecutor::ExecuteBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   // task_queue_.push is expensive. So batch push here.
   task_queue_.batch_push(completed_tasks);
 
-  ReleaseInputArray(plan->ReleaseInputArray());
-  ReleasePinnedMemory(plan->ReleasePinnedMemory());
-
   auto backend_finish_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                Clock::now().time_since_epoch())
                                .count();
@@ -346,6 +346,9 @@ void ModelExecutor::DropBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   drop_counter_->Increase(dequeue_cnt);
   DecreaseOpenRequests(dequeue_cnt);
 
+  ReleaseInputArray(plan->ReleaseInputArray());
+  ReleasePinnedMemory(plan->ReleasePinnedMemory());
+
   const auto& inputs = batch_task->inputs();
   auto& tasks = batch_task->tasks();
   std::vector<std::shared_ptr<Task>> completed_tasks;
@@ -363,9 +366,6 @@ void ModelExecutor::DropBatchPlan(std::shared_ptr<BatchPlanContext> plan) {
   }
   // task_queue_.push is expensive. So batch push here.
   task_queue_.batch_push(completed_tasks);
-
-  ReleaseInputArray(plan->ReleaseInputArray());
-  ReleasePinnedMemory(plan->ReleasePinnedMemory());
 
   auto backend_finish_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                Clock::now().time_since_epoch())

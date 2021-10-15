@@ -329,17 +329,11 @@ target_include_directories(bench_dispatcher_obj PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 target_link_libraries(bench_dispatcher_obj PUBLIC dispatcher_obj)
 
-
-
-###### tools/bench_rankmt ######
-add_executable(bench_rankmt tools/bench_dispatcher/bench_rankmt_main.cpp)
-target_link_libraries(bench_rankmt PUBLIC bench_dispatcher_obj)
-
-
-
-###### tools/run_rankmt ######
 add_executable(run_rankmt tools/bench_dispatcher/run_rankmt_main.cpp)
 target_link_libraries(run_rankmt PUBLIC bench_dispatcher_obj)
+
+add_executable(stress_rankmt tools/bench_dispatcher/stress_rankmt_main.cpp)
+target_link_libraries(stress_rankmt PUBLIC bench_dispatcher_obj)
 
 
 

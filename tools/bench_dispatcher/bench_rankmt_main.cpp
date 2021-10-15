@@ -109,9 +109,7 @@ class DispatcherBencher {
     serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
     stop_time_ = serious_time_ + std::chrono::seconds(options_.duration);
 
-    loadgen_contexts_.resize(workloads_.size());
     for (size_t i = 0; i < workloads_.size(); ++i) {
-      InitLoadGen(i);
       PrepareNextRequest(i);
       auto& l = loadgen_contexts_[i];
     }
@@ -261,6 +259,7 @@ class DispatcherBencher {
     std::normal_distribution<double> normal;
     std::uniform_int_distribution<int> uniform_slo(options_.model_slo_lo,
                                                    options_.model_slo_hi);
+    loadgen_contexts_.resize(workloads_.size());
     for (int i = 0; i < options_.num_models; ++i) {
       int slope =
           options_.profile_slope * (1 + normal(gen_) * options_.profile_noise);
@@ -274,6 +273,8 @@ class DispatcherBencher {
       model.set_model_name(buf);
       model.set_latency_sla(uniform_slo(gen_));
       workloads_.push_back({std::move(model)});
+
+      InitLoadGen(i);
     }
 
     LOG(INFO) << "Workloads:";
@@ -301,12 +302,13 @@ class DispatcherBencher {
 
     for (size_t i = 0; i < workloads_.size(); ++i) {
       const auto& w = workloads_[i];
+      auto& l = loadgen_contexts_[i];
       uint32_t frontend_id = 60001 + i;
       auto frontend = std::make_shared<FakeFrontendDelegate>(
           [this](size_t cnt_done, size_t workload_idx) {
             OnRequestDone(cnt_done, workload_idx);
           },
-          frontend_id, w.model_session, i);
+          frontend_id, w.model_session, i, l.reserved_size);
       accessor_.AddFrontend(NodeId(frontend_id), frontend);
       scheduler_->AddFrontend(NodeId(frontend_id), frontend);
       frontends_.push_back(frontend);
@@ -332,7 +334,6 @@ class DispatcherBencher {
     l.model_session_id = ModelSessionToString(workload.model_session);
     l.frontend = frontends_[workload_idx].get();
     l.reserved_size = (options_.warmup + options_.duration) * 1000000;
-    l.frontend->Reserve(l.reserved_size);
     l.cnt_flying = 0;
   }
 

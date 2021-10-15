@@ -27,14 +27,14 @@ class FakeFrontendDelegate : public FrontendDelegate {
 
   FakeFrontendDelegate(
       std::function<void(size_t cnt_done, size_t workload_idx)> on_request_done,
-      uint32_t node_id, ModelSession model_session, size_t workload_idx);
+      uint32_t node_id, ModelSession model_session, size_t workload_idx,
+      size_t reserved_size);
 
   void Tick() override;
   void UpdateBackendList(BackendListUpdates&& request) override;
   void MarkQueriesDroppedByDispatcher(DispatchReply&& request) override;
 
   void ReportRequestDone(size_t cnt_done);
-  void Reserve(size_t max_queries);
   void ReceivedQuery(uint64_t query_id, int64_t frontend_recv_ns);
   void GotBatchReply(const BatchPlanProto& plan);
 
@@ -45,7 +45,7 @@ class FakeFrontendDelegate : public FrontendDelegate {
   std::function<void(size_t cnt_done, size_t workload_idx)> on_request_done_;
   ModelSession model_session_;
   size_t workload_idx_;
-  size_t reserved_size_ = 0;
+  size_t reserved_size_;
   std::unique_ptr<QueryContext[]> queries_;
 };
 

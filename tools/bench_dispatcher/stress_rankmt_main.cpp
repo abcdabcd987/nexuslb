@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -42,6 +43,7 @@ struct Options {
   int slope;
   int intercept;
   int slo;
+  double warmup;
   double duration;
   double lag;
   double rps;
@@ -73,7 +75,10 @@ class DispatcherRunner {
     SpawnThreads();
 
     TimePoint now = Clock::now();
-    begin_time_ = now + std::chrono::milliseconds(10 * options_.models);
+    begin_time_ = now;
+    begin_time_ +=
+        std::chrono::milliseconds(static_cast<long>(options_.warmup * 1e3));
+    begin_time_ += std::chrono::milliseconds(10 * options_.models);
     stop_time_ = begin_time_ + std::chrono::nanoseconds(
                                    static_cast<long>(options_.duration * 1e9));
 
@@ -114,6 +119,39 @@ class DispatcherRunner {
       iter->join();
     }
     LOG(INFO) << "All threads joined.";
+
+    size_t gaps_size = 0;
+    for (const auto& l : loadgen_contexts_) {
+      gaps_size += l.gaps.size();
+    }
+    std::vector<MicrosecondGapType> gaps;
+    gaps.reserve(gaps_size);
+    for (const auto& l : loadgen_contexts_) {
+      gaps.insert(gaps.end(), l.gaps.begin(), l.gaps.end());
+    }
+    std::sort(gaps.begin(), gaps.end());
+    auto pp = [&](double p) {
+      auto idx = static_cast<size_t>(p / 100.0 * gaps.size());
+      idx = std::min(idx, gaps.size() - 1);
+      printf("PERCENTILE %f %u\n", p, gaps[idx]);
+    };
+    pp(0);
+    pp(25);
+    pp(50);
+    pp(75);
+    pp(90);
+    pp(95);
+    pp(99);
+    pp(99.5);
+    pp(99.9);
+    pp(99.95);
+    pp(99.99);
+    pp(99.995);
+    pp(99.999);
+    pp(99.9995);
+    pp(99.9999);
+    pp(100);
+    printf("RESULT %s\n", fail_stop_ ? "FAIL" : "PASS");
 
     return fail_stop_;
   }
@@ -183,6 +221,7 @@ class DispatcherRunner {
     l.last_query_id = 0;
     l.model_session_id = ModelSessionToString(model_sessions_[workload_idx]);
     l.frontend = frontends_[workload_idx].get();
+    l.gaps.reserve(static_cast<size_t>(options_.duration * model_rps_ * 1.1));
   }
 
   void PrepareNextRequest(size_t workload_idx) {
@@ -215,10 +254,16 @@ class DispatcherRunner {
     if (error != ario::ErrorCode::kOk) return;
     if (fail_stop_) return;
     auto& l = loadgen_contexts_[workload_idx];
+
     TimePoint now = Clock::now();
-    if (now - l.next_time > tolerance_) {
-      LOG(ERROR) << "Huge lag: " << (now - l.next_time).count() / 1e3
-                 << "us. Stopping...";
+    auto gap = now - l.next_time;
+    long gap_us = gap.count() / 1000;
+    auto clipped_gap = std::numeric_limits<MicrosecondGapType>::max();
+    if (gap_us <= clipped_gap) clipped_gap = gap_us;
+    CHECK_LT(l.gaps.size(), l.gaps.capacity());
+    l.gaps.push_back(clipped_gap);
+    if (gap > tolerance_) {
+      LOG(ERROR) << "Huge lag: " << gap.count() / 1e3 << "us. Stopping...";
       fail_stop_ = true;
 
       {
@@ -228,6 +273,7 @@ class DispatcherRunner {
       stop_cv_.notify_all();
       return;
     }
+
     while (l.next_time < now && l.next_time <= stop_time_) {
       auto& entrance = request_entrances_[workload_idx];
       entrance.EnqueueQuery(std::move(l.request));
@@ -261,6 +307,8 @@ class DispatcherRunner {
     }
   }
 
+  using MicrosecondGapType = uint16_t;
+
   struct LoadGenContext {
     ario::Timer timer;
 
@@ -274,6 +322,7 @@ class DispatcherRunner {
 
     TimePoint next_time;
     DispatchRequest request;
+    std::vector<MicrosecondGapType> gaps;
   };
 
   Options options_;
@@ -311,14 +360,15 @@ DEFINE_int32(slope, 1082,
 DEFINE_int32(intercept, 5204,
              "Intercept of the latency-batch_size line in microseconds");
 DEFINE_int32(slo, 100, "Latency SLO in milliseconds");
-DEFINE_double(duration, 10, "Stress test duration in seconds");
-DEFINE_double(lag, 0.005, "Max tolerable request lag in seconds");
+DEFINE_double(warmup, 5, "Warmup period in seconds");
+DEFINE_double(duration, 15, "Stress test duration in seconds");
+DEFINE_double(lag, 0.002, "Max tolerable request lag in seconds");
 DEFINE_double(rps, 1000, "Total request rate per second");
 
 Options Options::FromGflags() {
   return {
-      FLAGS_seed, FLAGS_backends, FLAGS_models, FLAGS_slope, FLAGS_intercept,
-      FLAGS_slo,  FLAGS_duration, FLAGS_lag,    FLAGS_rps,
+      FLAGS_seed, FLAGS_backends, FLAGS_models,   FLAGS_slope, FLAGS_intercept,
+      FLAGS_slo,  FLAGS_warmup,   FLAGS_duration, FLAGS_lag,   FLAGS_rps,
   };
 }
 
@@ -331,10 +381,5 @@ int main(int argc, char** argv) {
   auto options = Options::FromGflags();
   DispatcherRunner bencher(std::move(options));
   int exitcode = bencher.Run();
-  if (exitcode == 0) {
-    LOG(INFO) << "Stress test succeeded";
-  } else {
-    LOG(INFO) << "Stress test failed";
-  }
   return exitcode;
 }

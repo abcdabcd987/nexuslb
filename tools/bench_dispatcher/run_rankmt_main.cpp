@@ -150,7 +150,9 @@ class DispatcherRunner {
     serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
     stop_time_ = serious_time_ + std::chrono::seconds(options_.duration);
 
+    loadgen_contexts_.resize(workloads_.size());
     for (size_t i = 0; i < workloads_.size(); ++i) {
+      InitLoadGen(i);
       PrepareNextRequest(i);
       auto& l = loadgen_contexts_[i];
       l.timer = ario::Timer(
@@ -285,12 +287,10 @@ class DispatcherRunner {
 
  private:
   void BuildWorkloads() {
-    loadgen_contexts_.resize(workloads_.size());
     for (size_t i = 0; i < options_.workloads.size(); ++i) {
       auto w = ParseWorkload(options_.workloads[i]);
       w.avg_rps = static_cast<int>(w.avg_rps * options_.multiplier);
       workloads_.push_back(std::move(w));
-      InitLoadGen(i);
     }
 
     LOG(INFO) << "Workloads:";
@@ -322,7 +322,7 @@ class DispatcherRunner {
       uint32_t frontend_id = 60001 + i;
       auto frontend = std::make_shared<FakeFrontendDelegate>(
           [this](size_t cnt_done, size_t workload_idx) {}, frontend_id,
-          w.model_session, i, l.reserved_size);
+          w.model_session, i, CalcReservedSize(w.avg_rps));
       accessor_.AddFrontend(NodeId(frontend_id), frontend);
       scheduler_->AddFrontend(NodeId(frontend_id), frontend);
       frontends_.push_back(frontend);
@@ -350,8 +350,13 @@ class DispatcherRunner {
     l.last_query_id = 0;
     l.model_session_id = ModelSessionToString(workload.model_session);
     l.frontend = frontends_[workload_idx].get();
-    l.reserved_size = (1.0 + std::sqrt(workload.avg_rps)) * workload.avg_rps *
-                      (options_.warmup + options_.duration) * 3;
+    l.reserved_size = CalcReservedSize(workload.avg_rps);
+  }
+
+  size_t CalcReservedSize(double rps) {
+    double sz = (1.0 + std::sqrt(rps)) * rps *
+                (options_.warmup + options_.duration) * 3;
+    return static_cast<size_t>(sz);
   }
 
   void PrepareNextRequest(size_t workload_idx) {

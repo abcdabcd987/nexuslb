@@ -5,6 +5,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
@@ -109,11 +110,7 @@ void RankThread::DoUpdateCandidate(PerModelThreadData& mdata) {
     return;
   }
 
-  auto cinfo = std::shared_ptr<CandidateInfo>(
-      new CandidateInfo{mdata, candidate.value()});
-  candidate_pool_.Upsert(mdata.model_index, cinfo);
-  CHECK_EQ(candidate_pool_.Size(), model_threads_.size());
-
+  mdata.candidate = std::move(candidate);
   SetupActivePlan(mdata);
 }
 
@@ -142,15 +139,10 @@ void RankThread::PostAddModelThread(ModelIndex model_index,
           model_threads_.resize(model_index.t + 1);
         }
 
-        model_threads_[model_index.t] =
-            std::unique_ptr<PerModelThreadData>(new PerModelThreadData{
-                m, model_index, m.profile(),
-                *CHECK_NOTNULL(m.rank_command_queue()), nullptr, false});
-
-        auto& mdata = *model_threads_[model_index.t];
-        candidate_pool_.Upsert(model_index,
-                               std::shared_ptr<CandidateInfo>(new CandidateInfo{
-                                   mdata, ExecutionCandidate::Invalid()}));
+        model_threads_[model_index.t] = std::unique_ptr<PerModelThreadData>(
+            new PerModelThreadData{m, model_index, m.profile(),
+                                   *CHECK_NOTNULL(m.rank_command_queue()),
+                                   nullptr, false, std::nullopt});
       },
       ario::ErrorCode::kOk);
 }
@@ -179,8 +171,9 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
 }
 
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
-  auto& cinfo = candidate_pool_.GetByKey(mdata.model_index);
-  uint32_t batch_size = cinfo->candidate.batch_size;
+  CHECK(mdata.candidate.has_value());
+  const auto& candidate = mdata.candidate.value();
+  uint32_t batch_size = candidate.batch_size;
   if (!batch_size) {
     mdata.active_plan = nullptr;
     return;
@@ -189,21 +182,21 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   // Build plan
   auto plan = std::make_shared<ActivePlan>(executor_);
   plan->plan_id = NextPlanId();
-  auto deadline = cinfo->candidate.deadline;
+  auto deadline = candidate.deadline;
   constexpr auto kInterThreadLatency = std::chrono::microseconds(100);
   auto frontrun_elapse = EstimateExecElapse(mdata.profile, batch_size + 1);
   auto frontrun_exec_time = deadline - frontrun_elapse - kInterThreadLatency;
-  auto earliest_exec_time = cinfo->candidate.earliest_exec_time;
+  auto earliest_exec_time = candidate.earliest_exec_time;
   plan->exec_time = std::max(earliest_exec_time, frontrun_exec_time);
   CHECK_LE(earliest_exec_time.time_since_epoch().count(),
            plan->exec_time.time_since_epoch().count());
   auto exec_elapse = EstimateExecElapse(mdata.profile, batch_size);
   auto finish_time = plan->exec_time + exec_elapse;
-  plan->mdata = &cinfo->mdata;
+  plan->mdata = &mdata;
   CHECK(finish_time <= deadline + std::chrono::nanoseconds(1))
       << "diff = " << (finish_time - deadline).count() / 1e3 << "us"
       << " earliest_exec_time-candidate.latest_exec_time = "
-      << (earliest_exec_time - cinfo->candidate.latest_exec_time).count() / 1e3
+      << (earliest_exec_time - candidate.latest_exec_time).count() / 1e3
       << "us";
 
   // Remove old plan. Timer will be cancelled by the destructor.
@@ -274,9 +267,7 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   // Also set the candidate of this model to be invalid.
   // ModelThread will give us updates on the backend and new candidates.
   UpdateBackend(bctx.get(), TimePoint::max());
-  candidate_pool_.Upsert(mdata.model_index,
-                         std::shared_ptr<CandidateInfo>(new CandidateInfo{
-                             mdata, ExecutionCandidate::Invalid()}));
+  mdata.candidate = std::nullopt;
 
   // Reject candidate updates until ModelThread picks up the granted backend.
   // Because after the backend is granted and before ModelThread picks it up,

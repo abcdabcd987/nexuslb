@@ -61,16 +61,6 @@ class RankThread {
   };
 
   struct PerModelThreadData;
-  struct CandidateInfo {
-    PerModelThreadData& mdata;
-    ExecutionCandidate candidate;
-
-    struct CompareKeyFn {
-      TimePoint operator()(const std::shared_ptr<CandidateInfo>& obj) const {
-        return obj->candidate.latest_exec_time;
-      }
-    };
-  };
 
   struct ActivePlan {
     explicit ActivePlan(ario::EpollExecutor& executor);
@@ -94,6 +84,7 @@ class RankThread {
     moodycamel::ReaderWriterQueue<RankCommand>& rank_command_queue;
     std::shared_ptr<ActivePlan> active_plan;
     bool rejecting_candidates;
+    std::optional<ExecutionCandidate> candidate;
 
     std::mutex model_msg_mutex;
     MessagesFromModelThread model_msg /* GUARDED_BY(model_msg_mutex) */;
@@ -127,9 +118,6 @@ class RankThread {
   std::unordered_map<NodeId, std::shared_ptr<BackendContext>> backends_;
   std::vector<std::unique_ptr<PerModelThreadData>> model_threads_;
 
-  ValueRankedSplayMap<ModelIndex, std::shared_ptr<CandidateInfo>,
-                      CandidateInfo::CompareKeyFn>
-      candidate_pool_;
   ValueRankedSplayMap<NodeId, TimePoint> backend_availability_pool_;
 
   std::unordered_map<PlanId, std::shared_ptr<ActivePlan>> plans_;

@@ -229,6 +229,7 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
 
 void RankThread::OnPlanTimer(PlanId plan_id) {
   using namespace std::chrono;
+  if (stop_flag_) return;
   TimePoint now = Clock::now();
   std::shared_ptr<ActivePlan> plan;
   {

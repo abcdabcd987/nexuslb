@@ -140,8 +140,8 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   unprocessed_queries_.insert(qctx);
 
   // Update schedule
-  auto earliest_exec_time = now + kDataPlaneLatency + kCtrlPlaneLatency;
-  UpdateCandidate(earliest_exec_time);
+  auto earliest_exec_at = now + kDataPlaneLatency + kCtrlPlaneLatency;
+  UpdateCandidate(earliest_exec_at);
 
   // Notify the RankThread
   rank_thread_.PostExecutionCandidate(model_index_, candidate_);
@@ -164,17 +164,17 @@ void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   }
 }
 
-void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
-  auto rps = rps_meter_.Get(earliest_exec_time);
+void ModelThread::UpdateCandidate(TimePoint earliest_exec_at) {
+  auto rps = rps_meter_.Get(earliest_exec_at);
   UpdateTargetBatchSize(rps);
-  batch_policy_.Update(earliest_exec_time, target_batch_size_);
+  batch_policy_.Update(earliest_exec_at, target_batch_size_);
 
-  TimePoint latest_exec_time;
+  TimePoint latest_exec_at;
   TimePoint deadline;
   const auto& inputs = batch_policy_.inputs();
   if (!inputs.empty()) {
     auto elapse = EstimateExecElapse(profile_, inputs.size());
-    latest_exec_time = (*inputs.begin())->deadline - elapse;
+    latest_exec_at = (*inputs.begin())->deadline - elapse;
     deadline = (*inputs.begin())->deadline;
     drop_timer_.SetTimeout(deadline);
     drop_timer_.AsyncWait(
@@ -183,14 +183,14 @@ void ModelThread::UpdateCandidate(TimePoint earliest_exec_time) {
           OnDropTimer(head);
         });
   } else {
-    latest_exec_time = TimePoint::max();
+    latest_exec_at = TimePoint::max();
     deadline = TimePoint::max();
     drop_timer_.CancelAll();
   }
 
   uint32_t batch_size = batch_policy_.inputs().size();
-  candidate_ = ExecutionCandidate{earliest_exec_time, latest_exec_time,
-                                  deadline, batch_size};
+  candidate_ = ExecutionCandidate{earliest_exec_at, latest_exec_at, deadline,
+                                  batch_size};
 
   // Send dropped queries
   if (!batch_policy_.drops().empty()) {
@@ -205,8 +205,8 @@ void ModelThread::OnDropTimer(GlobalId head) {
   }
 
   auto now = Clock::now();
-  auto earliest_exec_time = now + kDataPlaneLatency + kCtrlPlaneLatency;
-  UpdateCandidate(earliest_exec_time);
+  auto earliest_exec_at = now + kDataPlaneLatency + kCtrlPlaneLatency;
+  UpdateCandidate(earliest_exec_at);
   rank_thread_.PostExecutionCandidate(model_index_, candidate_);
 }
 
@@ -245,11 +245,10 @@ void ModelThread::SendDroppedQueries(
 TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   using namespace std::chrono;
   auto now = Clock::now();
-  auto exec_time = now + kDataPlaneLatency + kCtrlPlaneLatency;
-  CHECK(exec_time >= cmd.next_available_time)
-      << "diff=" << (cmd.next_available_time - exec_time).count() * 1e-3
-      << "us";
-  UpdateCandidate(exec_time);
+  auto exec_at = now + kDataPlaneLatency + kCtrlPlaneLatency;
+  CHECK(exec_at >= cmd.free_at)
+      << "diff=" << (cmd.free_at - exec_at).count() * 1e-3 << "us";
+  UpdateCandidate(exec_at);
   auto inputs = batch_policy_.PopInputs();
 
   // Early return when batch_size=0
@@ -262,14 +261,14 @@ TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   proto.set_plan_id(cmd.plan_id.t);
   proto.set_model_index(model_index_);
   proto.set_exec_time_ns(
-      duration_cast<nanoseconds>(exec_time.time_since_epoch()).count());
+      duration_cast<nanoseconds>(exec_at.time_since_epoch()).count());
   proto.set_deadline_ns(
       duration_cast<nanoseconds>(candidate_.deadline.time_since_epoch())
           .count());
   auto exec_elapse = EstimateExecElapse(profile_, candidate_.batch_size);
-  auto finish_time = exec_time + exec_elapse;
+  auto finish_at = exec_at + exec_elapse;
   proto.set_expected_finish_time_ns(
-      duration_cast<nanoseconds>(finish_time.time_since_epoch()).count());
+      duration_cast<nanoseconds>(finish_at.time_since_epoch()).count());
   for (auto& qctx : inputs) {
     auto* query = proto.add_queries();
     auto* query_without_input = query->mutable_query_without_input();
@@ -297,8 +296,8 @@ TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   delegate->EnqueueBatchPlan(std::move(proto));
 
   // Update candidate
-  UpdateCandidate(exec_time);
-  return finish_time;
+  UpdateCandidate(exec_at);
+  return finish_at;
 }
 
 void ModelThread::Poll() {
@@ -310,11 +309,11 @@ void ModelThread::Poll() {
   }
   if (rank_msg.granted_backend.has_value()) {
     auto& msg = rank_msg.granted_backend.value();
-    auto finish_time = DoGrantedBackendMessage(msg);
+    auto finish_at = DoGrantedBackendMessage(msg);
 
     // Update RankThread
     rank_command_queue_.enqueue(
-        UpdateBackendCommand{msg.backend_id, finish_time});
+        UpdateBackendCommand{msg.backend_id, finish_at});
     rank_thread_.PostResumeCandidateUpdate(model_index_);
     rank_thread_.PostExecutionCandidate(model_index_, candidate_);
   }

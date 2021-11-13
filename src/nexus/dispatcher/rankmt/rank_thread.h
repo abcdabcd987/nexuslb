@@ -66,7 +66,7 @@ class RankThread {
     explicit ActivePlan(ario::EpollExecutor& executor);
 
     PlanId plan_id;
-    TimePoint exec_time;
+    TimePoint exec_at;
     PerModelThreadData* mdata;
 
     ario::Timer send_timer;
@@ -96,7 +96,7 @@ class RankThread {
 
     NodeId backend_id;
     std::shared_ptr<BackendDelegate> delegate;
-    TimePoint next_available_time;
+    TimePoint free_at;
   };
 
   // Handlers for commands from model threads
@@ -107,7 +107,7 @@ class RankThread {
   PlanId NextPlanId();
   void SetupActivePlan(PerModelThreadData& mdata);
   void OnPlanTimer(PlanId plan_id);
-  void UpdateBackend(BackendContext* bctx, TimePoint next_available_time);
+  void UpdateBackend(BackendContext* bctx, TimePoint free_at);
 
   void Poll();
 

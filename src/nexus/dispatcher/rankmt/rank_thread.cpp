@@ -23,7 +23,7 @@ RankThread::BackendContext::BackendContext(
     NodeId backend_id, std::shared_ptr<BackendDelegate> delegate)
     : backend_id(backend_id),
       delegate(std::move(delegate)),
-      next_available_time(std::chrono::nanoseconds(0)) {}
+      free_at(std::chrono::nanoseconds(0)) {}
 
 RankThread::RankThread(ario::EpollExecutor* executor)
     : executor_(*CHECK_NOTNULL(executor)), stop_flag_(false), poller_(this) {
@@ -116,7 +116,7 @@ void RankThread::DoUpdateCandidate(PerModelThreadData& mdata) {
 
 void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
   auto& bctx = backends_.at(cmd.backend_id);
-  UpdateBackend(bctx.get(), cmd.next_available_time);
+  UpdateBackend(bctx.get(), cmd.free_at);
 }
 
 void RankThread::PostAddModelThread(ModelIndex model_index,
@@ -156,8 +156,7 @@ void RankThread::PostAddBackend(NodeId backend_id,
           LOG(ERROR) << "Backend already exists. backend_id=" << backend_id;
           return;
         }
-        backend_availability_pool_.Upsert(backend_id,
-                                          bctx->next_available_time);
+        backend_availability_pool_.Upsert(backend_id, bctx->free_at);
         backends_[backend_id] = std::move(bctx);
       },
       ario::ErrorCode::kOk);
@@ -185,19 +184,18 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   auto deadline = candidate.deadline;
   constexpr auto kInterThreadLatency = std::chrono::microseconds(100);
   auto frontrun_elapse = EstimateExecElapse(mdata.profile, batch_size + 1);
-  auto frontrun_exec_time = deadline - frontrun_elapse - kInterThreadLatency;
-  auto earliest_exec_time = candidate.earliest_exec_time;
-  plan->exec_time = std::max(earliest_exec_time, frontrun_exec_time);
-  CHECK_LE(earliest_exec_time.time_since_epoch().count(),
-           plan->exec_time.time_since_epoch().count());
+  auto frontrun_exec_at = deadline - frontrun_elapse - kInterThreadLatency;
+  auto earliest_exec_at = candidate.earliest_exec_at;
+  plan->exec_at = std::max(earliest_exec_at, frontrun_exec_at);
+  CHECK_LE(earliest_exec_at.time_since_epoch().count(),
+           plan->exec_at.time_since_epoch().count());
   auto exec_elapse = EstimateExecElapse(mdata.profile, batch_size);
-  auto finish_time = plan->exec_time + exec_elapse;
+  auto finish_at = plan->exec_at + exec_elapse;
   plan->mdata = &mdata;
-  CHECK(finish_time <= deadline + std::chrono::nanoseconds(1))
-      << "diff = " << (finish_time - deadline).count() / 1e3 << "us"
-      << " earliest_exec_time-candidate.latest_exec_time = "
-      << (earliest_exec_time - candidate.latest_exec_time).count() / 1e3
-      << "us";
+  CHECK(finish_at <= deadline + std::chrono::nanoseconds(1))
+      << "diff = " << (finish_at - deadline).count() / 1e3 << "us"
+      << " earliest_exec_at-candidate.latest_exec_at = "
+      << (earliest_exec_at - candidate.latest_exec_at).count() / 1e3 << "us";
 
   // Remove old plan. Timer will be cancelled by the destructor.
   if (mdata.active_plan) {
@@ -210,9 +208,9 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   plans_[plan->plan_id] = plan;
 
   // Setup timer
-  auto send_time = plan->exec_time - kCtrlPlaneLatency - kDataPlaneLatency;
+  auto send_at = plan->exec_at - kCtrlPlaneLatency - kDataPlaneLatency;
   auto now = Clock::now();
-  plan->send_timer.SetTimeout(std::max(send_time, now));
+  plan->send_timer.SetTimeout(std::max(send_at, now));
   plan->send_timer.AsyncWait(
       [this, plan_id = plan->plan_id](ario::ErrorCode error) {
         if (error == ario::ErrorCode::kCancelled) return;
@@ -250,7 +248,7 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   }
   auto backend_id = backend_availability_pool_.GetByRank(0).key.get();
   auto& bctx = backends_.at(backend_id);
-  if (bctx->next_available_time > plan->exec_time) {
+  if (bctx->free_at > plan->exec_at) {
     return;
   }
 
@@ -258,7 +256,7 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   GrantedBackendMessage msg;
   msg.backend_id = backend_id;
   msg.plan_id = plan->plan_id;
-  msg.next_available_time = bctx->next_available_time;
+  msg.free_at = bctx->free_at;
   mdata.model_thread.PostGrantedBackend(msg);
   VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
           << " id=" << plan->plan_id.t << " backend=" << backend_id;
@@ -275,10 +273,9 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   mdata.rejecting_candidates = true;
 }
 
-void RankThread::UpdateBackend(BackendContext* bctx,
-                               TimePoint next_available_time) {
-  bctx->next_available_time = next_available_time;
-  backend_availability_pool_.Upsert(bctx->backend_id, next_available_time);
+void RankThread::UpdateBackend(BackendContext* bctx, TimePoint free_at) {
+  bctx->free_at = free_at;
+  backend_availability_pool_.Upsert(bctx->backend_id, free_at);
 }
 
 void RankThread::Poll() {

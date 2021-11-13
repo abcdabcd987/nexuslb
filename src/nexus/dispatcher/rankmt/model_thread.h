@@ -85,7 +85,7 @@ class ModelThread {
   TimePoint DoGrantedBackendMessage(GrantedBackendMessage& cmd);
 
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
-  void UpdateCandidate(TimePoint earliest_exec_time);
+  void UpdateCandidate(TimePoint earliest_exec_at);
   void OnDropTimer(GlobalId head);
   void SendDroppedQueries(
       const std::vector<std::shared_ptr<QueryContext>>& drops);

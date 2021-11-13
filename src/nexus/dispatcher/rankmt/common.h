@@ -22,8 +22,8 @@ std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
                                             uint32_t batch_size);
 
 struct ExecutionCandidate {
-  TimePoint earliest_exec_time;
-  TimePoint latest_exec_time;
+  TimePoint earliest_exec_at;
+  TimePoint latest_exec_at;
   TimePoint deadline;
   uint32_t batch_size;
 
@@ -36,13 +36,13 @@ struct ExecutionCandidate {
 struct GrantedBackendMessage {
   NodeId backend_id;
   PlanId plan_id;
-  TimePoint next_available_time;
+  TimePoint free_at;
 };
 
 // ModelThread -> RankThread
 struct UpdateBackendCommand {
   NodeId backend_id;
-  TimePoint next_available_time;
+  TimePoint free_at;
 };
 
 using RankCommand = std::variant<UpdateBackendCommand>;

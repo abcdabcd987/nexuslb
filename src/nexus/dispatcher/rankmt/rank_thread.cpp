@@ -16,9 +16,6 @@ namespace nexus {
 namespace dispatcher {
 namespace rankmt {
 
-RankThread::ActivePlan::ActivePlan(ario::EpollExecutor& executor)
-    : send_timer(executor) {}
-
 RankThread::BackendContext::BackendContext(
     NodeId backend_id, std::shared_ptr<BackendDelegate> delegate)
     : backend_id(backend_id),
@@ -46,7 +43,6 @@ void RankThread::Stop(std::mutex& mutex, size_t& cnt,
   executor_.PostBigCallback(
       [this, &mutex, &cnt, &cv](ario::ErrorCode) {
         stop_flag_ = true;
-        plans_.clear();
         backends_.clear();
         {
           std::lock_guard lock(mutex);
@@ -139,10 +135,11 @@ void RankThread::PostAddModelThread(ModelIndex model_index,
           model_threads_.resize(model_index.t + 1);
         }
 
-        model_threads_[model_index.t] = std::unique_ptr<PerModelThreadData>(
-            new PerModelThreadData{m, model_index, m.profile(),
-                                   *CHECK_NOTNULL(m.rank_command_queue()),
-                                   nullptr, false, std::nullopt});
+        model_threads_[model_index.t] =
+            std::unique_ptr<PerModelThreadData>(new PerModelThreadData{
+                m, model_index, m.profile(),
+                *CHECK_NOTNULL(m.rank_command_queue()), ario::Timer(executor_),
+                false, std::nullopt});
       },
       ario::ErrorCode::kOk);
 }
@@ -170,76 +167,29 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
 }
 
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
+  constexpr auto kInterThreadLatency = std::chrono::microseconds(100);
   CHECK(mdata.candidate.has_value());
   const auto& candidate = mdata.candidate.value();
-  uint32_t batch_size = candidate.batch_size;
-  if (!batch_size) {
-    mdata.active_plan = nullptr;
-    return;
-  }
 
-  // Build plan
-  auto plan = std::make_shared<ActivePlan>(executor_);
-  plan->plan_id = NextPlanId();
-  auto deadline = candidate.deadline;
-  constexpr auto kInterThreadLatency = std::chrono::microseconds(100);
-  auto frontrun_elapse = EstimateExecElapse(mdata.profile, batch_size + 1);
-  auto frontrun_exec_at = deadline - frontrun_elapse - kInterThreadLatency;
-  auto earliest_exec_at = candidate.earliest_exec_at;
-  plan->exec_at = std::max(earliest_exec_at, frontrun_exec_at);
-  CHECK_LE(earliest_exec_at.time_since_epoch().count(),
-           plan->exec_at.time_since_epoch().count());
-  auto exec_elapse = EstimateExecElapse(mdata.profile, batch_size);
-  auto finish_at = plan->exec_at + exec_elapse;
-  plan->mdata = &mdata;
-  CHECK(finish_at <= deadline + std::chrono::nanoseconds(1))
-      << "diff = " << (finish_at - deadline).count() / 1e3 << "us"
-      << " earliest_exec_at-candidate.latest_exec_at = "
-      << (earliest_exec_at - candidate.latest_exec_at).count() / 1e3 << "us";
-
-  // Remove old plan. Timer will be cancelled by the destructor.
-  if (mdata.active_plan) {
-    plans_.erase(mdata.active_plan->plan_id);
-    CHECK_EQ(mdata.active_plan.use_count(), 1);
-  }
-
-  // Update bookkeeping
-  mdata.active_plan = plan;
-  plans_[plan->plan_id] = plan;
-
-  // Setup timer
-  auto send_at = plan->exec_at - kCtrlPlaneLatency - kDataPlaneLatency;
   auto now = Clock::now();
-  plan->send_timer.SetTimeout(std::max(send_at, now));
-  plan->send_timer.AsyncWait(
-      [this, plan_id = plan->plan_id](ario::ErrorCode error) {
-        if (error == ario::ErrorCode::kCancelled) return;
-        OnPlanTimer(plan_id);
-      });
+  auto send_at = candidate.exec_at - kCtrlPlaneLatency - kDataPlaneLatency -
+                 kInterThreadLatency;
+  mdata.send_timer.SetTimeout(std::max(send_at, now));
+  mdata.send_timer.AsyncWait([this, pmdata = &mdata](ario::ErrorCode error) {
+    if (error == ario::ErrorCode::kCancelled) return;
+    OnPlanTimer(*pmdata);
+  });
 }
 
-void RankThread::OnPlanTimer(PlanId plan_id) {
+void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
   using namespace std::chrono;
   if (stop_flag_) return;
   TimePoint now = Clock::now();
-  std::shared_ptr<ActivePlan> plan;
-  {
-    auto iter = plans_.find(plan_id);
-    if (iter == plans_.end()) {
-      // Cancelled plan. Do nothing.
-      return;
-    }
-    plan = iter->second;
-    plans_.erase(iter);
-  }
-  auto timer_delay = now - plan->send_timer.timeout();
+  auto timer_delay = now - mdata.send_timer.timeout();
   if (timer_delay > microseconds(100)) {
     auto us = duration_cast<microseconds>(timer_delay).count();
     LOG(WARNING) << "OnPlanTimer: huge timer delay: " << us << " us";
   }
-  auto& mdata = *plan->mdata;
-  CHECK_EQ(mdata.active_plan, plan);
-  mdata.active_plan = nullptr;
 
   // Try to assign backend if possible
   CHECK_EQ(backend_availability_pool_.Size(), backends_.size());
@@ -248,18 +198,18 @@ void RankThread::OnPlanTimer(PlanId plan_id) {
   }
   auto backend_id = backend_availability_pool_.GetByRank(0).key.get();
   auto& bctx = backends_.at(backend_id);
-  if (bctx->free_at > plan->exec_at) {
+  if (bctx->free_at > mdata.candidate->exec_at) {
     return;
   }
 
   // Let ModelThread send out the plan
   GrantedBackendMessage msg;
   msg.backend_id = backend_id;
-  msg.plan_id = plan->plan_id;
-  msg.free_at = bctx->free_at;
+  msg.plan_id = NextPlanId();
+  msg._debug_free_at = bctx->free_at;
   mdata.model_thread.PostGrantedBackend(msg);
   VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
-          << " id=" << plan->plan_id.t << " backend=" << backend_id;
+          << " id=" << msg.plan_id.t << " backend=" << backend_id;
 
   // Mark backend unavailable.
   // Also set the candidate of this model to be invalid.

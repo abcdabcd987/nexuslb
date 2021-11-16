@@ -62,16 +62,6 @@ class RankThread {
 
   struct PerModelThreadData;
 
-  struct ActivePlan {
-    explicit ActivePlan(ario::EpollExecutor& executor);
-
-    PlanId plan_id;
-    TimePoint exec_at;
-    PerModelThreadData* mdata;
-
-    ario::Timer send_timer;
-  };
-
   struct MessagesFromModelThread {
     std::optional<ExecutionCandidate> new_candidate;
     bool resume_candidate_update;
@@ -82,7 +72,7 @@ class RankThread {
     ModelIndex model_index;
     const ModelProfile& profile;
     moodycamel::ReaderWriterQueue<RankCommand>& rank_command_queue;
-    std::shared_ptr<ActivePlan> active_plan;
+    ario::Timer send_timer;
     bool rejecting_candidates;
     std::optional<ExecutionCandidate> candidate;
 
@@ -106,7 +96,7 @@ class RankThread {
 
   PlanId NextPlanId();
   void SetupActivePlan(PerModelThreadData& mdata);
-  void OnPlanTimer(PlanId plan_id);
+  void OnPlanTimer(PerModelThreadData& mdata);
   void UpdateBackend(BackendContext* bctx, TimePoint free_at);
 
   void Poll();
@@ -119,8 +109,6 @@ class RankThread {
   std::vector<std::unique_ptr<PerModelThreadData>> model_threads_;
 
   ValueRankedSplayMap<NodeId, TimePoint> backend_availability_pool_;
-
-  std::unordered_map<PlanId, std::shared_ptr<ActivePlan>> plans_;
 };
 
 }  // namespace rankmt

@@ -22,21 +22,16 @@ std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
                                             uint32_t batch_size);
 
 struct ExecutionCandidate {
-  TimePoint earliest_exec_at;
-  TimePoint latest_exec_at;
-  TimePoint deadline;
-  uint32_t batch_size;
+  TimePoint exec_at;
 
-  static ExecutionCandidate Invalid() {
-    return {TimePoint::max(), TimePoint::max(), TimePoint::max(), 0};
-  }
+  static ExecutionCandidate Invalid() { return {TimePoint::max()}; }
 };
 
 // RankThread -> ModelThread
 struct GrantedBackendMessage {
   NodeId backend_id;
   PlanId plan_id;
-  TimePoint free_at;
+  TimePoint _debug_free_at;
 };
 
 // ModelThread -> RankThread

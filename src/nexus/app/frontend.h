@@ -68,10 +68,6 @@ class Frontend : public ServerBase, public MessageHandler {
  protected:
   std::shared_ptr<ModelHandler> LoadModel(LoadModelRequest req);
 
-  void ComplexQuerySetup(const ComplexQuerySetupRequest& req);
-
-  void ComplexQueryAddEdge(const ComplexQueryAddEdgeRequest& req);
-
  private:
   void Register();
 
@@ -79,10 +75,6 @@ class Frontend : public ServerBase, public MessageHandler {
 
   void RegisterUser(std::shared_ptr<UserSession> user_sess,
                     const RequestProto& request, ReplyProto* reply);
-
-  void Daemon();
-
-  void ReportWorkload(const WorkloadStatsProto& request);
 
   // ControlMessage handlers
   void UpdateBackendList(const BackendListUpdates& request);
@@ -161,7 +153,6 @@ class Frontend : public ServerBase, public MessageHandler {
   std::mutex connecting_backends_mutex_;
   std::unordered_map<std::string, BackendInfo> connecting_backends_;
 
-  std::thread daemon_thread_;
   /*! \brief Mutex for connection_pool_ and user_sessions_ */
   std::mutex user_mutex_;
 

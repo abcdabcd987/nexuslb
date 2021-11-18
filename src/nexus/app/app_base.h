@@ -20,14 +20,6 @@ class AppBase : public Frontend {
 
   virtual void Setup() {}
 
-  bool IsComplexQuery() const;
-
-  void ComplexQuerySetup(const std::string& cq_name, uint32_t slo_us,
-                         uint32_t step_us);
-
-  void ComplexQueryAddEdge(const std::shared_ptr<ModelHandler>& source,
-                           const std::shared_ptr<ModelHandler>& target);
-
  protected:
   std::shared_ptr<ModelHandler> GetModelHandler(
       const std::string& framework, const std::string& model_name,
@@ -35,10 +27,6 @@ class AppBase : public Frontend {
       std::vector<uint32_t> image_size = {});
   size_t nthreads_;
   QueryProcessor* qp_;
-
-  std::string cq_id_;
-  uint32_t slo_us_;
-  uint32_t step_us_;
 };
 
 void LaunchApp(AppBase* app);

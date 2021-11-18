@@ -171,36 +171,9 @@ message ModelStatsProto {
   repeated uint64 num_requests = 2;
 }
 
-message WorkloadStatsProto {
-  uint32 node_id = 1;
-  repeated ModelStatsProto model_stats = 2;
-}
-
 message KeepAliveRequest {
   NodeType node_type = 1;
   uint32 node_id = 2;
-}
-
-message UtilizationRequest {
-  uint32 node_id = 1;
-}
-
-message UtilizationReply {
-  uint32 node_id = 1;
-  double utilization = 2;
-  int32 valid_ms = 3;
-}
-
-message ComplexQuerySetupRequest {
-  string cq_id = 1;
-  uint32 slo_us = 2;
-  uint32 step_us = 3;
-}
-
-message ComplexQueryAddEdgeRequest {
-  string cq_id = 1;
-  ModelSession source = 2;
-  ModelSession target = 3;
 }
 
 message DispatchRequest {

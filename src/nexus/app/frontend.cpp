@@ -74,7 +74,6 @@ void Frontend::Run(QueryProcessor* qp, size_t nthreads) {
   }
 
   running_ = true;
-  daemon_thread_ = std::thread(&Frontend::Daemon, this);
   LOG(INFO) << "Frontend server (id: " << node_id_ << ") is listening on "
             << address();
   io_context_.run();
@@ -107,7 +106,6 @@ void Frontend::Stop() {
   for (auto& t : executor_threads_) {
     t.join();
   }
-  daemon_thread_.join();
   LOG(INFO) << "Frontend server stopped";
 }
 
@@ -386,15 +384,6 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(LoadModelRequest req) {
   return model_handler;
 }
 
-void Frontend::ComplexQuerySetup(const nexus::ComplexQuerySetupRequest& req) {
-  LOG(FATAL) << "Frontend::ComplexQuerySetup not supported.";
-}
-
-void Frontend::ComplexQueryAddEdge(
-    const nexus::ComplexQueryAddEdgeRequest& req) {
-  LOG(FATAL) << "Frontend::ComplexQueryAddEdge not supported.";
-}
-
 void Frontend::Register() {
   // Init node id
   std::uniform_int_distribution<uint32_t> dis(
@@ -472,32 +461,6 @@ void Frontend::RegisterUser(std::shared_ptr<UserSession> user_sess,
   }
   reply->set_user_id(uid);
   reply->set_status(CTRL_OK);
-}
-
-void Frontend::Daemon() {
-  while (running_) {
-    auto next_time = Clock::now() + std::chrono::seconds(beacon_interval_sec_);
-    WorkloadStatsProto workload_stats;
-    workload_stats.set_node_id(node_id_);
-    for (const auto& m : model_pool_) {
-      if (!m) {
-        continue;
-      }
-      auto history = m->counter()->GetHistory();
-      auto model_stats = workload_stats.add_model_stats();
-      model_stats->set_model_session_id(m->model_session_id());
-      for (auto nreq : history) {
-        model_stats->add_num_requests(nreq);
-      }
-    }
-    ReportWorkload(workload_stats);
-    std::this_thread::sleep_until(next_time);
-  }
-}
-
-void Frontend::ReportWorkload(const WorkloadStatsProto& request) {
-  // Skip.
-  return;
 }
 
 }  // namespace app

@@ -24,11 +24,13 @@ DEFINE_uint32(port, BACKEND_DEFAULT_PORT,
 DEFINE_string(sch_addr, "127.0.0.1",
               "scheduler IP address "
               "(use default port 10001 if no port specified)");
-DEFINE_int32(gpu, 0, "gpu device ID (default: 0)");
+DEFINE_string(gpu, "0",
+              "List of CUDA device index. Separated by comma."
+              "Use -1 for fake  GPU. (default: \"0\")");
 DEFINE_uint64(num_workers, 0, "number of workers (default: 0)");
 DEFINE_string(cores, "", "Specify cores to use, e.g., \"0-4\", or \"0-3,5\"");
 
-std::vector<int> ParseCores(std::string s) {
+std::vector<int> ParseCores(const std::string& s) {
   std::vector<int> cores;
   std::vector<std::string> segs;
   SplitString(s, ',', &segs);
@@ -49,7 +51,17 @@ std::vector<int> ParseCores(std::string s) {
   return cores;
 }
 
-BackendServer *server_ptr;
+std::vector<int> ParseGpu(const std::string& s) {
+  std::vector<int> ret;
+  std::vector<std::string> segs;
+  SplitString(s, ',', &segs);
+  for (auto seg : segs) {
+    ret.push_back(std::stoi(seg));
+  }
+  return ret;
+}
+
+BackendServer* server_ptr;
 
 void sigint_handler(int _sig) {
   if (server_ptr) {
@@ -58,7 +70,7 @@ void sigint_handler(int _sig) {
   std::exit(0);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   struct sigaction sig_handle;
   sig_handle.sa_handler = sigint_handler;
   sigemptyset(&sig_handle.sa_mask);
@@ -94,9 +106,10 @@ int main(int argc, char **argv) {
     (void)_Hack_DecodeImageByFilename(image, ChannelOrder::CO_BGR);
   }
   // Create the backend server
-  std::vector<int> cores = ParseCores(FLAGS_cores);
+  auto cores = ParseCores(FLAGS_cores);
+  auto cuda_indexes = ParseGpu(FLAGS_gpu);
   BackendServer server(poller_type, FLAGS_rdma_dev, FLAGS_port, FLAGS_sch_addr,
-                       FLAGS_gpu, FLAGS_num_workers, cores);
+                       cuda_indexes, FLAGS_num_workers, cores);
   server_ptr = &server;
   server.Run();
   return 0;

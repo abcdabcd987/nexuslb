@@ -25,7 +25,8 @@ bool BatchPlanIntersects(const BatchPlanProto& a, const BatchPlanProto& b) {
 FakeBackendDelegate::FakeBackendDelegate(ario::EpollExecutor* executor,
                                          uint32_t node_id,
                                          FakeDispatcherAccessor* accessor)
-    : BackendDelegate(node_id, "FakeGPU", "FakeUUID", 0),
+    : BackendDelegate(NodeId(node_id),
+                      {{GpuId(node_id), 0, "FakeGPU", "FakeUUID", 0}}),
       executor_(executor),
       accessor_(accessor),
       timer_(*executor_) {}
@@ -35,7 +36,7 @@ void FakeBackendDelegate::Tick() {
 }
 
 void FakeBackendDelegate::SendLoadModelCommand(
-    const ModelSession& model_session, uint32_t max_batch,
+    uint32_t gpu_idx, const ModelSession& model_session, uint32_t max_batch,
     ModelIndex model_index) {
   // Ignore
 }

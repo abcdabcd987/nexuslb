@@ -40,13 +40,16 @@ ModelThread::ModelThread(
   // TODO: GPU performance heterogeneity
   auto profile_id = ModelSessionToProfileID(model_session_);
   for (auto& backend : backends_) {
-    const auto* profile = ModelDatabase::Singleton().GetModelProfile(
-        backend.second->gpu_device(), backend.second->gpu_uuid(), profile_id);
-    CHECK_NE(profile, nullptr)
-        << "Cannot find profile for " << profile_id << " on device \""
-        << backend.second->gpu_device() << "\" with uuid \""
-        << backend.second->gpu_uuid() << "\"";
-    profile_.MergeProfileBySlowest(*profile);
+    for (auto gpu : backend.second->GetGpuDelegates()) {
+      CHECK(!gpus_.count(gpu->gpu_id()));
+      gpus_[gpu->gpu_id()] = gpu;
+      const auto* profile = ModelDatabase::Singleton().GetModelProfile(
+          gpu->gpu_device(), gpu->gpu_uuid(), profile_id);
+      CHECK(profile != nullptr)
+          << "Cannot find profile for " << profile_id << " on device \""
+          << gpu->gpu_device() << "\" with uuid \"" << gpu->gpu_uuid() << "\"";
+      profile_.MergeProfileBySlowest(*profile);
+    }
   }
   profile_.ForceMonotonicity();
 
@@ -78,11 +81,7 @@ void ModelThread::Stop(std::mutex& mutex, size_t& cnt,
 
 void ModelThread::PostAddBackend(NodeId backend_id,
                                  std::shared_ptr<BackendDelegate> delegate) {
-  executor_.PostBigCallback(
-      [this, backend_id, delegate = std::move(delegate)](ario::ErrorCode) {
-        backends_[backend_id] = delegate;
-      },
-      ario::ErrorCode::kOk);
+  LOG(FATAL) << "Not supported: PostAddBackend";
 }
 
 void ModelThread::PostAddFrontend(NodeId frontend_id,
@@ -95,8 +94,14 @@ void ModelThread::PostAddFrontend(NodeId frontend_id,
 }
 
 void ModelThread::PostRemoveBackend(NodeId backend_id) {
-  executor_.PostOk(
-      [this, backend_id](ario::ErrorCode) { backends_.erase(backend_id); });
+  executor_.PostOk([this, backend_id](ario::ErrorCode) {
+    CHECK(backends_.count(backend_id));
+    auto backend = backends_[backend_id];
+    for (auto gpu : backend->GetGpuDelegates()) {
+      gpus_.erase(gpu->gpu_id());
+    }
+    backends_.erase(backend_id);
+  });
 }
 
 void ModelThread::PostRemoveFrontend(NodeId frontend_id) {
@@ -104,10 +109,10 @@ void ModelThread::PostRemoveFrontend(NodeId frontend_id) {
       [this, frontend_id](ario::ErrorCode) { frontends_.erase(frontend_id); });
 }
 
-void ModelThread::PostGrantedBackend(GrantedBackendMessage cmd) {
+void ModelThread::PostGrantedGpu(GrantedGpuMessage cmd) {
   std::lock_guard lock(rank_msg_mutex_);
-  CHECK(!rank_msg_.granted_backend.has_value());
-  rank_msg_.granted_backend = cmd;
+  CHECK(!rank_msg_.granted_gpu.has_value());
+  rank_msg_.granted_gpu = cmd;
 }
 
 CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
@@ -236,7 +241,7 @@ void ModelThread::SendDroppedQueries(
   }
 }
 
-TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
+TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
   using namespace std::chrono;
   auto now = Clock::now();
   UpdateCandidate();
@@ -244,6 +249,7 @@ TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
       << "diff=" << (cmd._debug_free_at - candidate_.exec_at).count() * 1e-3
       << "us";
   auto inputs = batch_policy_.PopInputs();
+  auto& delegate = gpus_.at(cmd.gpu_id);
 
   // Early return when batch_size=0
   if (inputs.empty()) {
@@ -253,6 +259,7 @@ TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
   // Prepare the batchplan
   BatchPlanProto proto;
   proto.set_plan_id(cmd.plan_id.t);
+  proto.set_gpu_idx(delegate->gpu_idx());
   proto.set_model_index(model_index_);
   proto.set_exec_time_ns(candidate_.exec_at.time_since_epoch().count());
   proto.set_deadline_ns((*inputs.begin())->deadline.time_since_epoch().count());
@@ -269,7 +276,8 @@ TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
     qctx->request.Clear();
   }
   VLOG(1) << "BatchPlan:  " << model_session_.model_name()
-          << " id=" << cmd.plan_id.t << " backend=" << cmd.backend_id
+          << " id=" << cmd.plan_id.t << " gpu=" << delegate->backend_id() << "#"
+          << delegate->gpu_idx() << "(" << cmd.gpu_id << ")"
           << " batch=" << proto.queries_size()
           << " target=" << target_batch_size_
           << " elapse=" << exec_elapse.count() / 1e6 << "ms";
@@ -281,7 +289,6 @@ TimePoint ModelThread::DoGrantedBackendMessage(GrantedBackendMessage& cmd) {
         ->set_dispatcher_dispatch_ns(dispatcher_dispatch_ns);
   }
   // Send to backend
-  auto& delegate = backends_.at(cmd.backend_id);
   delegate->EnqueueBatchPlan(std::move(proto));
 
   // Update candidate
@@ -294,15 +301,14 @@ void ModelThread::Poll() {
   {
     std::lock_guard lock(rank_msg_mutex_);
     rank_msg = std::move(rank_msg_);
-    rank_msg_.granted_backend.reset();
+    rank_msg_.granted_gpu.reset();
   }
-  if (rank_msg.granted_backend.has_value()) {
-    auto& msg = rank_msg.granted_backend.value();
-    auto finish_at = DoGrantedBackendMessage(msg);
+  if (rank_msg.granted_gpu.has_value()) {
+    auto& msg = rank_msg.granted_gpu.value();
+    auto finish_at = DoGrantedGpuMessage(msg);
 
     // Update RankThread
-    rank_command_queue_.enqueue(
-        UpdateBackendCommand{msg.backend_id, finish_at});
+    rank_command_queue_.enqueue(UpdateGpuCommand{msg.gpu_id, finish_at});
     rank_thread_.PostResumeCandidateUpdate(model_index_);
     rank_thread_.PostExecutionCandidate(model_index_, candidate_);
   }

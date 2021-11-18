@@ -32,7 +32,6 @@ message ControlMessage {
 
     // Backend <- Dispatcher
     BackendLoadModelCommand load_model = 25;
-    EnqueueQueryCommand enqueue_query = 26;
     BatchPlanProto enqueue_batchplan = 27;
 
     // Frontend <- Backend
@@ -93,12 +92,17 @@ message RpcReply {
 }
 
 message RegisterRequest {
+  message GpuInfo {
+    uint32 gpu_idx = 1;
+    string gpu_device_name = 2;
+    string gpu_uuid = 3;
+    uint64 gpu_available_memory = 4;
+  }
+
   NodeType node_type = 1;
   uint32 node_id = 2;
   uint32 port = 3;
-  string gpu_device_name = 10;
-  string gpu_uuid = 12;
-  uint64 gpu_available_memory = 11;
+  repeated GpuInfo gpus = 4;
 }
 
 message RegisterReply {
@@ -219,6 +223,7 @@ message DispatchReply {
 }
 
 message BackendLoadModelCommand {
+  uint32 gpu_idx = 4;
   ModelSession model_session = 1;
   uint32 max_batch = 2;
   uint32 model_index = 3;
@@ -228,16 +233,17 @@ message TellNodeIdMessage {
   uint32 node_id = 1;
 }
 
-message EnqueueQueryCommand {
-  QueryProto query_without_input = 1;
-  uint64 rdma_read_offset = 2;
-  uint64 rdma_read_length = 3;
-}
-
 message BatchPlanProto {
+  message QueryInfo {
+    QueryProto query_without_input = 1;
+    uint64 rdma_read_offset = 2;
+    uint64 rdma_read_length = 3;
+  }
+
   uint64 plan_id = 1;
   uint32 model_index = 2;
-  repeated EnqueueQueryCommand queries = 3;
+  uint32 gpu_idx = 7;
+  repeated QueryInfo queries = 3;
   int64 exec_time_ns = 4;
   int64 deadline_ns = 5;
   int64 expected_finish_time_ns = 6;

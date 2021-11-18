@@ -45,14 +45,13 @@ class BackendServer {
    * device ID \param model_db_root Model database root directory path
    */
   BackendServer(ario::PollerType poller_type, std::string rdma_dev,
-                uint16_t port, std::string sch_addr, int gpu_id,
-                size_t num_workers = 0, std::vector<int> cores = {});
+                uint16_t port, std::string sch_addr,
+                std::vector<int> cuda_indexes, size_t num_workers = 0,
+                std::vector<int> cores = {});
   /*! \brief Deconstructs backend server */
   ~BackendServer();
   /*! \brief Get backend node ID */
   uint32_t node_id() const { return node_id_; }
-  /*! \brief Get GPU device ID */
-  int gpu_id() const { return gpu_id_; }
   /*! \brief Starts the backend server */
   void Run();
   /*! \brief Stops the backend server */
@@ -116,13 +115,23 @@ class BackendServer {
   void PostImageFetch(std::shared_ptr<ConnContext> ctx);
 
  private:
+  struct GpuContext {
+    GpuContext();
+
+    uint32_t gpu_idx;
+    int cuda_idx;
+    std::string gpu_name;
+    std::string gpu_uuid;
+    size_t gpu_memory;
+    std::unique_ptr<GpuExecutorPlanFollower> gpu_executor;
+
+    std::mutex model_table_mu;
+    std::vector<ModelExecutorPtr> model_table /* GUARDED_BY(model_table_mu) */;
+  };
+
   /*! \brief GPU device index */
-  int gpu_id_;
   std::string rdma_dev_;
   uint16_t rdma_port_;
-  std::string gpu_name_;
-  std::string gpu_uuid_;
-  size_t gpu_memory_;
 
   ario::EpollExecutor executor_;
   RdmaHandler rdma_handler_;
@@ -158,22 +167,15 @@ class BackendServer {
   /*! \brief Mutex for connections_ */
   std::mutex mu_connections_;
 
+  std::vector<std::unique_ptr<GpuContext>> gpus_;
+
   /*! \brief Task queue for workers to work on */
   BlockPriorityQueue<Task> task_queue_;
   /*! \brief Worker thread pool */
   std::vector<std::unique_ptr<Worker>> workers_;
-  /*! \brief GPU executor */
-  std::unique_ptr<GpuExecutorPlanFollower> gpu_executor_;
-  /*!
-   * \brief Mapping from ModelIndex to model instance.
-   * Guarded by model_table_mu_.p
-   */
-  std::vector<ModelExecutorPtr> model_table_;
   std::thread model_table_thread_;
-
   BlockQueue<BackendLoadModelCommand> model_table_requests_;
-  /*! \brief Mutex for accessing model_table_ */
-  std::mutex model_table_mu_;
+
   /*! \brief Random number genertor */
   std::random_device rd_;
   std::mt19937 rand_gen_;

@@ -28,19 +28,19 @@ struct ExecutionCandidate {
 };
 
 // RankThread -> ModelThread
-struct GrantedBackendMessage {
-  NodeId backend_id;
+struct GrantedGpuMessage {
+  GpuId gpu_id;
   PlanId plan_id;
   TimePoint _debug_free_at;
 };
 
 // ModelThread -> RankThread
-struct UpdateBackendCommand {
-  NodeId backend_id;
+struct UpdateGpuCommand {
+  GpuId gpu_id;
   TimePoint free_at;
 };
 
-using RankCommand = std::variant<UpdateBackendCommand>;
+using RankCommand = std::variant<UpdateGpuCommand>;
 
 }  // namespace rankmt
 }  // namespace dispatcher

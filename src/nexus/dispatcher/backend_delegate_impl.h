@@ -18,13 +18,12 @@ namespace dispatcher {
 
 class BackendDelegateImpl : public BackendDelegate {
  public:
-  BackendDelegateImpl(uint32_t node_id, std::string ip, uint16_t port,
-                      std::string gpu_device, std::string gpu_uuid,
-                      size_t gpu_available_memory, int beacon_sec,
+  BackendDelegateImpl(NodeId backend_id, std::string ip, uint16_t port,
+                      std::vector<GpuInfo> gpus, int beacon_sec,
                       ario::RdmaQueuePair* conn, RdmaSender rdma_sender);
 
   void Tick() override;
-  void SendLoadModelCommand(const ModelSession& model_session,
+  void SendLoadModelCommand(uint32_t gpu_idx, const ModelSession& model_session,
                             uint32_t max_batch,
                             ModelIndex model_index) override;
   void EnqueueBatchPlan(BatchPlanProto&& request) override;

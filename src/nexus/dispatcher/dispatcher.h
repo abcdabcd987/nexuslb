@@ -86,6 +86,7 @@ class Dispatcher {
   /*! \brief Frontend node ID */
   NodeId node_id_;
   GlobalIdIssuer global_id_issuer_;
+  std::atomic<decltype(GpuId::t)> next_gpu_id_;
   /*! \brief Mapping from frontend node id to frontend client */
   std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
   /*! \brief Mapping from backend node id to backend client */

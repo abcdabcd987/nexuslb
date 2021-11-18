@@ -38,6 +38,7 @@ Dispatcher::Dispatcher(ario::PollerType poller_type, std::string rdma_dev,
       small_buffers_(kSmallBufferPoolBits, kSmallBufferBlockBits),
       rdma_(rdma_dev_, &main_executor_, &rdma_handler_, &small_buffers_),
       rdma_sender_(&small_buffers_),
+      next_gpu_id_(1),
       rank_thread_executor_(poller_type),
       scheduler_(&main_executor_, &rank_thread_executor_) {
   // Don't Pin the main thread.
@@ -247,11 +248,15 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
       break;
     }
     case NodeType::BACKEND_NODE: {
+      std::vector<GpuInfo> gpus;
+      for (const auto& gpu : request.gpus()) {
+        GpuId gpu_id(next_gpu_id_.fetch_add(1));
+        gpus.push_back({gpu_id, gpu.gpu_idx(), gpu.gpu_device_name(),
+                        gpu.gpu_uuid(), gpu.gpu_available_memory()});
+      }
       auto backend = std::make_shared<BackendDelegateImpl>(
-          request.node_id(), conn->peer_ip(), request.port(),
-          request.gpu_device_name(), request.gpu_uuid(),
-          request.gpu_available_memory(), beacon_interval_sec_, conn,
-          rdma_sender_);
+          NodeId(request.node_id()), conn->peer_ip(), request.port(),
+          std::move(gpus), beacon_interval_sec_, conn, rdma_sender_);
       auto backend_id = NodeId(backend->node_id());
       if (backends_.find(backend_id) != backends_.end()) {
         reply->set_status(CtrlStatus::CTRL_BACKEND_NODE_ID_CONFLICT);
@@ -266,23 +271,31 @@ void Dispatcher::HandleRegister(ario::RdmaQueuePair* conn,
       for (auto iter : sessions_) {
         const auto& model_session = iter.second->model_session();
         auto profile_id = ModelSessionToProfileID(model_session);
-        auto* profile = ModelDatabase::Singleton().GetModelProfile(
-            backend->gpu_device(), backend->gpu_uuid(), profile_id);
-        if (!profile) {
-          reply->set_status(CtrlStatus::CTRL_INVALID_LOAD_MODEL_REQUEST);
-          continue;
+        for (const auto& gpu : request.gpus()) {
+          auto* profile = ModelDatabase::Singleton().GetModelProfile(
+              gpu.gpu_device_name(), gpu.gpu_uuid(), profile_id);
+          CHECK(profile != nullptr)
+              << "Cannot find profile. profile_id=" << profile_id
+              << ", gpu_device=" << gpu.gpu_device_name()
+              << ", gpu_uuid=" << gpu.gpu_uuid();
+          if (!profile) {
+            reply->set_status(CtrlStatus::CTRL_INVALID_LOAD_MODEL_REQUEST);
+            continue;
+          }
+
+          uint32_t max_batch =
+              profile->GetMaxBatchWithFullBudget(model_session.latency_sla());
+
+          // LoadModel RPC
+          VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
+                  << ", gpu_idx=" << gpu.gpu_idx()
+                  << ", model_session=" << iter.first;
+          backend->SendLoadModelCommand(gpu.gpu_idx(), model_session, max_batch,
+                                        iter.second->model_index());
+          VLOG(1) << "Finish SendLoadModelCommand: backend_id="
+                  << backend->node_id() << ", gpu_idx=" << gpu.gpu_idx()
+                  << ", model_session=" << iter.first;
         }
-
-        uint32_t max_batch =
-            profile->GetMaxBatchWithFullBudget(model_session.latency_sla());
-
-        // LoadModel RPC
-        VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
-                << ", model_session=" << iter.first;
-        backend->SendLoadModelCommand(model_session, max_batch,
-                                      iter.second->model_index());
-        VLOG(1) << "Finish SendLoadModelCommand: backend_id="
-                << backend->node_id() << ", model_session=" << iter.first;
       }
 
       // UpdateBackendList
@@ -366,22 +379,24 @@ void Dispatcher::HandleLoadModel(const LoadModelRequest& request,
   auto profile_id = ModelSessionToProfileID(request.model_session());
   for (auto backend_iter : backends_) {
     auto backend = backend_iter.second;
-    auto* profile = ModelDatabase::Singleton().GetModelProfile(
-        backend->gpu_device(), backend->gpu_uuid(), profile_id);
-    if (!profile) {
-      reply->set_status(CtrlStatus::CTRL_INVALID_LOAD_MODEL_REQUEST);
-      continue;
-    }
-    uint32_t max_batch = profile->GetMaxBatchWithFullBudget(
-        request.model_session().latency_sla());
+    for (auto gpu : backend->GetGpuDelegates()) {
+      auto* profile = ModelDatabase::Singleton().GetModelProfile(
+          gpu->gpu_device(), gpu->gpu_uuid(), profile_id);
+      CHECK(profile != nullptr)
+          << "Cannot find profile. profile_id=" << profile_id
+          << ", gpu_device=" << gpu->gpu_device()
+          << ", gpu_uuid=" << gpu->gpu_uuid();
+      uint32_t max_batch = profile->GetMaxBatchWithFullBudget(
+          request.model_session().latency_sla());
 
-    // LoadModel RPC
-    VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
-            << ", model_session=" << model_sess_id;
-    backend->SendLoadModelCommand(request.model_session(), max_batch,
-                                  entrance.model_index());
-    VLOG(1) << "Finish SendLoadModelCommand: backend_id=" << backend->node_id()
-            << ", model_session=" << model_sess_id;
+      // LoadModel RPC
+      VLOG(1) << "SendLoadModelCommand: backend_id=" << backend->node_id()
+              << ", model_session=" << model_sess_id;
+      backend->SendLoadModelCommand(gpu->gpu_idx(), request.model_session(),
+                                    max_batch, entrance.model_index());
+      VLOG(1) << "Finish SendLoadModelCommand: backend_id="
+              << backend->node_id() << ", model_session=" << model_sess_id;
+    }
   }
 }
 

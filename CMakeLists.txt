@@ -133,6 +133,7 @@ set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 ###### dispatcher ######
 add_library(dispatcher_obj
+    src/nexus/dispatcher/backend_delegate.cpp
     src/nexus/dispatcher/backend_delegate_impl.cpp
     src/nexus/dispatcher/batch_policy.cpp
     src/nexus/dispatcher/batch_size_estimator.cpp

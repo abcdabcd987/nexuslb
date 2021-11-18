@@ -6,11 +6,9 @@ namespace nexus {
 namespace dispatcher {
 
 BackendDelegateImpl::BackendDelegateImpl(
-    uint32_t node_id, std::string ip, uint16_t port, std::string gpu_device,
-    std::string gpu_uuid, size_t gpu_available_memory, int beacon_sec,
-    ario::RdmaQueuePair* conn, RdmaSender rdma_sender)
-    : BackendDelegate(node_id, std::move(gpu_device), std::move(gpu_uuid),
-                      gpu_available_memory),
+    NodeId backend_id, std::string ip, uint16_t port, std::vector<GpuInfo> gpus,
+    int beacon_sec, ario::RdmaQueuePair* conn, RdmaSender rdma_sender)
+    : BackendDelegate(backend_id, std::move(gpus)),
       ip_(std::move(ip)),
       port_(port),
       beacon_sec_(beacon_sec),
@@ -19,7 +17,7 @@ BackendDelegateImpl::BackendDelegateImpl(
       rdma_sender_(rdma_sender) {
   Tick();
 
-  backend_info_.set_node_id(node_id_);
+  backend_info_.set_node_id(backend_id.t);
   *backend_info_.mutable_ip() = ip_;
   backend_info_.set_port(port_);
 }
@@ -29,10 +27,11 @@ void BackendDelegateImpl::Tick() {
 }
 
 void BackendDelegateImpl::SendLoadModelCommand(
-    const ModelSession& model_session, uint32_t max_batch,
+    uint32_t gpu_idx, const ModelSession& model_session, uint32_t max_batch,
     ModelIndex model_index) {
   ControlMessage req;
   auto* request = req.mutable_load_model();
+  request->set_gpu_idx(gpu_idx);
   *request->mutable_model_session() = model_session;
   request->set_max_batch(max_batch);
   request->set_model_index(model_index.t);

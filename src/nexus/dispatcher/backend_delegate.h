@@ -12,33 +12,49 @@
 namespace nexus {
 namespace dispatcher {
 
+struct GpuInfo {
+  GpuId gpu_id;      // internal ID assigned by Dispatcher
+  uint32_t gpu_idx;  // gpu_idx inside the backend
+  std::string gpu_device;
+  std::string gpu_uuid;
+  size_t gpu_available_memory;
+};
+
+class GpuDelegate;
 class BackendDelegate {
  public:
-  BackendDelegate(uint32_t node_id, std::string gpu_device,
-                  std::string gpu_uuid, size_t gpu_available_memory)
-      : node_id_(node_id),
-        gpu_device_(std::move(gpu_device)),
-        gpu_uuid_(std::move(gpu_uuid)),
-        gpu_available_memory_(gpu_available_memory) {}
-  uint32_t node_id() const { return node_id_; }
-  const std::string& gpu_device() const { return gpu_device_; }
-  const std::string& gpu_uuid() const { return gpu_uuid_; }
-  size_t gpu_available_memory() const { return gpu_available_memory_; }
+  BackendDelegate(NodeId backend_id, std::vector<GpuInfo> gpus);
+  NodeId node_id() const { return backend_id_; }
   const BackendInfo& backend_info() const { return backend_info_; }
+  std::vector<GpuDelegate*> GetGpuDelegates();
 
   virtual ~BackendDelegate() = default;
   virtual void Tick() = 0;
-  virtual void SendLoadModelCommand(const ModelSession& model_session,
+  virtual void SendLoadModelCommand(uint32_t gpu_idx,
+                                    const ModelSession& model_session,
                                     uint32_t max_batch,
                                     ModelIndex model_index) = 0;
   virtual void EnqueueBatchPlan(BatchPlanProto&& request) = 0;
 
  protected:
-  uint32_t node_id_;
-  std::string gpu_device_;
-  std::string gpu_uuid_;
-  size_t gpu_available_memory_;
+  NodeId backend_id_;
+  std::vector<GpuDelegate> gpus_;
   BackendInfo backend_info_;
+};
+
+class GpuDelegate {
+ public:
+  GpuDelegate(GpuInfo gpu_info, BackendDelegate* backend);
+  void EnqueueBatchPlan(BatchPlanProto&& request);
+  GpuId gpu_id() const { return gpu_info_.gpu_id; };
+  uint32_t gpu_idx() const { return gpu_info_.gpu_idx; };
+  const std::string& gpu_device() const { return gpu_info_.gpu_device; };
+  const std::string& gpu_uuid() const { return gpu_info_.gpu_uuid; };
+  NodeId backend_id() const { return backend_.node_id(); }
+
+ private:
+  GpuInfo gpu_info_;
+  BackendDelegate& backend_;
 };
 
 }  // namespace dispatcher

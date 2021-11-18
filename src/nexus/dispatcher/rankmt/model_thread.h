@@ -57,7 +57,7 @@ class ModelThread {
   void Poll();
 
   // Messages from RankThread
-  void PostGrantedBackend(GrantedBackendMessage cmd);
+  void PostGrantedGpu(GrantedGpuMessage cmd);
 
   // Control plane commands
   void PostAddBackend(NodeId backend_id,
@@ -78,11 +78,11 @@ class ModelThread {
   };
 
   struct MessagesFromRankThread {
-    std::optional<GrantedBackendMessage> granted_backend;
+    std::optional<GrantedGpuMessage> granted_gpu;
   };
 
   // Command handlers
-  TimePoint DoGrantedBackendMessage(GrantedBackendMessage& cmd);
+  TimePoint DoGrantedGpuMessage(GrantedGpuMessage& cmd);
 
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
   void UpdateCandidate();
@@ -102,6 +102,7 @@ class ModelThread {
   moodycamel::ReaderWriterQueue<RankCommand> rank_command_queue_;
   std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends_;
   std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
+  std::unordered_map<GpuId, GpuDelegate*> gpus_;
   BatchSizeEstimator bse_;
   RpsMeter rps_meter_;
   SortedQueryList unprocessed_queries_;

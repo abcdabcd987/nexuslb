@@ -28,14 +28,16 @@ DEFINE_int32(occupancy_valid, 10, "Backup backend occupancy valid time in ms");
 namespace nexus {
 namespace backend {
 
+BackendServer::GpuContext::GpuContext() {}
+
 BackendServer::ConnContext::ConnContext(ario::RdmaQueuePair* conn)
     : conn(*CHECK_NOTNULL(conn)), cnt_flying_image_fetch(0) {}
 
 BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
-                             uint16_t port, std::string sch_addr, int gpu_id,
-                             size_t num_workers, std::vector<int> cores)
-    : gpu_id_(gpu_id),
-      rdma_dev_(std::move(rdma_dev)),
+                             uint16_t port, std::string sch_addr,
+                             std::vector<int> cuda_indexes, size_t num_workers,
+                             std::vector<int> cores)
+    : rdma_dev_(std::move(rdma_dev)),
       rdma_port_(port),
       executor_(poller_type),
       rdma_handler_(*this),
@@ -46,17 +48,23 @@ BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
       helper_executor_(ario::PollerType::kBlocking),
       running_(false),
       rand_gen_(rd_()) {
+  gpus_.reserve(cuda_indexes.size());
+  for (size_t i = 0; i < cuda_indexes.size(); ++i) {
+    auto& g = *gpus_.emplace_back(std::make_unique<GpuContext>());
+    g.gpu_idx = i;
+    g.cuda_idx = cuda_indexes[i];
 #ifdef USE_GPU
-  auto* gpu = DeviceManager::Singleton().GetGPUDevice(gpu_id_);
-  gpu_name_ = gpu->device_name();
-  gpu_uuid_ = gpu->uuid();
-  gpu_memory_ = gpu->FreeMemory();
+    auto* gpu = DeviceManager::Singleton().GetGPUDevice(cuda_indexes[i]);
+    g.gpu_name = gpu->device_name();
+    g.gpu_uuid = gpu->uuid();
+    g.gpu_memory = gpu->FreeMemory();
 #else
-  auto* cpu = DeviceManager::Singleton().GetCPUDevice();
-  gpu_name_ = cpu->name();
-  gpu_uuid_ = "GenericCPU";
-  gpu_memory_ = 0;
+    auto* cpu = DeviceManager::Singleton().GetCPUDevice();
+    g.gpu_name = cpu->name();
+    g.gpu_uuid = "GenericCPU";
+    g.gpu_memory = 0;
 #endif
+  }
 
   rdma_.RegisterLocalMemory(&large_buffers_);
   rdma_.ListenTcp(port);
@@ -92,23 +100,16 @@ BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
 
   // Init GPU executor
   LOG(INFO) << "Using PlanFollower as GpuExecutor";
-  gpu_executor_.reset(new GpuExecutorPlanFollower(gpu_id, poller_type));
-  if (cores.empty()) {
-    gpu_executor_->Start();
-  } else {
-    gpu_executor_->Start(cores.back());
-    cores.pop_back();
-    // Pin IO thread to core
-    // cpu_set_t cpuset;
-    // CPU_ZERO(&cpuset);
-    // int io_core = cores.back();
-    // CPU_SET(io_core, &cpuset);
-    // int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t),
-    // &cpuset); if (rc != 0) {
-    //   LOG(ERROR) << "Error calling pthread_setaffinity_np: " << rc << "\n";
-    // }
-    // LOG(INFO) << "IO thread is pinned on CPU " << io_core;
-    // cores.pop_back();
+  for (auto& gpu : gpus_) {
+    gpu->gpu_executor =
+        std::make_unique<GpuExecutorPlanFollower>(gpu->cuda_idx, poller_type);
+    if (cores.empty()) {
+      gpu->gpu_executor->Start();
+    } else {
+      CHECK(!cores.empty());
+      gpu->gpu_executor->Start(cores.back());
+      cores.pop_back();
+    }
   }
 
   // Init workers
@@ -161,7 +162,9 @@ void BackendServer::Stop() {
   node_connections_.clear();
   map_connection_nodeid_.clear();
 
-  gpu_executor_->Stop();
+  for (auto& gpu : gpus_) {
+    gpu->gpu_executor->Stop();
+  }
   // Stop workers
   for (auto& worker : workers_) {
     worker->Stop();
@@ -283,26 +286,6 @@ void BackendServer::RdmaHandler::OnRecvInternal(ario::RdmaQueuePair* conn,
       resp.mutable_load_model_reply()->set_status(CtrlStatus::CTRL_OK);
       outer_.rdma_sender_.SendMessage(conn, resp);
       break;
-    }
-    case ControlMessage::MessageCase::kEnqueueQuery: {
-      // from Dispatcher
-      auto& msg = *req.mutable_enqueue_query();
-
-      auto model_index = msg.query_without_input().model_index();
-      CHECK_GT(outer_.model_table_.size(), model_index);
-      auto model_executor = outer_.model_table_[model_index];
-      CHECK(model_executor != nullptr);
-
-      auto task = std::make_shared<Task>(nullptr, model_executor);
-      task->SetQuery(std::move(*msg.mutable_query_without_input()),
-                     msg.rdma_read_offset(), msg.rdma_read_length());
-      bool ok = outer_.EnqueueQuery(task);
-
-      ControlMessage resp;
-      auto* reply = resp.mutable_enqueue_query_reply();
-      reply->set_status(ok ? CtrlStatus::CTRL_OK
-                           : CtrlStatus(task->result.status()));
-      outer_.rdma_sender_.SendMessage(conn, resp);
     }
     case ControlMessage::MessageCase::kEnqueueBatchplan: {
       // from Dispatcher
@@ -427,16 +410,21 @@ void BackendServer::LoadModelEnqueue(const BackendLoadModelCommand& request) {
 }
 
 void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
-  // Start to update model table
-  std::lock_guard<std::mutex> lock(model_table_mu_);
   auto model_sess_id = ModelSessionToString(request.model_session());
-  VLOG(1) << "LoadModel: model_session=" << model_sess_id;
-  if (model_table_.size() <= request.model_index()) {
-    model_table_.resize(request.model_index() + 1);
+  VLOG(1) << "LoadModel: model_session=" << model_sess_id
+          << ", gpu_idx=" << request.gpu_idx();
+  CHECK_GT(gpus_.size(), request.gpu_idx());
+  auto& gpu = *gpus_[request.gpu_idx()];
+
+  // Start to update model table
+  std::lock_guard<std::mutex> lock(gpu.model_table_mu);
+  if (gpu.model_table.size() <= request.model_index()) {
+    gpu.model_table.resize(request.model_index() + 1);
   }
-  if (model_table_[request.model_index()]) {
-    CHECK_EQ(model_table_[request.model_index()]->model()->model_session_id(),
-             model_sess_id);
+  if (gpu.model_table[request.model_index()]) {
+    CHECK_EQ(
+        gpu.model_table[request.model_index()]->model()->model_session_id(),
+        model_sess_id);
     LOG(INFO) << "Skip loading model session " << model_sess_id
               << " because already loaded.";
     return;
@@ -460,19 +448,21 @@ void BackendServer::LoadModel(const BackendLoadModelCommand& request) {
 
   auto profile_id = ModelSessionToProfileID(request.model_session());
   auto* profile = ModelDatabase::Singleton().GetModelProfile(
-      gpu_name_, gpu_uuid_, profile_id);
+      gpu.gpu_name, gpu.gpu_uuid, profile_id);
   if (!profile) return;
   auto memory_usage = profile->GetMemoryUsage(config.max_batch());
   config.set_memory_usage(memory_usage);
 
   // Load new model instance
   auto model = std::make_shared<ModelExecutor>(
-      gpu_id_, config, ModelIndex(request.model_index()), task_queue_);
-  model_table_[request.model_index()] = model;
-  gpu_executor_->AddModel(model);
+      gpu.cuda_idx, config, ModelIndex(request.model_index()), task_queue_);
+  gpu.model_table[request.model_index()] = model;
+  gpu.gpu_executor->AddModel(model);
   LOG(INFO) << "Load model instance " << model_sess_id
             << ", max_batch: " << model->model()->max_batch()
-            << ", model_index: " << request.model_index();
+            << ", model_index: " << request.model_index()
+            << ", gpu_idx: " << request.gpu_idx()
+            << ", cuda_idx: " << gpu.cuda_idx;
 }
 
 bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
@@ -555,8 +545,10 @@ void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,
   }
 
   // Acquire input array
-  CHECK_GT(model_table_.size(), req.model_index());
-  auto model_executor = model_table_[plan->proto().model_index()];
+  CHECK_GT(gpus_.size(), plan->proto().gpu_idx());
+  auto& gpu = *gpus_[plan->proto().gpu_idx()];
+  CHECK_GT(gpu.model_table.size(), plan->proto().model_index());
+  auto model_executor = gpu.model_table[plan->proto().model_index()];
   CHECK(model_executor != nullptr);
   plan->SetInputArray(model_executor->AcquireInputArray());
   auto pinned = model_executor->AcquirePinnedMemory();
@@ -601,7 +593,9 @@ void BackendServer::MarkBatchPlanQueryPreprocessed(std::shared_ptr<Task> task) {
     }
   }
   if (ready_plan) {
-    gpu_executor_->AddBatchPlan(ready_plan);
+    auto gpu_idx = ready_plan->proto().gpu_idx();
+    CHECK_GT(gpus_.size(), gpu_idx);
+    gpus_[gpu_idx]->gpu_executor->AddBatchPlan(ready_plan);
   }
 }
 
@@ -609,25 +603,27 @@ void BackendServer::Daemon() {
   while (running_) {
     auto next_time = Clock::now() + std::chrono::seconds(beacon_interval_sec_);
     KeepAlive();
-    std::vector<ModelExecutorPtr> model_table;
-    {
-      std::lock_guard<std::mutex> lock(model_table_mu_);
-      model_table = model_table_;
-    }
-    for (const auto& m : model_table) {
-      double rps = m->GetRequestRate();
-      double drop_rate = m->GetDropRate();
-      if (rps > 0.1) {
-        int drop_percent = static_cast<int>(100. * drop_rate / rps);
-        if (drop_percent >= 1) {
-          LOG(WARNING) << m->model()->model_session_id()
-                       << " request rate: " << rps
-                       << ", drop rate: " << drop_rate << " (" << drop_percent
-                       << "%)";
-        } else {
-          VLOG(1) << m->model()->model_session_id() << " request rate: " << rps
-                  << ", drop rate: " << drop_rate << " (" << drop_percent
-                  << "%)";
+    for (auto& gpu : gpus_) {
+      std::vector<ModelExecutorPtr> model_table;
+      {
+        std::lock_guard<std::mutex> lock(gpu->model_table_mu);
+        model_table = gpu->model_table;
+      }
+      for (const auto& m : model_table) {
+        double rps = m->GetRequestRate();
+        double drop_rate = m->GetDropRate();
+        if (rps > 0.1) {
+          int drop_percent = static_cast<int>(100. * drop_rate / rps);
+          if (drop_percent >= 1) {
+            LOG(WARNING) << m->model()->model_session_id()
+                         << " request rate: " << rps
+                         << ", drop rate: " << drop_rate << " (" << drop_percent
+                         << "%)";
+          } else {
+            VLOG(1) << m->model()->model_session_id()
+                    << " request rate: " << rps << ", drop rate: " << drop_rate
+                    << " (" << drop_percent << "%)";
+          }
         }
       }
     }
@@ -658,9 +654,13 @@ void BackendServer::Register() {
   request.set_node_type(BACKEND_NODE);
   request.set_node_id(node_id_);
   request.set_port(rdma_port_);
-  request.set_gpu_device_name(gpu_name_);
-  request.set_gpu_uuid(gpu_uuid_);
-  request.set_gpu_available_memory(gpu_memory_);
+  for (const auto& gpu : gpus_) {
+    auto* g = request.add_gpus();
+    g->set_gpu_idx(gpu->gpu_idx);
+    g->set_gpu_device_name(gpu->gpu_name);
+    g->set_gpu_uuid(gpu->gpu_uuid);
+    g->set_gpu_available_memory(gpu->gpu_memory);
+  }
 
   rdma_sender_.SendMessage(dispatcher_conn_, msg);
   auto reply = std::move(promise_register_reply_.get_future().get());

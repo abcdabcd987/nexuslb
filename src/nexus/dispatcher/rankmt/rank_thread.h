@@ -42,7 +42,7 @@ class RankThread {
   // Control plane commands
   void PostAddModelThread(ModelIndex model_index, ModelThread* model_thread);
   void PostAddBackend(NodeId backend_id,
-                      std::shared_ptr<BackendDelegate> delegate);
+                      std::shared_ptr<BackendDelegate> backend);
   void PostRemoveBackend(NodeId backend_id);
 
   // Commands from model threads
@@ -80,24 +80,23 @@ class RankThread {
     MessagesFromModelThread model_msg /* GUARDED_BY(model_msg_mutex) */;
   };
 
-  struct BackendContext {
-    BackendContext(NodeId backend_id,
-                   std::shared_ptr<BackendDelegate> delegate);
+  struct GpuContext {
+    GpuContext(GpuId gpu_id, GpuDelegate* delegate);
 
-    NodeId backend_id;
-    std::shared_ptr<BackendDelegate> delegate;
+    GpuId gpu_id;
+    GpuDelegate* delegate;
     TimePoint free_at;
   };
 
   // Handlers for commands from model threads
   void ExecuteCommand(PerModelThreadData& mdata);
-  void DoUpdateBackendCommand(UpdateBackendCommand& cmd);
+  void DoUpdateGpuCommand(UpdateGpuCommand& cmd);
   void DoUpdateCandidate(PerModelThreadData& mdata);
 
   PlanId NextPlanId();
   void SetupActivePlan(PerModelThreadData& mdata);
   void OnPlanTimer(PerModelThreadData& mdata);
-  void UpdateBackend(BackendContext* bctx, TimePoint free_at);
+  void UpdateGpu(GpuContext* gctx, TimePoint free_at);
 
   void Poll();
 
@@ -105,10 +104,11 @@ class RankThread {
   bool stop_flag_;
   Poller poller_;
   PlanId next_plan_id_{1};
-  std::unordered_map<NodeId, std::shared_ptr<BackendContext>> backends_;
+  std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends_;
+  std::unordered_map<GpuId, std::shared_ptr<GpuContext>> gpus_;
   std::vector<std::unique_ptr<PerModelThreadData>> model_threads_;
 
-  ValueRankedSplayMap<NodeId, TimePoint> backend_availability_pool_;
+  ValueRankedSplayMap<GpuId, TimePoint> gpu_availability_pool_;
 };
 
 }  // namespace rankmt

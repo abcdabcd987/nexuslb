@@ -20,7 +20,7 @@ class FakeBackendDelegate : public BackendDelegate {
                       FakeDispatcherAccessor* accessor);
 
   void Tick() override;
-  void SendLoadModelCommand(const ModelSession& model_session,
+  void SendLoadModelCommand(uint32_t gpu_idx, const ModelSession& model_session,
                             uint32_t max_batch,
                             ModelIndex model_index) override;
   void EnqueueBatchPlan(BatchPlanProto&& request) override;

@@ -31,9 +31,9 @@ bool OrderBatchPlanProtoByExecTimeDesc(
 namespace nexus {
 namespace backend {
 
-GpuExecutorPlanFollower::GpuExecutorPlanFollower(int gpu_id,
+GpuExecutorPlanFollower::GpuExecutorPlanFollower(int cuda_idx,
                                                  ario::PollerType poller_type)
-    : gpu_id_(gpu_id), executor_(poller_type), next_timer_(executor_) {}
+    : cuda_idx_(cuda_idx), executor_(poller_type), next_timer_(executor_) {}
 
 GpuExecutorPlanFollower::~GpuExecutorPlanFollower() {
   if (thread_.joinable()) {
@@ -130,7 +130,6 @@ void GpuExecutorPlanFollower::OnTimer(ario::ErrorCode error) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (models_.size() <= model_index || !models_[model_index]) {
       LOG(ERROR) << "Cannot find ModelIndex " << model_index;
-      std::lock_guard<std::mutex> lock(mutex_);
       UpdateTimer();
       return;
     }

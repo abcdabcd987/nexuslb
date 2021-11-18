@@ -16,10 +16,9 @@ namespace nexus {
 namespace dispatcher {
 namespace rankmt {
 
-RankThread::BackendContext::BackendContext(
-    NodeId backend_id, std::shared_ptr<BackendDelegate> delegate)
-    : backend_id(backend_id),
-      delegate(std::move(delegate)),
+RankThread::GpuContext::GpuContext(GpuId gpu_id, GpuDelegate* delegate)
+    : gpu_id(gpu_id),
+      delegate(delegate),
       free_at(std::chrono::nanoseconds(0)) {}
 
 RankThread::RankThread(ario::EpollExecutor* executor)
@@ -43,6 +42,7 @@ void RankThread::Stop(std::mutex& mutex, size_t& cnt,
   executor_.PostBigCallback(
       [this, &mutex, &cnt, &cv](ario::ErrorCode) {
         stop_flag_ = true;
+        gpus_.clear();
         backends_.clear();
         {
           std::lock_guard lock(mutex);
@@ -59,10 +59,10 @@ void RankThread::ExecuteCommand(PerModelThreadData& mdata) {
   if (stop_flag_) {
     return;
   }
-  auto visitor = make_visitor(
-      [this](UpdateBackendCommand& cmd) { DoUpdateBackendCommand(cmd); }
-      // Force newline for clang-format
-  );
+  auto visitor =
+      make_visitor([this](UpdateGpuCommand& cmd) { DoUpdateGpuCommand(cmd); }
+                   // Force newline for clang-format
+      );
 
   RankCommand command;
   while (mdata.rank_command_queue.try_dequeue(command)) {
@@ -110,9 +110,9 @@ void RankThread::DoUpdateCandidate(PerModelThreadData& mdata) {
   SetupActivePlan(mdata);
 }
 
-void RankThread::DoUpdateBackendCommand(UpdateBackendCommand& cmd) {
-  auto& bctx = backends_.at(cmd.backend_id);
-  UpdateBackend(bctx.get(), cmd.free_at);
+void RankThread::DoUpdateGpuCommand(UpdateGpuCommand& cmd) {
+  auto& gctx = gpus_.at(cmd.gpu_id);
+  UpdateGpu(gctx.get(), cmd.free_at);
 }
 
 void RankThread::PostAddModelThread(ModelIndex model_index,
@@ -145,23 +145,41 @@ void RankThread::PostAddModelThread(ModelIndex model_index,
 }
 
 void RankThread::PostAddBackend(NodeId backend_id,
-                                std::shared_ptr<BackendDelegate> delegate) {
+                                std::shared_ptr<BackendDelegate> backend) {
   executor_.PostBigCallback(
-      [this, backend_id, delegate = std::move(delegate)](ario::ErrorCode) {
-        auto bctx = std::make_shared<BackendContext>(backend_id, delegate);
-        if (backends_.count(bctx->backend_id)) {
+      [this, backend_id, backend = std::move(backend)](ario::ErrorCode) {
+        // Add backend
+        if (backends_.count(backend_id)) {
           LOG(ERROR) << "Backend already exists. backend_id=" << backend_id;
           return;
         }
-        backend_availability_pool_.Upsert(backend_id, bctx->free_at);
-        backends_[backend_id] = std::move(bctx);
+        backends_[backend_id] = backend;
+
+        // Add GPUs
+        for (auto gpu : backend->GetGpuDelegates()) {
+          auto gpu_id = gpu->gpu_id();
+          CHECK(!gpus_.count(gpu_id));
+          auto gctx = std::make_shared<GpuContext>(gpu_id, gpu);
+          gpus_[gpu_id] = gctx;
+          gpu_availability_pool_.Upsert(gpu_id, gctx->free_at);
+        }
       },
       ario::ErrorCode::kOk);
 }
 
 void RankThread::PostRemoveBackend(NodeId backend_id) {
   executor_.PostOk([this, backend_id](ario::ErrorCode) {
-    backend_availability_pool_.Remove(backend_id);
+    CHECK(backends_.count(backend_id));
+    auto backend = backends_[backend_id];
+
+    // Remove GPUs
+    for (auto gpu : backend->GetGpuDelegates()) {
+      auto gpu_id = gpu->gpu_id();
+      gpu_availability_pool_.Remove(gpu_id);
+      gpus_.erase(gpu_id);
+    }
+
+    // Remove backend
     backends_.erase(backend_id);
   });
 }
@@ -192,29 +210,29 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
   }
 
   // Try to assign backend if possible
-  CHECK_EQ(backend_availability_pool_.Size(), backends_.size());
-  if (backend_availability_pool_.Size() == 0) {
+  CHECK_EQ(gpu_availability_pool_.Size(), gpus_.size());
+  if (gpu_availability_pool_.Size() == 0) {
     return;
   }
-  auto backend_id = backend_availability_pool_.GetByRank(0).key.get();
-  auto& bctx = backends_.at(backend_id);
-  if (bctx->free_at > mdata.candidate->exec_at) {
+  auto gpu_id = gpu_availability_pool_.GetByRank(0).key.get();
+  auto& gctx = gpus_.at(gpu_id);
+  if (gctx->free_at > mdata.candidate->exec_at) {
     return;
   }
 
   // Let ModelThread send out the plan
-  GrantedBackendMessage msg;
-  msg.backend_id = backend_id;
+  GrantedGpuMessage msg;
+  msg.gpu_id = gpu_id;
   msg.plan_id = NextPlanId();
-  msg._debug_free_at = bctx->free_at;
-  mdata.model_thread.PostGrantedBackend(msg);
+  msg._debug_free_at = gctx->free_at;
+  mdata.model_thread.PostGrantedGpu(msg);
   VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
-          << " id=" << msg.plan_id.t << " backend=" << backend_id;
+          << " id=" << msg.plan_id.t << " gpu=" << gpu_id;
 
   // Mark backend unavailable.
   // Also set the candidate of this model to be invalid.
   // ModelThread will give us updates on the backend and new candidates.
-  UpdateBackend(bctx.get(), TimePoint::max());
+  UpdateGpu(gctx.get(), TimePoint::max());
   mdata.candidate = std::nullopt;
 
   // Reject candidate updates until ModelThread picks up the granted backend.
@@ -223,9 +241,9 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
   mdata.rejecting_candidates = true;
 }
 
-void RankThread::UpdateBackend(BackendContext* bctx, TimePoint free_at) {
-  bctx->free_at = free_at;
-  backend_availability_pool_.Upsert(bctx->backend_id, free_at);
+void RankThread::UpdateGpu(GpuContext* gctx, TimePoint free_at) {
+  gctx->free_at = free_at;
+  gpu_availability_pool_.Upsert(gctx->gpu_id, free_at);
 }
 
 void RankThread::Poll() {

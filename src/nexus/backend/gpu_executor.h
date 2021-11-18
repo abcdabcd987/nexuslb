@@ -19,7 +19,7 @@ namespace backend {
 
 class GpuExecutorPlanFollower {
  public:
-  GpuExecutorPlanFollower(int gpu_id, ario::PollerType poller_type);
+  GpuExecutorPlanFollower(int cuda_idx, ario::PollerType poller_type);
   virtual ~GpuExecutorPlanFollower();
   void Start(int core = -1);
   void Stop();
@@ -31,7 +31,7 @@ class GpuExecutorPlanFollower {
   void UpdateTimer() /* REQUIRES(mutex_) */;
   void OnTimer(ario::ErrorCode error);
 
-  int gpu_id_;
+  int cuda_idx_;
   std::thread thread_;
 
   ario::EpollExecutor executor_;

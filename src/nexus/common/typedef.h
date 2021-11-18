@@ -22,6 +22,9 @@
 // NodeId
 NS_STRONG_TYPEDEF(nexus, uint32_t, NodeId)
 
+// GpuId. Internal to Dispatcher.
+NS_STRONG_TYPEDEF(nexus, uint32_t, GpuId)
+
 // QueryId is assigned by each frontend.
 // Only meaningful at the origin frontend.
 NS_STRONG_TYPEDEF(nexus, uint64_t, QueryId)

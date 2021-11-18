@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -26,7 +27,6 @@ DEFINE_int32(gpu, 0, "GPU device id");
 DEFINE_string(framework, "", "Framework");
 DEFINE_string(model, "", "Model name");
 DEFINE_int32(model_version, 1, "Version");
-DEFINE_string(image_dir, "", "Image directory");
 DEFINE_int32(min_batch, 1, "Minimum batch size");
 DEFINE_int32(max_batch, 256, "Maximum batch size");
 DEFINE_string(output, "", "Output file");
@@ -44,8 +44,8 @@ namespace fs = boost::filesystem;
 class ModelProfiler {
  public:
   ModelProfiler(int gpu, const std::string& framework,
-                const std::string& model_name, int model_version,
-                const std::string& image_dir, int height = 0, int width = 0)
+                const std::string& model_name, int model_version, int height,
+                int width)
       : gpu_(gpu) {
     model_info_ = ModelDatabase::Singleton().GetModelInfo(framework, model_name,
                                                           model_version);
@@ -73,8 +73,6 @@ class ModelProfiler {
     LOG(INFO) << model_sess_.DebugString();
     model_sessions_.push_back(ModelSessionToString(model_sess_));
     LOG(INFO) << "Profile model " << ModelSessionToProfileID(model_sess_);
-    // Get test dataset
-    ListImages(image_dir);
     cpu_device_ = DeviceManager::Singleton().GetCPUDevice();
 #ifdef USE_GPU
     // Init GPU device
@@ -112,44 +110,16 @@ class ModelProfiler {
     }
     LOG(INFO) << config.DebugString();
     BlockPriorityQueue<Task> task_queue;
+    const size_t input_len =
+        model_sess_.image_width() * model_sess_.image_height() * 3;
 
-    // preprocess
-    std::vector<std::shared_ptr<Task>> preproc_tasks;
-    {
-      config.set_batch(1);
-      config.set_max_batch(1);
-      std::unique_ptr<ModelInstance> model;
-      CreateModelInstance(gpu_, config, ModelIndex(0), &model);
-      // prepare the input
-      int num_inputs = max_batch * (repeat + 1);
-      if (num_inputs > 1000) {
-        num_inputs = 1000;
-      }
-      for (int i = 0; i < num_inputs; ++i) {
-        // Load input image
-        int idx = rand() % test_images_.size();
-        std::string im;
-        ReadImage(test_images_[idx], &im);
-        auto task = std::make_shared<Task>();
-        auto input = task->query.mutable_input();
-        input->set_data_type(DT_IMAGE);
-        auto image = input->mutable_image();
-        image->set_data(im);
-        image->set_format(ImageProto::JPEG);
-        image->set_color(true);
-        std::vector<ArrayPtr> input_arrays;
-        auto beg = std::chrono::high_resolution_clock::now();
-        model->Preprocess(task);
-        auto end = std::chrono::high_resolution_clock::now();
-        preproc_tasks.push_back(task);
-        if (i > 0) {
-          preprocess_lats.push_back(
-              std::chrono::duration_cast<duration>(end - beg).count());
-        }
-      }
-    }
+    // skip preprocess
+    // TODO: refactor preprocessing. also see
+    // BackendServer::HandleFetchImageReply
     std::this_thread::sleep_for(std::chrono::microseconds(200));
-    LOG(INFO) << "Preprocess finished";
+    preprocess_lats.push_back(200);
+    preprocess_lats.push_back(200);
+    LOG(INFO) << "Preprocess skipped";
 
     // output to file
     std::ostream* fout;
@@ -201,30 +171,35 @@ class ModelProfiler {
             std::make_shared<BatchPlanContext>(batchplan_proto));
       }
 
-      std::vector<std::shared_ptr<Task>> tasks;
-      tasks.reserve(batch * (repeat + dryrun));
-      for (int i = 0; i < batch * (repeat + dryrun); ++i) {
-        int idx = i % preproc_tasks.size();
-        int plan_id = i / batch;
-        auto task = std::make_shared<Task>();
-        task->SetDeadline(std::chrono::milliseconds(1000000));
-        task->query.set_global_id(i);
-        task->query.set_model_index(0);
-        task->attrs = preproc_tasks[idx]->attrs;
-        task->AppendInput(preproc_tasks[idx]->inputs[0]->array);
-        tasks.push_back(task);
-      }
       // start meansuring forward latency
       for (int i = 0; i < dryrun + repeat; ++i) {
-        // Memory copy
+        // Assign pre-allocated GPU memory
         auto plan = batchplans[i];
+        plan->SetPinnedMemory(model->AcquirePinnedMemory());
         plan->SetInputArray(model->AcquireInputArray());
+
+        // Create tasks
         for (int j = 0; j < batch; ++j) {
-          auto& task = tasks[i * batch + j];
+          // Fill junk inputs
+          auto input = plan->pinned_memory()->Slice(input_len * j, input_len);
+          std::mt19937 gen(i * batch + j);
+          std::uniform_real_distribution<float> dis;
+          float* beg = input->Data<float>();
+          float* end = beg + input_len;
+          std::generate(beg, end, [&gen, &dis] { return dis(gen); });
+
+          // Create task
+          auto task = std::make_shared<Task>();
+          task->SetDeadline(std::chrono::milliseconds(1000000));
+          task->query.set_global_id(i * batch + j);
+          task->query.set_model_index(0);
+          task->AppendInput(input);
+
+          // Host2Device Memcpy
           plan->AddPreprocessedTask(task);
         }
 
-        // Execute
+        // Execute. Pre-allocated memory will be released in ExecuteBatchPlan.
         auto beg = std::chrono::high_resolution_clock::now();
         model->ExecuteBatchPlan(plan);
         auto end = std::chrono::high_resolution_clock::now();
@@ -262,7 +237,6 @@ class ModelProfiler {
 #ifdef USE_GPU
     LOG(INFO) << "Final free memory: " << gpu_device_->FreeMemory();
 #endif
-    preproc_tasks.clear();
 
     // output to file
     float mean, std;
@@ -294,39 +268,18 @@ class ModelProfiler {
     return {mean, std};
   }
 
-  void ListImages(const std::string& root_dir) {
-    fs::directory_iterator end_iter;
-    for (fs::directory_iterator it(root_dir); it != end_iter; ++it) {
-      test_images_.push_back(it->path().string());
-    }
-    LOG(INFO) << "Number of test images: " << test_images_.size();
-  }
-
-  void ReadImage(const std::string& file_path, std::string* content) {
-    std::ifstream fin(file_path, std::ios::binary | std::ios::ate);
-    size_t fsize = fin.tellg();
-    fin.seekg(0);
-    content->resize(fsize);
-    fin.read(&((*content)[0]), fsize);
-    fin.close();
-  }
-
  private:
   int gpu_;
   ModelSession model_sess_;
   const YAML::Node* model_info_;
   std::string framework_;
   std::string model_name_;
-  int version_;
-  int height_;
-  int width_;
-  std::vector<std::string> test_images_;
   std::vector<std::string> model_sessions_;
   CPUDevice* cpu_device_;
 #ifdef USE_GPU
   GPUDevice* gpu_device_;
 #endif
-};
+};  // namespace backend
 
 }  // namespace backend
 }  // namespace nexus
@@ -346,13 +299,11 @@ int main(int argc, char** argv) {
   // Check flags
   CHECK_GT(FLAGS_framework.length(), 0) << "Missing framework";
   CHECK_GT(FLAGS_model.length(), 0) << "Missing model";
-  CHECK_GT(FLAGS_image_dir.length(), 0) << "Missing image_dir";
   if (FLAGS_framework == "tf_share" && FLAGS_share_prefix)
     LOG(FATAL) << "Cannot use --share_prefix on TFShare models";
   srand(time(NULL));
   ModelProfiler profiler(FLAGS_gpu, FLAGS_framework, FLAGS_model,
-                         FLAGS_model_version, FLAGS_image_dir, FLAGS_height,
-                         FLAGS_width);
+                         FLAGS_model_version, FLAGS_height, FLAGS_width);
   profiler.Profile(FLAGS_min_batch, FLAGS_max_batch, FLAGS_output,
                    FLAGS_repeat);
 }

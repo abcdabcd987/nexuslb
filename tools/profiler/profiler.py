@@ -6,17 +6,12 @@ import sys
 import argparse
 import subprocess
 import shutil
-import tempfile
 import uuid
-import yaml
 import numpy as np
-from PIL import Image
 
 
 _root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
 _profiler = os.path.join(_root, 'build/profiler')
-_models = {}
-_dataset_dir = None
 
 
 def parse_int_list(s):
@@ -28,88 +23,6 @@ def parse_int_list(s):
         else:
             res.append(int(split))
     return res
-
-
-def load_model_db(path):
-    with open(path) as f:
-        model_db = yaml.safe_load(f.read())
-    for model_info in model_db['models']:
-        framework = model_info['framework']
-        model_name = model_info['model_name']
-        if framework not in _models:
-            _models[framework] = {}
-        _models[framework][model_name] = model_info
-
-    if 'tf_share' in model_db:
-        d = {}
-        for model_info in model_db['tf_share']:
-            for suffix_info in model_info['suffix_models']:
-                name = suffix_info['model_name']
-                if name in d:
-                    raise ValueError(f'Duplicated model {name}')
-                d[name] = model_info
-        _models['tf_share'] = d
-
-
-def find_max_batch(framework, model_name, gpus):
-    global args
-    cmd_base = '%s -model_root %s -image_dir %s -gpu %s -framework %s -model %s -model_version %s' % (
-        _profiler, args.model_root, _dataset_dir, gpus[0], framework, model_name, args.version)
-    if args.height > 0 and args.width > 0:
-        cmd_base += ' -height %s -width %s' % (args.height, args.width)
-    if args.prefix:
-        cmd_base += ' -share_prefix'
-    left = 0
-    right = 256
-    curr_tp = None
-    out_of_memory = False
-    while True:
-        print('Finding max_batch in [%d, inf)' % right)
-        prev_tp = curr_tp
-        curr_tp = None
-        cmd = cmd_base + ' -min_batch %s -max_batch %s' % (right, right)
-        print(cmd)
-        # exit(0)
-        proc = subprocess.Popen(cmd, shell=True, universal_newlines=True,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        out, err = proc.communicate()
-        if 'out of memory' in err or 'out of memory' in out:
-            print('Batch size %s: out of memory' % right)
-            out_of_memory = True
-            break
-        flag = False
-        for line in out.split('\n'):
-            if flag:
-                items = line.split(',')
-                lat = float(items[1]) + float(items[2])  # mean + std
-                curr_tp = right * 1e6 / lat
-                break
-            if line.startswith('batch,latency'):
-                flag = True
-        if curr_tp is None:
-            # Unknown error happens, need to fix first
-            print(err)
-            exit(1)
-        if prev_tp is not None and curr_tp / prev_tp < 1.01:
-            break
-        left = right
-        right *= 2
-    if not out_of_memory:
-        return right
-    while right - left > 1:
-        print('Finding max_batch in [%d, %s)' % (left, right))
-        mid = (left + right) // 2
-        cmd = cmd_base + ' -min_batch %s -max_batch %s' % (mid, mid)
-        print(cmd)
-        proc = subprocess.Popen(cmd, shell=True, universal_newlines=True, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT)
-        out, _ = proc.communicate()
-        if 'out of memory' in out or 'OOM' in out:
-            right = mid
-        else:
-            left = mid
-    return left
 
 
 def run_profiler(gpu, prof_id, input_queue, output_queue):
@@ -200,13 +113,11 @@ def merge_mean_std(tuple1, tuple2):
 
 def get_profiler_cmd(args):
     cmd = [_profiler,
-           f'-model_root={args.model_root}', f'-image_dir={_dataset_dir}',
+           f'-model_root={args.model_root}',
            f'-framework={args.framework}', f'-model={args.model}', f'-model_version={args.version}']
     if args.height > 0 and args.width > 0:
         cmd.append(f'-height={args.height}')
         cmd.append(f'-width={args.width}')
-    if args.prefix:
-        cmd.append('-share_prefix')
     return cmd
 
 
@@ -291,14 +202,6 @@ def profile_model_single_gpu(gpu, min_batch, max_batch, prof_id, output):
     print('worker joined')
 
 
-def generate_dataset(width, height):
-    global _dataset_dir
-    _dataset_dir = tempfile.mkdtemp(prefix='random-{}x{}-'.format(width, height))
-    buf = np.random.randint(256, size=(224, 224, 3), dtype=np.uint8)
-    img = Image.frombytes('RGB', (224, 224), buf)
-    img.save(os.path.join(_dataset_dir, '{}x{}.jpg'.format(width, height)))
-
-
 def profile_model(args):
     if args.gpu_list == "-1":
         gpus = [-1]
@@ -306,19 +209,13 @@ def profile_model(args):
         gpus = parse_int_list(args.gpu_list)
     if len(gpus) != 1 and args.gpu_uuid:
         raise ValueError('--gpu_uuid cannot be set with more than one --gpus')
-    generate_dataset(args.width, args.height)
 
     prof_id = '%s:%s:%s' % (args.framework, args.model, args.version)
     if args.height > 0 and args.width > 0:
         prof_id += ':%sx%s' % (args.height, args.width)
     print('Start profiling %s' % prof_id)
 
-    if args.min_batch > 0 and args.max_batch > 0:
-        max_batch = args.max_batch
-    else:
-        max_batch = find_max_batch(args.framework, args.model, gpus)
-        if args.max_batch > 0 and max_batch > args.max_batch:
-            max_batch = args.max_batch
+    max_batch = args.max_batch
     min_batch = max(1, args.min_batch)
     print('Min batch: %s' % min_batch)
     print('Max batch: %s' % max_batch)
@@ -349,12 +246,11 @@ def profile_model(args):
     else:
         shutil.move(output, prof_file)
         print('Save profile to %s' % prof_file)
-    shutil.rmtree(_dataset_dir)
 
 
 def main():
     parser = argparse.ArgumentParser(description='Profile models')
-    parser.add_argument('--framework', required=True,
+    parser.add_argument('--framework', default='tensorflow',
                         choices=['caffe', 'caffe2',
                                  'tensorflow', 'darknet', 'tf_share'],
                         help='Framework name')
@@ -367,11 +263,9 @@ def main():
                         help='GPU indexes. e.g. "0" or "0-2,4,5,7-8".')
     parser.add_argument('--height', type=int, required=True, help='Image height')
     parser.add_argument('--width', type=int, required=True, help='Image width')
-    parser.add_argument('--prefix', action='store_true',
-                        help='Enable prefix batching')
-    parser.add_argument('--max_batch', type=int, default=0,
+    parser.add_argument('--max_batch', type=int, required=True,
                         help='Limit the max batch size')
-    parser.add_argument('--min_batch', type=int, default=0,
+    parser.add_argument('--min_batch', type=int, default=1,
                         help='Limit the min batch size')
     parser.add_argument('-f', '--force', action='store_true',
                         help='Overwrite the existing model profile in model DB')
@@ -379,15 +273,6 @@ def main():
                         help='Save profile result to a subdirectory with the GPU UUID')
     global args
     args = parser.parse_args()
-
-    if args.prefix and args.framework == 'tf_share':
-        sys.stderr.write('Cannot use -prefix with TFShare models')
-        return
-    load_model_db(os.path.join(args.model_root, 'db', 'model_db.yml'))
-    if args.model not in _models[args.framework]:
-        sys.stderr.write('%s:%s not found in model DB\n' %
-                         (args.framework, args.model))
-        return
 
     profile_model(args)
 

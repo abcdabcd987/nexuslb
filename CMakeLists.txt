@@ -1,16 +1,6 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.10)
 project(nexus LANGUAGES CXX)
 list(INSERT CMAKE_MODULE_PATH 0 ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
-
-set(NEXUS_DEP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/build-dep-install)
-set(LIBTF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/libtensorflow_cc)
-list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/boost)
-list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/gflags)
-list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/glog)
-list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/gtest)
-list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/opencv)
-list(INSERT CMAKE_PREFIX_PATH 0 ${NEXUS_DEP_DIR}/yaml-cpp)
-list(INSERT CMAKE_PREFIX_PATH 0 ${LIBTF_DIR}/protobuf)
 
 # We don't support caffe2/caffe/darknet any more
 option(USE_GPU        "Use GPU"        ON )
@@ -23,14 +13,13 @@ if(USE_CAFFE2 AND USE_CAFFE)
 endif()
 set(CUDA_PATH "/usr/local/cuda" CACHE STRING "Path to the Cuda toolkit")
 
-set(BOOST_ROOT /usr/local/boost)
-find_package(Boost 1.69.0 REQUIRED COMPONENTS system filesystem)
+find_package(Boost 1.65 REQUIRED COMPONENTS system filesystem)
 find_package(Protobuf REQUIRED)
-find_package(glog REQUIRED)
+find_package(Glog REQUIRED)
 find_package(gflags REQUIRED COMPONENTS shared)
 find_package(GTest REQUIRED)
-find_package(yaml-cpp 0.6.2 REQUIRED)
-find_package(OpenCV REQUIRED)
+find_package(yaml-cpp 0.6 REQUIRED)
+find_package(OpenCV 4 REQUIRED)
 include(ProcessorCount)
 ProcessorCount(NPROC)
 
@@ -110,24 +99,10 @@ target_include_directories(common PUBLIC
 target_compile_options(common PUBLIC -std=c++17)
 target_link_libraries(common PUBLIC ario)
 target_link_libraries(common PUBLIC
-        yaml-cpp gflags glog::glog protobuf::libprotobuf
+        yaml-cpp gflags glog protobuf::libprotobuf
         ${OpenCV_LIBS} Boost::filesystem Boost::system)
 set_target_properties(common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-
-
-###### scheduler ######
-# add_executable(scheduler
-#         src/nexus/scheduler/backend_delegate.cpp
-#         src/nexus/scheduler/complex_query.cpp
-#         src/nexus/scheduler/frontend_delegate.cpp
-#         src/nexus/scheduler/sch_info.cpp
-#         src/nexus/scheduler/scheduler.cpp
-#         src/nexus/scheduler/scheduler_main.cpp)
-# target_include_directories(scheduler PRIVATE
-#         ${CMAKE_CURRENT_SOURCE_DIR}/src
-#         ${GENERATED_SRC_DIR}/src)
-# target_link_libraries(scheduler PRIVATE common)
 
 
 

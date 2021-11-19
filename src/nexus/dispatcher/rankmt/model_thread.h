@@ -32,9 +32,10 @@ class RankThread;
 
 class ModelThread {
  public:
-  ModelThread(RankmtConfig config,
-      ario::EpollExecutor* executor, ModelSession model_session,
-      ModelIndex model_index, RankThread* rank_thread,
+  ModelThread(
+      RankmtConfig config, ario::EpollExecutor* executor,
+      ModelSession model_session, ModelIndex model_index,
+      RankThread* rank_thread,
       std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
       std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends);
   ModelThread(const ModelThread& other) = delete;

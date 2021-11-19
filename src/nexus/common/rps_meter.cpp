@@ -31,6 +31,7 @@ RpsMeter::RpsMeter(double window_span_second, size_t history_length,
     : window_span_ns_(static_cast<int64_t>(window_span_second * 1e9)),
       earliest_time_ns_(ns(start_time)),
       counters_(history_length, 0) {
+#ifdef HACK_RPSMETER
   size_t idx = cnt_objects++;
   std::vector<std::string> tokens;
   SplitString(FLAGS_hack_rpsmeter, ',', &tokens);
@@ -38,6 +39,7 @@ RpsMeter::RpsMeter(double window_span_second, size_t history_length,
       << "Not enough entries of `-hack_rpsmeter` specified.";
   hack_rps_ = std::stod(tokens[idx]);
   LOG(WARNING) << "RpsMeter created with hack_rps_=" << hack_rps_;
+#endif
 }
 
 void RpsMeter::PopLeft(int64_t time_ns) {
@@ -66,8 +68,10 @@ void RpsMeter::Hit(TimePoint time) {
 }
 
 std::optional<AvgStd> RpsMeter::Get(TimePoint now) {
+#ifdef HACK_RPSMETER
   // FIXME
   return {{hack_rps_, 0.0}};
+#endif
 
   auto time_ns = ns(now);
   if (time_ns < earliest_time_ns_) {

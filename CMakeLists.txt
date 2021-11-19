@@ -343,3 +343,11 @@ add_executable(simple examples/simple_app/src/simple.cpp)
 target_link_libraries(simple PRIVATE nexus gflags)
 add_executable(multimodel examples/simple_app/src/multimodel.cpp)
 target_link_libraries(multimodel PRIVATE nexus gflags)
+
+
+
+# Hacks
+option(HACK_RPSMETER OFF)
+if(HACK_RPSMETER)
+    target_compile_definitions(common PUBLIC HACK_RPSMETER)
+endif()

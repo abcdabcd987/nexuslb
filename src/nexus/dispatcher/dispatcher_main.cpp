@@ -13,7 +13,8 @@ using namespace nexus::dispatcher;
 
 DEFINE_string(poller, "spinning", "options: blocking, spinning");
 DEFINE_string(rdma_dev, "", "RDMA device name");
-DEFINE_uint32(port, 7001, "TCP port used to setup RDMA connection.");
+DEFINE_uint32(port, SCHEDULER_DEFAULT_PORT,
+              "TCP port used to setup RDMA connection.");
 DEFINE_string(pin_cpus, "all", "Example: `0,2-4,7-16`. Example: `all`");
 
 std::vector<int> ParseCores(const std::string& s) {

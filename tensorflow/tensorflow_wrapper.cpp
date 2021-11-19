@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-#ifdef USE_GPU
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA)
 #include "tensorflow/core/common_runtime/gpu/gpu_process_state.h"
 #else
 #include "tensorflow/core/common_runtime/process_state.h"
@@ -106,7 +106,7 @@ Session::Session(const std::string& visible_device_list,
                  const std::string& pb_path)
     : impl_(std::make_unique<Impl>()) {
   // Init session options
-#ifdef USE_GPU
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA)
   auto& tf_option = impl_->gpu_option;
   auto gpu_opt = impl_->gpu_option.config.mutable_gpu_options();
   gpu_opt->set_visible_device_list(visible_device_list);
@@ -140,7 +140,7 @@ Session::Session(const std::string& visible_device_list,
   }
 
   // Get the GPU allocator for creating input buffer
-#ifdef USE_GPU
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA)
   impl_->tf_allocator =
       tensorflow::GPUProcessState::singleton()->GetGPUAllocator(
           impl_->gpu_option.config.gpu_options(), tensorflow::TfDeviceId(0), 0,
@@ -175,6 +175,7 @@ Tensor Session::NewTensor(DataType dtype, const std::vector<size_t>& shape) {
     tf_shape.AddDim(dim);
   }
   tensorflow::Tensor tf_tensor(impl_->tf_allocator, tf_dtype, tf_shape);
+  CHECK(tf_tensor.data() != nullptr);
   return TensorProxy::CopyFromTensorFlow(tf_tensor);
 }
 

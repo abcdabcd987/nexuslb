@@ -1,5 +1,6 @@
 *~
 *.o
+*.so
 *.pyc
 *.d
 .DS_Store*
@@ -23,3 +24,8 @@ compile_commands.json
 .vscode/
 .cache/
 .mypy_cache/
+
+bazel-bin
+bazel-out
+bazel-testlogs
+bazel-tensorflow

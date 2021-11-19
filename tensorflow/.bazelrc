@@ -1,0 +1,43 @@
+# Cherry-picked from https://github.com/tensorflow/tensorflow/blob/master/.bazelrc
+
+# TensorFlow common settings
+build --spawn_strategy=standalone
+build --announce_rc
+build --define=grpc_no_ares=true
+build --noincompatible_remove_legacy_whole_archive
+build --noincompatible_prohibit_aapt1
+common --experimental_repo_remote_exec
+
+# TensorFlow uses C++14
+build --cxxopt=-std=c++14
+build --host_cxxopt=-std=c++14
+
+# Compiler optimization
+build -c opt
+build --copt=-mavx2
+build --copt=-mfma
+
+# Suppress C++ compiler warnings
+build --copt=-w
+build --host_copt=-w
+
+# TensorFlow 2.x API
+build --define=tf_api_version=2 --action_env=TF2_BEHAVIOR=1
+
+# Monolithic
+build --define=framework_shared_object=false
+
+# Disable features
+build --define=with_xla_support=false
+build --define=no_aws_support=true
+build --define=no_gcp_support=true
+build --define=no_hdfs_support=true
+build --define=no_nccl_support=true
+build --define=build_with_mkl=false --define=enable_mkl=false --define=build_with_openmp=false
+build --repo_env TF_NEED_TENSORRT=0
+build --repo_env TF_NEED_ROCM=0 --define=using_rocm=false --define=using_rocm_hipcc=false
+
+# Options used to build with CUDA.
+build:cuda --repo_env TF_NEED_CUDA=1
+build:cuda --crosstool_top=@local_config_cuda//crosstool:toolchain
+build:cuda --@local_config_cuda//:enable_cuda

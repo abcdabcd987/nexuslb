@@ -190,25 +190,14 @@ target_link_libraries(backend PRIVATE backend_obj)
 
 ## backend: TensorFlow support ##
 if(USE_TENSORFLOW)
-    add_library(tensorflow_cc INTERFACE)
-    target_include_directories(tensorflow_cc INTERFACE ${LIBTF_DIR}/tensorflow/include)
-    target_include_directories(tensorflow_cc INTERFACE ${LIBTF_DIR}/protobuf/include)
-    target_link_libraries(tensorflow_cc INTERFACE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_cc.so)
-    target_link_libraries(tensorflow_cc INTERFACE ${LIBTF_DIR}/tensorflow/lib/libtensorflow_framework.so)
+    add_library(tfwrapper INTERFACE)
+    target_include_directories(tfwrapper INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tensorflow/include)
+    target_link_libraries(tfwrapper INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/tensorflow/lib/libtensorflow_wrapper.so)
+    target_compile_definitions(tfwrapper INTERFACE USE_TENSORFLOW)
 
-    add_library(tensorflow_wrapper src/nexus/backend/tensorflow_wrapper.cpp)
-    target_include_directories(tensorflow_wrapper PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(tensorflow_wrapper PUBLIC tensorflow_cc)
-
-    # TensorFlow is currently built with C++14. Some TensorFlow APIs expose
-    # pre-adopted std types with absl. To avoid weird ABI compatibility issues,
-    # compile the wrapper with the same C++ standard as TensorFlow.
-    target_compile_options(tensorflow_wrapper PRIVATE -std=c++14)
-
-    target_compile_definitions(backend_obj PUBLIC USE_TENSORFLOW)
     target_sources(backend_obj PRIVATE
             src/nexus/backend/tensorflow_model.cpp)
-    target_link_libraries(backend_obj PUBLIC tensorflow_wrapper)
+    target_link_libraries(backend_obj PUBLIC tfwrapper)
 endif()
 
 ## backend: Caffe2 support ##
@@ -279,7 +268,6 @@ endif()
 ## backend: CUDA support ##
 if(USE_GPU)
     target_compile_definitions(common PUBLIC USE_GPU)
-    target_compile_definitions(tensorflow_wrapper PUBLIC USE_GPU)
     target_include_directories(common PUBLIC ${CUDA_PATH}/include)
     target_link_libraries(common PUBLIC
             ${CUDA_PATH}/lib64/stubs/libcuda.so
@@ -339,12 +327,11 @@ target_link_libraries(stress_rankmt PUBLIC bench_dispatcher_obj)
 
 
 ###### tools/test_gpu_mem_sharing ######
-if(USE_GPU AND USE_TENSORFLOW)
-    add_executable(test_gpu_mem_sharing tools/test_gpu_mem_sharing.cpp)
-    target_link_libraries(test_gpu_mem_sharing PUBLIC common)
-    target_link_libraries(test_gpu_mem_sharing PUBLIC tensorflow_wrapper)
-    target_link_libraries(test_gpu_mem_sharing PUBLIC tensorflow_cc)
-endif()
+# if(USE_GPU AND USE_TENSORFLOW)
+#     add_executable(test_gpu_mem_sharing tools/test_gpu_mem_sharing.cpp)
+#     target_link_libraries(test_gpu_mem_sharing PUBLIC common)
+#     target_link_libraries(test_gpu_mem_sharing PUBLIC tfwrapper)
+# endif()
 
 
 

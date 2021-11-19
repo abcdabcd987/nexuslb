@@ -18,11 +18,12 @@ namespace dispatcher {
 namespace rankmt {
 
 ModelThread::ModelThread(
-    ario::EpollExecutor* executor, ModelSession model_session,
-    ModelIndex model_index, RankThread* rank_thread,
+    RankmtConfig config, ario::EpollExecutor* executor,
+    ModelSession model_session, ModelIndex model_index, RankThread* rank_thread,
     std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
     std::unordered_map<NodeId, std::shared_ptr<BackendDelegate>> backends)
-    : executor_(*CHECK_NOTNULL(executor)),
+    : config_(config),
+      executor_(*CHECK_NOTNULL(executor)),
       rank_thread_(*CHECK_NOTNULL(rank_thread)),
       model_session_(std::move(model_session)),
       model_session_id_(ModelSessionToString(model_session_)),
@@ -132,7 +133,7 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   auto deadline = TimePoint(std::chrono::nanoseconds(
       request.query_without_input().clock().frontend_recv_ns()));
   deadline += std::chrono::milliseconds(model_session_.latency_sla());
-  deadline -= kDataPlaneLatency;  // Backend -> Frontend
+  deadline -= config_.data_latency;  // Backend -> Frontend
   constexpr auto kBackendExecutionDelay = std::chrono::microseconds(2000);
   deadline -= kBackendExecutionDelay;  // FIXME: investigate this
 
@@ -157,8 +158,8 @@ void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   if (rps.has_value()) {
     double sec = model_session_.latency_sla() * 1e-3;
     std::chrono::duration<double> time_budget(sec);
-    time_budget -= kCtrlPlaneLatency;
-    time_budget -= kDataPlaneLatency;
+    time_budget -= config_.ctrl_latency;
+    time_budget -= config_.data_latency;
     double time_budget_sec = time_budget.count();
     target_batch_size_ =
         bse_.Estimate(profile_, time_budget_sec, rps->avg, rps->std);
@@ -169,7 +170,8 @@ void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
 }
 
 void ModelThread::UpdateCandidate() {
-  auto earliest_exec_at = Clock::now() + kDataPlaneLatency + kCtrlPlaneLatency;
+  auto earliest_exec_at =
+      Clock::now() + config_.data_latency + config_.ctrl_latency;
   auto rps = rps_meter_.Get(earliest_exec_at);
   UpdateTargetBatchSize(rps);
   batch_policy_.Update(earliest_exec_at, target_batch_size_);

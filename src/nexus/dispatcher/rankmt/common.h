@@ -15,8 +15,18 @@ namespace dispatcher {
 namespace rankmt {
 
 constexpr size_t kRpsMeterHistoryLength = 32;
-constexpr auto kCtrlPlaneLatency = std::chrono::microseconds(2000);
-constexpr auto kDataPlaneLatency = std::chrono::microseconds(5000);
+
+struct RankmtConfig {
+  std::chrono::duration<long, std::nano> ctrl_latency;
+  std::chrono::duration<long, std::nano> data_latency;
+
+  static RankmtConfig Default() {
+    RankmtConfig config;
+    config.ctrl_latency = std::chrono::microseconds(2000);
+    config.data_latency = std::chrono::microseconds(5000);
+    return config;
+  };
+};
 
 std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
                                             uint32_t batch_size);

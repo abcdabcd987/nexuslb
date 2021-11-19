@@ -32,7 +32,7 @@ class RankThread;
 
 class ModelThread {
  public:
-  ModelThread(
+  ModelThread(RankmtConfig config,
       ario::EpollExecutor* executor, ModelSession model_session,
       ModelIndex model_index, RankThread* rank_thread,
       std::unordered_map<NodeId, std::shared_ptr<FrontendDelegate>> frontends,
@@ -90,6 +90,7 @@ class ModelThread {
   void SendDroppedQueries(
       const std::vector<std::shared_ptr<QueryContext>>& drops);
 
+  RankmtConfig config_;
   ario::EpollExecutor& executor_;
   RankThread& rank_thread_;
   ModelSession model_session_;

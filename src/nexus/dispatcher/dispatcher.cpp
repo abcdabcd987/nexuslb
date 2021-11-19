@@ -29,7 +29,8 @@ namespace nexus {
 namespace dispatcher {
 
 Dispatcher::Dispatcher(ario::PollerType poller_type, std::string rdma_dev,
-                       uint16_t port, std::vector<int> pin_cpus)
+                       uint16_t port, std::vector<int> pin_cpus,
+                       RankmtConfig config)
     : rdma_dev_(std::move(rdma_dev)),
       tcp_server_port_(port),
       pin_cpus_(std::move(pin_cpus)),
@@ -40,7 +41,7 @@ Dispatcher::Dispatcher(ario::PollerType poller_type, std::string rdma_dev,
       rdma_sender_(&small_buffers_),
       next_gpu_id_(1),
       rank_thread_executor_(poller_type),
-      scheduler_(&main_executor_, &rank_thread_executor_) {
+      scheduler_(config, &main_executor_, &rank_thread_executor_) {
   // Don't Pin the main thread.
   // One CPU for the RankThread. The rest for ModelThreads.
   CHECK_GT(pin_cpus_.size(), 1) << "Need at least two cpus";

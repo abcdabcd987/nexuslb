@@ -29,23 +29,12 @@ namespace nexus {
 namespace dispatcher {
 namespace rankmt {
 
-MultiThreadRankScheduler::Builder::Builder(
-    ario::EpollExecutor* scheduler_executor,
-    ario::EpollExecutor* rank_thread_executor)
-    : scheduler_executor_(CHECK_NOTNULL(scheduler_executor)),
-      rank_thread_executor_(CHECK_NOTNULL(rank_thread_executor)) {}
-
-std::unique_ptr<MultiThreadRankScheduler>
-MultiThreadRankScheduler::Builder::Build() {
-  return std::make_unique<MultiThreadRankScheduler>(scheduler_executor_,
-                                                    rank_thread_executor_);
-}
-
 MultiThreadRankScheduler::MultiThreadRankScheduler(
-    ario::EpollExecutor* scheduler_executor,
+    RankmtConfig config, ario::EpollExecutor* scheduler_executor,
     ario::EpollExecutor* rank_thread_executor)
-    : executor_(*CHECK_NOTNULL(scheduler_executor)),
-      rank_thread_(rank_thread_executor) {}
+    : config_(config),
+      executor_(*CHECK_NOTNULL(scheduler_executor)),
+      rank_thread_(config_, rank_thread_executor) {}
 
 MultiThreadRankScheduler::RequestEntrance::RequestEntrance(
     ModelThread* model_thread)
@@ -98,7 +87,7 @@ MultiThreadRankScheduler::AddModelSession(
   ModelIndex model_index(model_index_table_.size());
   model_index_table_[model_session_id] = model_index;
   model_threads_.emplace_back(std::make_unique<ModelThread>(
-      model_thread_executor, model_session, model_index, &rank_thread_,
+      config_, model_thread_executor, model_session, model_index, &rank_thread_,
       frontends_, backends_));
   auto* model_thread = model_threads_.back().get();
   rank_thread_.PostAddModelThread(model_index, model_thread);

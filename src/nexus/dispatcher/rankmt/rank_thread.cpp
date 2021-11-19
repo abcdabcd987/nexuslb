@@ -21,8 +21,11 @@ RankThread::GpuContext::GpuContext(GpuId gpu_id, GpuDelegate* delegate)
       delegate(delegate),
       free_at(std::chrono::nanoseconds(0)) {}
 
-RankThread::RankThread(ario::EpollExecutor* executor)
-    : executor_(*CHECK_NOTNULL(executor)), stop_flag_(false), poller_(this) {
+RankThread::RankThread(RankmtConfig config, ario::EpollExecutor* executor)
+    : config_(config),
+      executor_(*CHECK_NOTNULL(executor)),
+      stop_flag_(false),
+      poller_(this) {
   constexpr size_t kMaxModels = 512;
 
   // Prevent reallocation for thread safety.
@@ -190,8 +193,8 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   const auto& candidate = mdata.candidate.value();
 
   auto now = Clock::now();
-  auto send_at = candidate.exec_at - kCtrlPlaneLatency - kDataPlaneLatency -
-                 kInterThreadLatency;
+  auto send_at = candidate.exec_at - config_.ctrl_latency -
+                 config_.data_latency - kInterThreadLatency;
   mdata.send_timer.SetTimeout(std::max(send_at, now));
   mdata.send_timer.AsyncWait([this, pmdata = &mdata](ario::ErrorCode error) {
     if (error == ario::ErrorCode::kCancelled) return;

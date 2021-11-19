@@ -29,13 +29,6 @@
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
-DEFINE_int64(seed, 0xabcdabcd987LL, "Random seed");
-DEFINE_int32(warmup, 3, "Warmup duration in seconds");
-DEFINE_int32(duration, 60, "Benchmark duration in seconds");
-DEFINE_double(multiplier, 1.0, "Multiplier for avg_rps and num_backends");
-DEFINE_bool(multithread, false, "Whether to enable multithreading");
-DEFINE_int32(num_backends, 1, "Number of backends");
-
 using namespace nexus;
 using namespace nexus::dispatcher;
 
@@ -47,21 +40,9 @@ struct Options {
   bool multithread;
   int num_backends;
   std::vector<char*> workloads;
+  RankmtConfig rankmt;
 
-  static Options FromArgs(int argc, char** argv, int argp) {
-    if (argp == argc) {
-      LOG(FATAL) << "Please provide a list of workloads. Example: \""
-                    "sleep#6817,23431,0,0:resnet_01:1:100"
-                    "@avg_rps=1953\"";
-    }
-    return Options{FLAGS_seed,
-                   FLAGS_warmup,
-                   FLAGS_duration,
-                   FLAGS_multiplier,
-                   FLAGS_multithread,
-                   FLAGS_num_backends,
-                   {argv + argp, argv + argc}};
-  }
+  static Options FromArgs(int argc, char** argv, int argp);
 };
 
 struct Workload {
@@ -300,9 +281,8 @@ class DispatcherRunner {
   }
 
   void BuildMultiThreadRankScheduler() {
-    MultiThreadRankScheduler::Builder builder(main_executor_.get(),
-                                              rank_executor_.get());
-    scheduler_ = builder.Build();
+    scheduler_ = std::make_unique<MultiThreadRankScheduler>(
+        options_.rankmt, main_executor_.get(), rank_executor_.get());
   }
 
   void BuildFakeServers() {
@@ -442,6 +422,39 @@ class DispatcherRunner {
   TimePoint serious_time_;
   TimePoint stop_time_;
 };
+
+DEFINE_int64(seed, 0xabcdabcd987LL, "Random seed");
+DEFINE_int32(warmup, 3, "Warmup duration in seconds");
+DEFINE_int32(duration, 60, "Benchmark duration in seconds");
+DEFINE_double(multiplier, 1.0, "Multiplier for avg_rps and num_backends");
+DEFINE_bool(multithread, false, "Whether to enable multithreading");
+DEFINE_int32(num_backends, 1, "Number of backends");
+DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
+              "Rankmt: control plane latency in microseconds.");
+DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
+              "Rankmt: data plane latency in microseconds.");
+
+Options Options::FromArgs(int argc, char** argv, int argp) {
+  if (argp == argc) {
+    LOG(FATAL) << "Please provide a list of workloads. Example: \""
+                  "sleep#6817,23431,0,0:resnet_01:1:100"
+                  "@avg_rps=1953\"";
+  }
+  RankmtConfig rankmt;
+  rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
+  rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
+
+  return Options{
+      FLAGS_seed,
+      FLAGS_warmup,
+      FLAGS_duration,
+      FLAGS_multiplier,
+      FLAGS_multithread,
+      FLAGS_num_backends,
+      {argv + argp, argv + argc},
+      rankmt,
+  };
+}
 
 int main(int argc, char** argv) {
   FLAGS_logtostderr = 1;

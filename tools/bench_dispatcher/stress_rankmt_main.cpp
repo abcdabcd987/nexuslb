@@ -47,6 +47,7 @@ struct Options {
   double duration;
   double lag;
   double rps;
+  RankmtConfig rankmt;
 
   static Options FromGflags();
 };
@@ -177,9 +178,8 @@ class DispatcherRunner {
   }
 
   void BuildMultiThreadRankScheduler() {
-    MultiThreadRankScheduler::Builder builder(main_executor_.get(),
-                                              rank_executor_.get());
-    scheduler_ = builder.Build();
+    scheduler_ = std::make_unique<MultiThreadRankScheduler>(
+        options_.rankmt, main_executor_.get(), rank_executor_.get());
   }
 
   void BuildFakeServers() {
@@ -364,11 +364,20 @@ DEFINE_double(warmup, 5, "Warmup period in seconds");
 DEFINE_double(duration, 15, "Stress test duration in seconds");
 DEFINE_double(lag, 0.002, "Max tolerable request lag in seconds");
 DEFINE_double(rps, 1000, "Total request rate per second");
+DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
+              "Rankmt: control plane latency in microseconds.");
+DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
+              "Rankmt: data plane latency in microseconds.");
 
 Options Options::FromGflags() {
+  RankmtConfig rankmt;
+  rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
+  rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
+
   return {
-      FLAGS_seed, FLAGS_backends, FLAGS_models,   FLAGS_slope, FLAGS_intercept,
-      FLAGS_slo,  FLAGS_warmup,   FLAGS_duration, FLAGS_lag,   FLAGS_rps,
+      FLAGS_seed,      FLAGS_backends, FLAGS_models, FLAGS_slope,
+      FLAGS_intercept, FLAGS_slo,      FLAGS_warmup, FLAGS_duration,
+      FLAGS_lag,       FLAGS_rps,      rankmt,
   };
 }
 

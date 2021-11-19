@@ -29,7 +29,7 @@ class ModelThread;
 
 class RankThread {
  public:
-  explicit RankThread(ario::EpollExecutor* executor);
+  RankThread(RankmtConfig config, ario::EpollExecutor* executor);
   RankThread(const RankThread& other) = delete;
   RankThread& operator=(const RankThread& other) = delete;
   RankThread(RankThread&& other) = delete;
@@ -100,6 +100,7 @@ class RankThread {
 
   void Poll();
 
+  RankmtConfig config_;
   ario::EpollExecutor& executor_;
   bool stop_flag_;
   Poller poller_;

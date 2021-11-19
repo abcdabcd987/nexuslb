@@ -9,6 +9,7 @@
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/frontend_delegate.h"
+#include "nexus/dispatcher/rankmt/common.h"
 #include "nexus/dispatcher/rankmt/model_thread.h"
 #include "nexus/dispatcher/rankmt/rank_thread.h"
 #include "nexus/proto/control.pb.h"
@@ -20,17 +21,6 @@ namespace rankmt {
 
 class MultiThreadRankScheduler {
  public:
-  class Builder {
-   public:
-    explicit Builder(ario::EpollExecutor* scheduler_executor,
-                     ario::EpollExecutor* rank_thread_executor);
-    std::unique_ptr<MultiThreadRankScheduler> Build();
-
-   private:
-    ario::EpollExecutor* scheduler_executor_;
-    ario::EpollExecutor* rank_thread_executor_;
-  };
-
   class RequestEntrance {
    public:
     RequestEntrance() : model_thread_(nullptr) {}
@@ -55,7 +45,8 @@ class MultiThreadRankScheduler {
     ModelThread* model_thread_;
   };
 
-  MultiThreadRankScheduler(ario::EpollExecutor* scheduler_executor,
+  MultiThreadRankScheduler(RankmtConfig config,
+                           ario::EpollExecutor* scheduler_executor,
                            ario::EpollExecutor* rank_thread_executor);
   ~MultiThreadRankScheduler();
   void Stop();
@@ -68,6 +59,7 @@ class MultiThreadRankScheduler {
   void RemoveFrontend(NodeId frontend_id);
 
  private:
+  RankmtConfig config_;
   ario::EpollExecutor& executor_;
   RankThread rank_thread_;
 
@@ -81,6 +73,7 @@ class MultiThreadRankScheduler {
 }  // namespace rankmt
 
 using MultiThreadRankScheduler = rankmt::MultiThreadRankScheduler;
+using RankmtConfig = rankmt::RankmtConfig;
 
 }  // namespace dispatcher
 }  // namespace nexus

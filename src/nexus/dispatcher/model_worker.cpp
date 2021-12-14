@@ -139,6 +139,8 @@ void ModelWorker::HandleDispatch(DispatchRequest&& request,
   auto* query_without_input = request.mutable_query_without_input();
   auto* clock = query_without_input->mutable_clock();
   clock->set_dispatcher_recv_ns(dispatcher_recv_ns);
+  auto model_index = request.model_index();
+  auto query_id = request.query_id();
 
   // Update punch clock
   auto dispatcher_sched_ns =
@@ -152,15 +154,15 @@ void ModelWorker::HandleDispatch(DispatchRequest&& request,
   query_without_input->set_global_id(global_id.t);
 
   // Enqueue query
-  auto& entrance = model_session_entrance_table_.at(request.model_index());
+  auto& entrance = model_session_entrance_table_.at(model_index);
   auto status = entrance.EnqueueQuery(std::move(request));
 
   // Send out DispatchReply only when failure
   reply->set_status(status);
   if (status != CtrlStatus::CTRL_OK) {
-    reply->set_model_index(request.model_index());
+    reply->set_model_index(model_index);
     auto* q = reply->add_query_list();
-    q->set_query_id(request.query_id());
+    q->set_query_id(query_id);
     q->mutable_clock()->CopyFrom(*clock);
   }
 }

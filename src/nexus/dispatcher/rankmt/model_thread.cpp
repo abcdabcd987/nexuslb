@@ -193,7 +193,6 @@ void ModelThread::UpdateCandidate() {
     drop_timer_.CancelAll();
   }
 
-  uint32_t batch_size = batch_policy_.inputs().size();
   candidate_ = ExecutionCandidate{exec_at};
 
   // Send dropped queries

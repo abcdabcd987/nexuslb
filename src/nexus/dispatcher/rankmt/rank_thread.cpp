@@ -62,10 +62,10 @@ void RankThread::ExecuteCommand(PerModelThreadData& mdata) {
   if (stop_flag_) {
     return;
   }
-  auto visitor =
-      make_visitor([this](UpdateGpuCommand& cmd) { DoUpdateGpuCommand(cmd); }
-                   // Force newline for clang-format
-      );
+  auto visitor = make_visitor(  // Force newline for clang-format
+      [this](UpdateGpuCommand& cmd) { DoUpdateGpuCommand(cmd); }
+      // Force newline for clang-format
+  );
 
   RankCommand command;
   while (mdata.rank_command_queue.try_dequeue(command)) {
@@ -188,13 +188,15 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
 }
 
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
-  constexpr auto kInterThreadLatency = std::chrono::microseconds(100);
   CHECK(mdata.candidate.has_value());
   const auto& candidate = mdata.candidate.value();
 
+  auto send_at =
+      candidate.exec_at - config_.ctrl_latency - config_.data_latency;
+  // Although Timer accepts expiration time at the past,
+  // taking max with now here so that we can measure the timer delay
+  // using Timer::timeout. See the beginning of OnPlanTimer.
   auto now = Clock::now();
-  auto send_at = candidate.exec_at - config_.ctrl_latency -
-                 config_.data_latency - kInterThreadLatency;
   mdata.send_timer.SetTimeout(std::max(send_at, now));
   mdata.send_timer.AsyncWait([this, pmdata = &mdata](ario::ErrorCode error) {
     if (error == ario::ErrorCode::kCancelled) return;
@@ -205,6 +207,9 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
 void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
   using namespace std::chrono;
   if (stop_flag_) return;
+  if (!mdata.candidate.has_value()) {
+    return;
+  }
   TimePoint now = Clock::now();
   auto timer_delay = now - mdata.send_timer.timeout();
   if (timer_delay > microseconds(100)) {

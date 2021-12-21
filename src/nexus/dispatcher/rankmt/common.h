@@ -17,13 +17,20 @@ namespace rankmt {
 constexpr size_t kRpsMeterHistoryLength = 32;
 
 struct RankmtConfig {
+  // Dispatcher -> Backend: Batchplan
   std::chrono::duration<long, std::nano> ctrl_latency;
+
+  // Frontend -> Backend: Image
   std::chrono::duration<long, std::nano> data_latency;
+
+  // Backend -> Frontend: Result
+  std::chrono::duration<long, std::nano> resp_latency;
 
   static RankmtConfig Default() {
     RankmtConfig config;
-    config.ctrl_latency = std::chrono::microseconds(2000);
-    config.data_latency = std::chrono::microseconds(5000);
+    config.ctrl_latency = std::chrono::microseconds(1000);
+    config.data_latency = std::chrono::microseconds(2000);
+    config.resp_latency = std::chrono::microseconds(1500);
     return config;
   };
 };

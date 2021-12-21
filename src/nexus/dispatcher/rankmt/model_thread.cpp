@@ -133,12 +133,11 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   auto deadline = TimePoint(std::chrono::nanoseconds(
       request.query_without_input().clock().frontend_recv_ns()));
   deadline += std::chrono::milliseconds(model_session_.latency_sla());
-  deadline -= config_.data_latency;  // Backend -> Frontend
+  deadline -= config_.resp_latency;  // Backend -> Frontend: results
   constexpr auto kBackendExecutionDelay = std::chrono::microseconds(2000);
   deadline -= kBackendExecutionDelay;  // FIXME: investigate this
 
   auto qctx = std::make_shared<QueryContext>(std::move(request), deadline);
-  const auto& query = qctx->request.query_without_input();
   auto now = Clock::now();
 
   // Add to pending queries
@@ -160,6 +159,7 @@ void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
     std::chrono::duration<double> time_budget(sec);
     time_budget -= config_.ctrl_latency;
     time_budget -= config_.data_latency;
+    time_budget -= config_.resp_latency;
     double time_budget_sec = time_budget.count();
     target_batch_size_ =
         bse_.Estimate(profile_, time_budget_sec, rps->avg, rps->std);

@@ -433,6 +433,8 @@ DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
               "Rankmt: control plane latency in microseconds.");
 DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
               "Rankmt: data plane latency in microseconds.");
+DEFINE_uint32(rankmt_dresp, RankmtConfig::Default().resp_latency.count() / 1000,
+              "Rankmt: result latency in microseconds.");
 
 Options Options::FromArgs(int argc, char** argv, int argp) {
   if (argp == argc) {
@@ -443,6 +445,7 @@ Options Options::FromArgs(int argc, char** argv, int argp) {
   RankmtConfig rankmt;
   rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
   rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
+  rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);
 
   return Options{
       FLAGS_seed,

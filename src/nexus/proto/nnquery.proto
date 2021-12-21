@@ -82,6 +82,8 @@ message RequestProto {
   uint32 req_id = 2;
   // Input
   ValueProto input = 3;
+  // Temporary hack for multimodel frontend.
+  ModelSession model_session = 10;
 }
 
 message ReplyProto {

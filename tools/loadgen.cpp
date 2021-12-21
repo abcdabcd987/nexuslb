@@ -166,6 +166,7 @@ class WorkloadSender {
     uint32_t user_id = reinterpret_cast<uint64_t>(this) & 0xFFFFFFFFU;
     request_proto_.set_user_id(user_id);
     request_proto_.set_req_id(0);
+    request_proto_.mutable_model_session()->CopyFrom(options_.model_session);
     auto* input = request_proto_.mutable_input();
     input->set_data_type(DT_IMAGE);
     auto* image = input->mutable_image();

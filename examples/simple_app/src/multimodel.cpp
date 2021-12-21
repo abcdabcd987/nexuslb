@@ -1,9 +1,9 @@
 #include <gflags/gflags.h>
 #include <yaml-cpp/yaml.h>
 
-#include <iostream>
-#include <unordered_set>
-#include <utility>
+#include <memory>
+#include <unordered_map>
+#include <vector>
 
 #include "nexus/app/app_base.h"
 #include "nexus/common/model_def.h"
@@ -35,29 +35,32 @@ class MultiModelApp : public AppBase {
 
   void Setup() final {
     for (const auto& cfg : model_configs_) {
-      auto model_ =
+      CHECK(models_.count(cfg.model) == 0);
+      models_[cfg.model] =
           GetModelHandler(cfg.framework, cfg.model, cfg.version, cfg.slo,
                           cfg.rps_hint, {cfg.height, cfg.width});
-      models_.push_back(model_);
-      auto func1 = [model_](std::shared_ptr<RequestContext> ctx) {
-        auto output = model_->Execute(ctx);
-        return std::vector<VariablePtr>{
-            std::make_shared<Variable>("output", output)};
-      };
-      auto func2 = [model_](std::shared_ptr<RequestContext> ctx) {
-        auto output = ctx->GetVariable("output")->result();
-        output->ToProto(ctx->reply());
-        return std::vector<VariablePtr>{};
-      };
-      ExecBlock* b1 = new ExecBlock(0, func1, {});
-      ExecBlock* b2 = new ExecBlock(1, func2, {"output"});
-      qp_ = new QueryProcessor({b1, b2});
     }
+    auto func1 = [this](std::shared_ptr<RequestContext> ctx) {
+      auto it = models_.find(ctx->request()->model_session().model_name());
+      CHECK(it != models_.end());
+      auto model = it->second;
+      auto output = model->Execute(ctx);
+      return std::vector<VariablePtr>{
+          std::make_shared<Variable>("output", output)};
+    };
+    auto func2 = [](std::shared_ptr<RequestContext> ctx) {
+      auto output = ctx->GetVariable("output")->result();
+      output->ToProto(ctx->reply());
+      return std::vector<VariablePtr>{};
+    };
+    ExecBlock* b1 = new ExecBlock(0, func1, {});
+    ExecBlock* b2 = new ExecBlock(1, func2, {"output"});
+    qp_ = new QueryProcessor({b1, b2});
   }
 
  private:
   std::vector<ModelConfig> model_configs_;
-  std::vector<std::shared_ptr<ModelHandler>> models_;
+  std::unordered_map<std::string, std::shared_ptr<ModelHandler>> models_;
 };
 
 DEFINE_string(poller, "blocking", "options: blocking, spinning");

@@ -24,49 +24,13 @@
 #include <vector>
 
 #include "nexus/common/connection.h"
+#include "nexus/common/gapgen.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/util.h"
 #include "nexus/proto/nnquery.pb.h"
 
 using namespace nexus;
-
-class GapGenerator {
- public:
-  GapGenerator(double rps) : rps_(rps) {}
-  double rps() const { return rps_; }
-  virtual std::string Name() const = 0;
-  virtual double Next() = 0;
-
- private:
-  double rps_;
-};
-
-class ConstGapGenerator : public GapGenerator {
- public:
-  ConstGapGenerator(double rps) : GapGenerator(rps) {}
-
-  double Next() override { return 1 / rps(); }
-
-  std::string Name() const override { return "const"; }
-};
-
-class ExpGapGenerator : public GapGenerator {
- public:
-  ExpGapGenerator(int64_t seed, double rps)
-      : GapGenerator(rps), rand_engine_(seed) {}
-
-  double Next() override {
-    auto rand = uniform_(rand_engine_);
-    return -std::log(1.0 - rand) / rps();
-  }
-
-  std::string Name() const override { return "exp"; }
-
- private:
-  std::mt19937 rand_engine_;
-  std::uniform_real_distribution<double> uniform_;
-};
 
 struct TracePoint {
   double rps;

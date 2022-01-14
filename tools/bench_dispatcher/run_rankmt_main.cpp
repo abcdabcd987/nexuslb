@@ -21,6 +21,7 @@
 #include "bench_dispatcher/fake_accessor.h"
 #include "bench_dispatcher/fake_backend.h"
 #include "bench_dispatcher/fake_frontend.h"
+#include "nexus/common/gapgen.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
@@ -48,29 +49,39 @@ struct Options {
 struct Workload {
   ModelSession model_session;
   int avg_rps;
+  GapGeneratorBuilder gap_builder;
 
   std::string ToString() const {
     std::stringstream ss;
-    ss << ModelSessionToString(model_session) << '@' << "avg_rps=" << avg_rps;
+    ss << ModelSessionToString(model_session) << '@' << "avg_rps=" << avg_rps
+       << ",gap=" << gap_builder.Name();
     return ss.str();
   }
 };
 
-int ParseIntAttribute(std::unordered_map<std::string, std::string>& kvs,
-                      const std::string& key, const std::string& str) {
+std::string ParseStringAttribute(
+    std::unordered_map<std::string, std::string>& kvs, const std::string& key,
+    const std::string& str) {
   auto iter = kvs.find(key);
   if (iter == kvs.end()) {
     LOG(FATAL) << "ParseWorkload: cannot find attribute: \"" << key
                << "\" str: \"" << str << '"';
   }
+  auto ret = std::move(iter->second);
+  kvs.erase(iter);
+  return ret;
+}
+
+int ParseIntAttribute(std::unordered_map<std::string, std::string>& kvs,
+                      const std::string& key, const std::string& str) {
+  auto sval = ParseStringAttribute(kvs, key, str);
   int ret;
   try {
-    ret = std::stoi(iter->second);
+    ret = std::stoi(sval);
   } catch (const std::exception& e) {
     LOG(FATAL) << "ParseWorkload: invalid value for attribute \"" << key
                << "\". " << e.what() << " str: \"" << str << '"';
   }
-  kvs.erase(iter);
   return ret;
 }
 
@@ -103,6 +114,8 @@ Workload ParseWorkload(const std::string& str) {
     }
   }
   ret.avg_rps = ParseIntAttribute(kvs, "avg_rps", str);
+  auto gap = ParseStringAttribute(kvs, "gap", str);
+  ret.gap_builder = GapGeneratorBuilder::Parse(gap);
   return ret;
 }
 
@@ -323,8 +336,8 @@ class DispatcherRunner {
   void InitLoadGen(size_t workload_idx) {
     auto& l = loadgen_contexts_[workload_idx];
     const auto& workload = workloads_[workload_idx];
-    l.rand_gen = std::mt19937(options_.seed + workload_idx * 31);
-    l.gap_gen = std::exponential_distribution<double>(workload.avg_rps);
+    int64_t seed = options_.seed + workload_idx * 31;
+    l.gap_gen = workload.gap_builder.Build(seed, workload.avg_rps);
     l.last_time = warmup_time_;
     l.last_global_id = 1000000000 * (workload_idx + 1);
     l.last_query_id = 0;
@@ -342,7 +355,7 @@ class DispatcherRunner {
   void PrepareNextRequest(size_t workload_idx) {
     auto& l = loadgen_contexts_[workload_idx];
     const auto& workload = workloads_[workload_idx];
-    auto gap_ns = static_cast<long>(l.gap_gen(l.rand_gen) * 1e9);
+    auto gap_ns = static_cast<long>(l.gap_gen->Next() * 1e9);
     l.next_time = l.last_time + std::chrono::nanoseconds(gap_ns);
     auto next_time_ns = l.next_time.time_since_epoch().count();
     if (l.next_time > stop_time_) {
@@ -390,8 +403,7 @@ class DispatcherRunner {
   struct LoadGenContext {
     ario::Timer timer;
 
-    std::mt19937 rand_gen;
-    std::exponential_distribution<double> gap_gen;
+    std::unique_ptr<GapGenerator> gap_gen;
     TimePoint last_time;
     uint64_t last_global_id;
     uint64_t last_query_id;

@@ -82,6 +82,7 @@ add_library(common OBJECT
         src/nexus/common/connection.cpp
         src/nexus/common/data_type.cpp
         src/nexus/common/device.cpp
+        src/nexus/common/gapgen.cpp
         src/nexus/common/image.cpp
         src/nexus/common/message.cpp
         src/nexus/common/metric.cpp

@@ -65,11 +65,17 @@ void FakeBackendDelegate::EnqueueBatchPlan(BatchPlanProto&& request) {
   batchplans_.emplace_back(std::move(request));
   std::push_heap(batchplans_.begin(), batchplans_.end(),
                  HeapOrderBatchPlanByExecTimeASC);
-  TimePoint finish_time(
-      std::chrono::nanoseconds(batchplans_[0].expected_finish_time_ns()));
-  if (timer_.timeout() != finish_time) {
-    timer_.SetTimeout(finish_time);
-    timer_.AsyncWait([this](ario::ErrorCode error) { OnTimer(error); });
+  SetupTimer();
+}
+
+void FakeBackendDelegate::SetupTimer() {
+  if (!batchplans_.empty()) {
+    TimePoint finish_time(
+        std::chrono::nanoseconds(batchplans_[0].expected_finish_time_ns()));
+    if (timer_.timeout() != finish_time) {
+      timer_.SetTimeout(finish_time);
+      timer_.AsyncWait([this](ario::ErrorCode error) { OnTimer(error); });
+    }
   }
 }
 
@@ -101,6 +107,7 @@ void FakeBackendDelegate::OnTimer(ario::ErrorCode) {
                   HeapOrderBatchPlanByExecTimeASC);
     batchplans_.pop_back();
   }
+  SetupTimer();
   lock.unlock();
   for (const auto& plan : finished_plans) {
     OnBatchFinish(plan);

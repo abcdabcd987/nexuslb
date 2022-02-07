@@ -29,6 +29,7 @@ class FakeBackendDelegate : public BackendDelegate {
  private:
   void OnBatchFinish(const BatchPlanProto& plan);
   void OnTimer(ario::ErrorCode);
+  void SetupTimer();
 
   ario::EpollExecutor* executor_;
   FakeDispatcherAccessor* accessor_;

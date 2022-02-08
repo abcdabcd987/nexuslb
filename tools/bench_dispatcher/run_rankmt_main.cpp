@@ -338,7 +338,10 @@ class DispatcherRunner {
     const auto& workload = workloads_[workload_idx];
     int64_t seed = options_.seed + workload_idx * 31;
     l.gap_gen = workload.gap_builder.Build(seed, workload.avg_rps);
-    l.last_time = warmup_time_;
+    std::mt19937 gen(seed + 1);
+    std::uniform_real_distribution<> dist;
+    long offset_ns = dist(gen) * 1e9 / workload.avg_rps;
+    l.last_time = warmup_time_ + std::chrono::nanoseconds(offset_ns);
     l.last_global_id = 1000000000 * (workload_idx + 1);
     l.last_query_id = 0;
     l.model_session_id = ModelSessionToString(workload.model_session);

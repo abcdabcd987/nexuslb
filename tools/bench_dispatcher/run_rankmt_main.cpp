@@ -102,7 +102,7 @@ class DispatcherRunner {
     for (size_t i = 0; i < options_.models.size(); ++i) {
       auto& w = options_.models[i];
       auto& l = loadgen_contexts_[i];
-      long duration = w.model_session.latency_sla() / 1e3 * 2;
+      double duration = w.model_session.latency_sla() / 1e3 * 2;
       duration += l.warmup_duration + l.bench_duration + l.cooldown_duration;
       long ns = l.start_offset_ns + duration * 1e9;
       stop_offset_ns = std::max(stop_offset_ns, ns);

@@ -1,10 +1,12 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
+#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -33,96 +35,33 @@
 using namespace nexus;
 using namespace nexus::dispatcher;
 
+struct TraceSegment {
+  double rps;
+  double duration;
+};
+
+struct ModelOptions {
+  ModelSession model_session;
+  GapGeneratorBuilder gap_builder;
+  std::vector<TraceSegment> warmup;
+  std::vector<TraceSegment> bench;
+  std::vector<TraceSegment> cooldown;
+};
+
 struct Options {
   int64_t seed;
-  int warmup;
-  int duration;
-  double multiplier;
   bool multithread;
-  int num_backends;
-  std::vector<char*> workloads;
-  RankmtConfig rankmt;
+  int gpus;
+  std::vector<ModelOptions> models;
 
-  static Options FromArgs(int argc, char** argv, int argp);
+  static Options FromYaml(const YAML::Node& config);
 };
-
-struct Workload {
-  ModelSession model_session;
-  int avg_rps;
-  GapGeneratorBuilder gap_builder;
-
-  std::string ToString() const {
-    std::stringstream ss;
-    ss << ModelSessionToString(model_session) << '@' << "avg_rps=" << avg_rps
-       << ",gap=" << gap_builder.Name();
-    return ss.str();
-  }
-};
-
-std::string ParseStringAttribute(
-    std::unordered_map<std::string, std::string>& kvs, const std::string& key,
-    const std::string& str) {
-  auto iter = kvs.find(key);
-  if (iter == kvs.end()) {
-    LOG(FATAL) << "ParseWorkload: cannot find attribute: \"" << key
-               << "\" str: \"" << str << '"';
-  }
-  auto ret = std::move(iter->second);
-  kvs.erase(iter);
-  return ret;
-}
-
-int ParseIntAttribute(std::unordered_map<std::string, std::string>& kvs,
-                      const std::string& key, const std::string& str) {
-  auto sval = ParseStringAttribute(kvs, key, str);
-  int ret;
-  try {
-    ret = std::stoi(sval);
-  } catch (const std::exception& e) {
-    LOG(FATAL) << "ParseWorkload: invalid value for attribute \"" << key
-               << "\". " << e.what() << " str: \"" << str << '"';
-  }
-  return ret;
-}
-
-Workload ParseWorkload(const std::string& str) {
-  // e.g. sleep#6817,23431,0,0:resnet_01:1:100@avg_rps=1953
-  Workload ret;
-  auto pos_at = str.find('@');
-  if (pos_at == std::string::npos) {
-    LOG(FATAL) << "ParseWorkload: cannot find '@'. str: \"" << str << '"';
-  }
-  bool ok = ParseModelSession(str.substr(0, pos_at), &ret.model_session);
-  if (!ok) {
-    LOG(FATAL) << "ParseWorkload: failed to parse model_session. str: \"" << str
-               << '"';
-  }
-
-  std::vector<std::string> tokens;
-  SplitString(str.substr(pos_at + 1), ',', &tokens);
-  std::unordered_map<std::string, std::string> kvs;
-  for (const auto& token : tokens) {
-    auto pos_eq = token.find('=');
-    if (pos_eq == std::string::npos) {
-      LOG(FATAL) << "ParseWorkload: cannot find '='. str: \"" << str << '"';
-    }
-    auto res =
-        kvs.try_emplace(token.substr(0, pos_eq), token.substr(pos_eq + 1));
-    if (!res.second) {
-      LOG(FATAL) << "ParseWorkload: duplicated attribute: \""
-                 << res.first->first << "\" str: \"" << str << '"';
-    }
-  }
-  ret.avg_rps = ParseIntAttribute(kvs, "avg_rps", str);
-  auto gap = ParseStringAttribute(kvs, "gap", str);
-  ret.gap_builder = GapGeneratorBuilder::Parse(gap);
-  return ret;
-}
 
 class DispatcherRunner {
  public:
-  explicit DispatcherRunner(Options options)
-      : options_(std::move(options)), gen_(options_.seed) {
+  explicit DispatcherRunner(Options options, RankmtConfig rankmt_options)
+      : options_(std::move(options)),
+        rankmt_options_(std::move(rankmt_options)) {
     main_executor_ =
         std::make_shared<ario::EpollExecutor>(ario::PollerType::kSpinning);
     if (options_.multithread) {
@@ -132,27 +71,23 @@ class DispatcherRunner {
       rank_executor_ = main_executor_;
     }
 
-    BuildWorkloads();
     LOG(INFO) << "Preparing the benchmark";
+    start_at_ = Clock::now() + std::chrono::seconds(2);
+    BuildWorkloads();
     BuildMultiThreadRankScheduler();
     BuildFakeServers();
   }
 
   int Run() {
-    TimePoint now = Clock::now();
-    warmup_time_ = now + std::chrono::seconds(2);
-    serious_time_ = warmup_time_ + std::chrono::seconds(options_.warmup);
-    stop_time_ = serious_time_ + std::chrono::seconds(options_.duration);
-
-    loadgen_contexts_.resize(workloads_.size());
-    for (size_t i = 0; i < workloads_.size(); ++i) {
-      InitLoadGen(i);
-      PrepareNextRequest(i);
+    for (size_t i = 0; i < options_.models.size(); ++i) {
       auto& l = loadgen_contexts_[i];
-      l.timer = ario::Timer(
-          *model_executors_[i], l.next_time,
-          [this, i](ario::ErrorCode error) { ContinueLoadGen(error, i); });
+      l.timer = ario::Timer(*model_executors_[i], l.next_time,
+                            [this, i](ario::ErrorCode error) {
+                              if (error != ario::ErrorCode::kOk) return;
+                              PostNextRequest(i);
+                            });
     }
+
     threads_.emplace_back(&ario::EpollExecutor::RunEventLoop,
                           main_executor_.get());
     if (options_.multithread) {
@@ -163,26 +98,21 @@ class DispatcherRunner {
       }
     }
 
-    ario::Timer wait_warmup(
-        *main_executor_, warmup_time_,
-        [this](ario::ErrorCode) { LOG(INFO) << "Start warming up..."; });
-    ario::Timer wait_serious(
-        *main_executor_, serious_time_,
-        [this](ario::ErrorCode) { LOG(INFO) << "Start benchmarking..."; });
-    ario::Timer wait_stop(*main_executor_, stop_time_, [this](ario::ErrorCode) {
-      LOG(INFO) << "Stopped sending more requests";
-    });
-
-    uint32_t max_slo = 0;
-    for (auto& w : workloads_) {
-      max_slo = std::max(max_slo, w.model_session.latency_sla());
+    long stop_offset_ns = 0;
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      auto& w = options_.models[i];
+      auto& l = loadgen_contexts_[i];
+      long duration = w.model_session.latency_sla() / 1e3 * 2;
+      duration += l.warmup_duration + l.bench_duration + l.cooldown_duration;
+      long ns = l.start_offset_ns + duration * 1e9;
+      stop_offset_ns = std::max(stop_offset_ns, ns);
     }
-    uint32_t cooldown_ms = max_slo * 1.5;
+    auto stop_at = start_at_ + std::chrono::nanoseconds(stop_offset_ns);
+
     std::mutex mutex;
     std::condition_variable cv;
     bool should_join = false;
-    ario::Timer wait_finish(
-        *main_executor_, stop_time_ + std::chrono::milliseconds(cooldown_ms));
+    ario::Timer wait_finish(*main_executor_, stop_at);
     wait_finish.AsyncWaitBigCallback(
         [this, &mutex, &cv, &should_join](ario::ErrorCode) {
           std::unique_lock lock(mutex);
@@ -218,16 +148,21 @@ class DispatcherRunner {
              "noreply", "dropped", "timeout", "success", "total", "badrate");
     LOG(INFO) << "Stats:";
     LOG(INFO) << "  " << buf;
-    auto serious_time_ns = serious_time_.time_since_epoch().count();
     int sum_noreply = 0, sum_dropped = 0, sum_timeout = 0, sum_success = 0;
     double worst_badrate = 0.0;
-    for (size_t i = 0; i < options_.workloads.size(); ++i) {
+    double throughput = 0;
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      auto& l = loadgen_contexts_[i];
       auto& frontend = frontends_[i];
       int cnt_noreply = 0, cnt_dropped = 0, cnt_timeout = 0, cnt_success = 0;
       auto n = loadgen_contexts_[i].last_query_id - 1;
+      auto bench_start_ns = start_at_.time_since_epoch().count() +
+                            l.start_offset_ns + l.warmup_duration * 1e9;
+      auto bench_end_ns = bench_start_ns + l.bench_duration * 1e9;
       for (size_t j = 1; j <= n; ++j) {
         const auto& qctx = frontend->queries()[j];
-        if (qctx.frontend_recv_ns < serious_time_ns) {
+        if (qctx.frontend_recv_ns < bench_start_ns ||
+            qctx.frontend_recv_ns > bench_end_ns) {
           continue;
         }
         switch (qctx.status) {
@@ -257,6 +192,7 @@ class DispatcherRunner {
       sum_timeout += cnt_timeout;
       sum_success += cnt_success;
       worst_badrate = std::max(worst_badrate, badrate);
+      throughput += total / l.bench_duration;
     }
 
     int total_queries = sum_dropped + sum_timeout + sum_success + sum_noreply;
@@ -266,10 +202,7 @@ class DispatcherRunner {
              sum_noreply, sum_dropped, sum_timeout, sum_success, total_queries,
              avg_badrate, worst_badrate);
     LOG(INFO) << "  " << buf;
-
-    double throughput = total_queries * 1.0 / options_.duration;
-    LOG(INFO) << "  "
-              << "Throughput: " << throughput << " rps";
+    LOG(INFO) << "  Throughput: " << throughput << " rps";
 
     if (sum_noreply) {
       LOG(ERROR) << "Buggy scheduler. There are " << sum_noreply
@@ -281,26 +214,20 @@ class DispatcherRunner {
 
  private:
   void BuildWorkloads() {
-    for (size_t i = 0; i < options_.workloads.size(); ++i) {
-      auto w = ParseWorkload(options_.workloads[i]);
-      w.avg_rps = static_cast<int>(w.avg_rps * options_.multiplier);
-      workloads_.push_back(std::move(w));
-    }
-
-    LOG(INFO) << "Workloads:";
-    for (const auto& w : workloads_) {
-      LOG(INFO) << "  " << w.ToString();
+    loadgen_contexts_.resize(options_.models.size());
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      InitLoadGen(i);
     }
   }
 
   void BuildMultiThreadRankScheduler() {
     scheduler_ = std::make_unique<MultiThreadRankScheduler>(
-        options_.rankmt, main_executor_.get(), rank_executor_.get());
+        rankmt_options_, main_executor_.get(), rank_executor_.get());
   }
 
   void BuildFakeServers() {
     uint32_t next_backend_id = 10001;
-    for (int i = 0; i < options_.num_backends; ++i) {
+    for (int i = 0; i < options_.gpus; ++i) {
       auto backend_id = next_backend_id++;
       auto backend = std::make_shared<FakeBackendDelegate>(
           main_executor_.get(), backend_id, &accessor_);
@@ -309,16 +236,17 @@ class DispatcherRunner {
       backends_.push_back(backend);
     }
 
-    for (size_t i = 0; i < workloads_.size(); ++i) {
-      const auto& w = workloads_[i];
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      const auto& w = options_.models[i];
       auto& l = loadgen_contexts_[i];
       uint32_t frontend_id = 60001 + i;
       auto frontend = std::make_shared<FakeFrontendDelegate>(
           [this](size_t cnt_done, size_t workload_idx) {}, frontend_id,
-          w.model_session, i, CalcReservedSize(w.avg_rps));
+          w.model_session, i, CalcReservedSize(i));
       accessor_.AddFrontend(NodeId(frontend_id), frontend);
       scheduler_->AddFrontend(NodeId(frontend_id), frontend);
       frontends_.push_back(frontend);
+      l.frontend = frontend.get();
 
       if (options_.multithread) {
         model_executors_.push_back(
@@ -335,38 +263,49 @@ class DispatcherRunner {
 
   void InitLoadGen(size_t workload_idx) {
     auto& l = loadgen_contexts_[workload_idx];
-    const auto& workload = workloads_[workload_idx];
-    int64_t seed = options_.seed + workload_idx * 31;
-    l.gap_gen = workload.gap_builder.Build(seed, workload.avg_rps);
-    std::mt19937 gen(seed + 1);
+    const auto& w = options_.models[workload_idx];
+    l.seed = options_.seed + workload_idx * 31;
+    l.trace.insert(l.trace.end(), w.warmup.begin(), w.warmup.end());
+    l.trace.insert(l.trace.end(), w.bench.begin(), w.bench.end());
+    l.trace.insert(l.trace.end(), w.cooldown.begin(), w.cooldown.end());
+    l.warmup_duration = l.bench_duration = l.cooldown_duration = 0;
+    for (const auto& ts : w.warmup) l.warmup_duration += ts.duration;
+    for (const auto& ts : w.bench) l.bench_duration += ts.duration;
+    for (const auto& ts : w.cooldown) l.cooldown_duration += ts.duration;
+
+    double init_rps = l.trace.at(0).rps;
+    std::mt19937 gen(l.seed);
     std::uniform_real_distribution<> dist;
-    long offset_ns = dist(gen) * 1e9 / workload.avg_rps;
-    l.last_time = warmup_time_ + std::chrono::nanoseconds(offset_ns);
+    l.start_offset_ns = dist(gen) * 1e9 / init_rps;
+
+    l.ts_idx = 0;
+    l.next_time = start_at_ + std::chrono::nanoseconds(l.start_offset_ns);
+    l.ts_end_at = l.next_time;
+
     l.last_global_id = 1000000000 * (workload_idx + 1);
     l.last_query_id = 0;
-    l.model_session_id = ModelSessionToString(workload.model_session);
-    l.frontend = frontends_[workload_idx].get();
-    l.reserved_size = CalcReservedSize(workload.avg_rps);
+    l.model_session_id = ModelSessionToString(w.model_session);
   }
 
-  size_t CalcReservedSize(double rps) {
-    double sz = (1.0 + std::sqrt(rps)) * rps *
-                (options_.warmup + options_.duration) * 3;
+  size_t CalcReservedSize(size_t workload_idx) {
+    auto& l = loadgen_contexts_[workload_idx];
+    double sz = 0;
+    for (const auto& ts : l.trace) {
+      sz += (1.0 + std::sqrt(ts.rps)) * ts.rps * ts.duration * 3;
+    }
     return static_cast<size_t>(sz);
   }
 
   void PrepareNextRequest(size_t workload_idx) {
     auto& l = loadgen_contexts_[workload_idx];
-    const auto& workload = workloads_[workload_idx];
+    const auto& workload = options_.models[workload_idx];
     auto gap_ns = static_cast<long>(l.gap_gen->Next() * 1e9);
-    l.next_time = l.last_time + std::chrono::nanoseconds(gap_ns);
+    l.next_time += std::chrono::nanoseconds(gap_ns);
     auto next_time_ns = l.next_time.time_since_epoch().count();
-    if (l.next_time > stop_time_) {
-      return;
-    }
     auto query_id = ++l.last_query_id;
     auto global_id = ++l.last_global_id;
-    CHECK_LT(query_id, l.reserved_size) << "Reserved size not big enough.";
+    CHECK_LT(query_id, l.frontend->reserved_size())
+        << "Reserved size not big enough.";
     auto model_index = model_index_table_[workload_idx];
     l.request.set_model_index(model_index.t);
     l.request.set_query_id(query_id);
@@ -383,44 +322,61 @@ class DispatcherRunner {
     l.frontend->ReceivedQuery(query_id, next_time_ns);
   }
 
-  void ContinueLoadGen(ario::ErrorCode error, size_t workload_idx) {
-    if (error != ario::ErrorCode::kOk) {
-      return;
-    }
+  void PostNextRequest(size_t workload_idx) {
+    auto& w = options_.models[workload_idx];
     auto& l = loadgen_contexts_[workload_idx];
-    TimePoint now = Clock::now();
-    while (l.next_time < now && l.next_time <= stop_time_) {
+    if (l.next_time >= l.ts_end_at) {
+      if (l.ts_idx == l.trace.size()) {
+        LOG(INFO) << "[" << l.model_session_id << "] Finished sending";
+        return;
+      }
+      const auto& ts = l.trace[l.ts_idx];
+      LOG(INFO) << "[" << l.model_session_id
+                << "] Next TraceSegment idx=" << l.ts_idx << " rps=" << ts.rps
+                << " duration=" << ts.duration;
+      l.gap_gen = w.gap_builder.Build(l.seed + l.ts_idx, ts.rps);
+      l.next_time = l.ts_end_at;
+      l.ts_end_at +=
+          std::chrono::nanoseconds(static_cast<long>(ts.duration * 1e9));
+      l.ts_idx += 1;
+    }
+
+    PrepareNextRequest(workload_idx);
+    l.timer.SetTimeout(l.next_time);
+    l.timer.AsyncWait([this, workload_idx](ario::ErrorCode ec) {
+      if (ec != ario::ErrorCode::kOk) return;
       auto& entrance = request_entrances_[workload_idx];
+      auto& l = loadgen_contexts_[workload_idx];
+
       entrance.EnqueueQuery(std::move(l.request));
-      l.last_time = l.next_time;
-      PrepareNextRequest(workload_idx);
-    }
-    if (l.next_time <= stop_time_) {
-      l.timer.SetTimeout(l.next_time);
-      l.timer.AsyncWait([this, workload_idx](ario::ErrorCode error) {
-        ContinueLoadGen(error, workload_idx);
-      });
-    }
+      PostNextRequest(workload_idx);
+    });
   }
 
   struct LoadGenContext {
     ario::Timer timer;
 
-    std::unique_ptr<GapGenerator> gap_gen;
-    TimePoint last_time;
+    long seed;
+    std::vector<TraceSegment> trace;
+    double warmup_duration;
+    double bench_duration;
+    double cooldown_duration;
+    long start_offset_ns;
+
     uint64_t last_global_id;
     uint64_t last_query_id;
     std::string model_session_id;
     FakeFrontendDelegate* frontend;
-    size_t reserved_size;
-
-    TimePoint next_time;
     DispatchRequest request;
+
+    std::unique_ptr<GapGenerator> gap_gen;
+    size_t ts_idx;
+    TimePoint ts_end_at;
+    TimePoint next_time;
   };
 
   Options options_;
-  std::mt19937 gen_;
-  std::vector<Workload> workloads_;
+  RankmtConfig rankmt_options_;
   std::vector<LoadGenContext> loadgen_contexts_;
   std::shared_ptr<ario::EpollExecutor> main_executor_;
   std::shared_ptr<ario::EpollExecutor> rank_executor_;
@@ -433,17 +389,9 @@ class DispatcherRunner {
   std::vector<std::shared_ptr<FakeFrontendDelegate>> frontends_;
 
   std::vector<std::thread> threads_;
-  TimePoint warmup_time_;
-  TimePoint serious_time_;
-  TimePoint stop_time_;
+  TimePoint start_at_;
 };
 
-DEFINE_int64(seed, 0xabcdabcd987LL, "Random seed");
-DEFINE_int32(warmup, 3, "Warmup duration in seconds");
-DEFINE_int32(duration, 60, "Benchmark duration in seconds");
-DEFINE_double(multiplier, 1.0, "Multiplier for avg_rps and num_backends");
-DEFINE_bool(multithread, false, "Whether to enable multithreading");
-DEFINE_int32(num_backends, 1, "Number of backends");
 DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
               "Rankmt: control plane latency in microseconds.");
 DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
@@ -451,36 +399,86 @@ DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
 DEFINE_uint32(rankmt_dresp, RankmtConfig::Default().resp_latency.count() / 1000,
               "Rankmt: result latency in microseconds.");
 
-Options Options::FromArgs(int argc, char** argv, int argp) {
-  if (argp == argc) {
-    LOG(FATAL) << "Please provide a list of workloads. Example: \""
-                  "sleep#6817,23431,0,0:resnet_01:1:100"
-                  "@avg_rps=1953\"";
+std::vector<TraceSegment> BuildTraceFromYaml(const YAML::Node& yaml,
+                                             double segment_duration) {
+  CHECK(yaml.IsSequence());
+  std::vector<TraceSegment> ts;
+  ts.reserve(yaml.size());
+  for (const auto& node : yaml) {
+    if (node.IsMap()) {
+      auto rps = node["rps"].as<double>();
+      auto duration = node["duration"].as<double>();
+      ts.push_back({rps, duration});
+    } else {
+      CHECK(node.IsScalar());
+      auto rps = node.as<double>();
+      ts.push_back({rps, segment_duration});
+    }
   }
+  return ts;
+}
+
+Options Options::FromYaml(const YAML::Node& config) {
+  Options opt;
+
+  // Random seed
+  opt.seed = config["seed"].as<int64_t>(0xabcdabcd987LL);
+
+  // Use multiple threads to run RankMT
+  opt.multithread = config["multithread"].as<bool>(false);
+
+  // Number of GPUs
+  opt.gpus = config["gpus"].as<int>(1);
+
+  // Models
+  CHECK(config["models"].IsSequence());
+  for (const auto& model : config["models"]) {
+    ModelOptions mo;
+    mo.model_session.set_version(1);
+
+    // Model framework
+    mo.model_session.set_framework(
+        model["framework"].as<std::string>("tensorflow"));
+
+    // Model name
+    mo.model_session.set_model_name(model["model"].as<std::string>());
+
+    // Model latency SLO in milliseconds
+    mo.model_session.set_latency_sla(model["slo"].as<int>());
+
+    // Request interval gap
+    mo.gap_builder = GapGeneratorBuilder::Parse(model["gap"].as<std::string>());
+
+    // Segment duration in seconds
+    double segment_duration = model["segment_duration"].as<double>(0.0);
+
+    // Trace segments
+    mo.warmup = BuildTraceFromYaml(model["warmup"], segment_duration);
+    mo.bench = BuildTraceFromYaml(model["bench"], segment_duration);
+    mo.cooldown = BuildTraceFromYaml(model["cooldown"], segment_duration);
+
+    opt.models.push_back(std::move(mo));
+  }
+
+  return opt;
+}
+
+int main(int argc, char** argv) {
+  FLAGS_logtostderr = 1;
+  FLAGS_colorlogtostderr = 1;
+  google::InitGoogleLogging(argv[0]);
+  google::ParseCommandLineFlags(&argc, &argv, false);
+
+  auto config = YAML::Load(std::cin);
+  CHECK(config.IsMap());
+  auto options = Options::FromYaml(config);
+
   RankmtConfig rankmt;
   rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
   rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
   rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);
 
-  return Options{
-      FLAGS_seed,
-      FLAGS_warmup,
-      FLAGS_duration,
-      FLAGS_multiplier,
-      FLAGS_multithread,
-      FLAGS_num_backends,
-      {argv + argp, argv + argc},
-      rankmt,
-  };
-}
-
-int main(int argc, char** argv) {
-  FLAGS_logtostderr = 1;
-  google::InitGoogleLogging(argv[0]);
-  int argp = google::ParseCommandLineFlags(&argc, &argv, false);
   google::InstallFailureSignalHandler();
-
-  auto options = Options::FromArgs(argc, argv, argp);
-  DispatcherRunner bencher(std::move(options));
+  DispatcherRunner bencher(std::move(options), rankmt);
   return bencher.Run();
 }

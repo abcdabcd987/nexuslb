@@ -1,0 +1,23 @@
+seed: 0xabcdabcd987
+multithread: false
+gpus: 8
+models:
+- framework: sleep#1082,5204,0,0
+  model: resnet_0
+  slo: 100
+  gap: const
+  segment_duration: 5
+  warmup:   [100]
+  bench:    [200, 300, 400, 500]
+  cooldown: [500]
+
+- framework: sleep#1080,5109,0,0
+  model: resnet_1
+  slo: 100
+  gap: gamma:0.1
+  warmup: [{duration: 5, rps: 100}]
+  bench:
+  - {duration:  3, rps: 200}
+  - {duration: 12, rps: 300}
+  - {duration:  5, rps: 400}
+  cooldown: [{duration: 5, rps: 400}]

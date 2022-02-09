@@ -40,6 +40,7 @@ class FakeFrontendDelegate : public FrontendDelegate {
 
   const ModelSession& model_session() const { return model_session_; }
   const QueryContext* queries() const { return queries_.get(); }
+  size_t reserved_size() const { return reserved_size_; }
 
  private:
   std::function<void(size_t cnt_done, size_t workload_idx)> on_request_done_;

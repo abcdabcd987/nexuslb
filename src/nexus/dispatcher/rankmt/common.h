@@ -14,8 +14,6 @@ namespace nexus {
 namespace dispatcher {
 namespace rankmt {
 
-constexpr size_t kRpsMeterHistoryLength = 32;
-
 struct RankmtConfig {
   // Dispatcher -> Backend: Batchplan
   std::chrono::duration<long, std::nano> ctrl_latency;
@@ -26,13 +24,21 @@ struct RankmtConfig {
   // Backend -> Frontend: Result
   std::chrono::duration<long, std::nano> resp_latency;
 
+  // RPS Meter
+  std::chrono::duration<long, std::nano> rpsmeter_rate;
+  size_t rpsmeter_window;
+
   static RankmtConfig Default() {
     RankmtConfig config;
     config.ctrl_latency = std::chrono::microseconds(1000);
     config.data_latency = std::chrono::microseconds(2000);
     config.resp_latency = std::chrono::microseconds(1500);
+    config.rpsmeter_rate = std::chrono::milliseconds(50);
+    config.rpsmeter_window = 100;
     return config;
   };
+
+  static RankmtConfig FromFlags();
 };
 
 std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,

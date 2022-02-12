@@ -32,9 +32,9 @@ ModelThread::ModelThread(
       poller_(this),
       frontends_(std::move(frontends)),
       backends_(std::move(backends)),
-      bse_(1.0, 0.0),
-      rps_meter_(model_session_.latency_sla() * 1e-3, kRpsMeterHistoryLength,
-                 Clock::now()),
+      bse_(1.0, 2.0),
+      rps_meter_(config.rpsmeter_window),
+      rps_meter_timer_(*CHECK_NOTNULL(executor)),
       batch_policy_(unprocessed_queries_),
       target_batch_size_(0),
       drop_timer_(*CHECK_NOTNULL(executor)) {
@@ -56,6 +56,7 @@ ModelThread::ModelThread(
 
   batch_policy_.SetProfile(profile_);
   UpdateTargetBatchSize(std::nullopt);
+  OnRpsMeterTimer();
 
   executor_.AddPoller(poller_);
 }
@@ -71,6 +72,7 @@ void ModelThread::Stop(std::mutex& mutex, size_t& cnt,
       [this, &mutex, &cnt, &cv](ario::ErrorCode) {
         stop_flag_ = true;
         drop_timer_.CancelAll();
+        rps_meter_timer_.CancelAll();
         {
           std::lock_guard lock(mutex);
           cnt += 1;
@@ -138,10 +140,9 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   deadline -= kBackendExecutionDelay;  // FIXME: investigate this
 
   auto qctx = std::make_shared<QueryContext>(std::move(request), deadline);
-  auto now = Clock::now();
 
   // Add to pending queries
-  rps_meter_.Hit(now);
+  rps_meter_.Hit();
   unprocessed_queries_.insert(qctx);
 
   // Update schedule
@@ -172,7 +173,7 @@ void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
 void ModelThread::UpdateCandidate() {
   auto earliest_exec_at =
       Clock::now() + config_.data_latency + config_.ctrl_latency;
-  auto rps = rps_meter_.Get(earliest_exec_at);
+  auto rps = rps_meter_.Get();
   UpdateTargetBatchSize(rps);
   batch_policy_.Update(earliest_exec_at, target_batch_size_);
 
@@ -313,6 +314,17 @@ void ModelThread::Poll() {
     rank_thread_.PostResumeCandidateUpdate(model_index_);
     rank_thread_.PostExecutionCandidate(model_index_, candidate_);
   }
+}
+
+void ModelThread::OnRpsMeterTimer() {
+  auto now = Clock::now();
+  rps_meter_.SealCounter(now);
+
+  rps_meter_timer_.SetTimeout(now + config_.rpsmeter_rate);
+  rps_meter_timer_.AsyncWait([this](ario::ErrorCode error) {
+    if (error != ario::ErrorCode::kOk) return;
+    OnRpsMeterTimer();
+  });
 }
 
 }  // namespace rankmt

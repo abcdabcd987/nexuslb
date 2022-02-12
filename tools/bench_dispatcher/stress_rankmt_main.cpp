@@ -33,9 +33,6 @@
 using namespace nexus;
 using namespace nexus::dispatcher;
 
-// FIXME: see rps_meter.cpp
-DECLARE_string(hack_rpsmeter);
-
 struct Options {
   int64_t seed;
   int backends;
@@ -168,13 +165,6 @@ class DispatcherRunner {
       m.set_latency_sla(options_.slo);
       model_sessions_.push_back(std::move(m));
     }
-
-    std::ostringstream ss;
-    ss << model_rps_;
-    for (int i = 1; i < options_.models; ++i) {
-      ss << "," << model_rps_;
-    }
-    FLAGS_hack_rpsmeter = ss.str();
   }
 
   void BuildMultiThreadRankScheduler() {
@@ -330,10 +320,10 @@ class DispatcherRunner {
   std::chrono::nanoseconds tolerance_;
   std::mt19937 gen_;
   std::vector<ModelSession> model_sessions_;
-  std::vector<LoadGenContext> loadgen_contexts_;
   std::shared_ptr<ario::EpollExecutor> main_executor_;
   std::shared_ptr<ario::EpollExecutor> rank_executor_;
   std::vector<std::shared_ptr<ario::EpollExecutor>> model_executors_;
+  std::vector<LoadGenContext> loadgen_contexts_;
   std::unique_ptr<MultiThreadRankScheduler> scheduler_;
   std::vector<MultiThreadRankScheduler::RequestEntrance> request_entrances_;
   std::vector<ModelIndex> model_index_table_;

@@ -1,95 +1,67 @@
 #include "nexus/common/rps_meter.h"
 
-#include <gflags/gflags.h>
 #include <glog/logging.h>
 
-#include <atomic>
-#include <chrono>
 #include <cmath>
-#include <optional>
-#include <string>
-
-#include "nexus/common/util.h"
-
-DEFINE_string(hack_rpsmeter, "", "");
 
 namespace nexus {
 
-namespace {
-int64_t ns(TimePoint time) {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             time.time_since_epoch())
-      .count();
+RpsMeter::RpsMeter(size_t window_size) : size_(window_size) {
+  window_.reserve(size_);
 }
 
-std::atomic<size_t> cnt_objects = 0;
+void RpsMeter::Hit() { ++counter_; }
 
-}  // namespace
+void RpsMeter::SealCounter(TimePoint now) {
+  CHECK(now >= counter_start_at_) << "Time goes backwards.";
+  auto last_time = counter_start_at_;
+  counter_start_at_ = now;
 
-RpsMeter::RpsMeter(double window_span_second, size_t history_length,
-                   TimePoint start_time)
-    : window_span_ns_(static_cast<int64_t>(window_span_second * 1e9)),
-      earliest_time_ns_(ns(start_time)),
-      counters_(history_length, 0) {
-#ifdef HACK_RPSMETER
-  size_t idx = cnt_objects++;
-  std::vector<std::string> tokens;
-  SplitString(FLAGS_hack_rpsmeter, ',', &tokens);
-  LOG_IF(FATAL, idx >= tokens.size())
-      << "Not enough entries of `-hack_rpsmeter` specified.";
-  hack_rps_ = std::stod(tokens[idx]);
-  LOG(WARNING) << "RpsMeter created with hack_rps_=" << hack_rps_;
-#endif
-}
-
-void RpsMeter::PopLeft(int64_t time_ns) {
-  while (earliest_time_ns_ + counters_.size() * window_span_ns_ <= time_ns) {
-    counters_.pop_front();
-    counters_.push_back(0);
-    earliest_time_ns_ += window_span_ns_;
-  }
-}
-
-size_t RpsMeter::Index(int64_t time_ns) {
-  return (time_ns - earliest_time_ns_) / window_span_ns_;
-}
-
-void RpsMeter::Hit(TimePoint time) {
-  auto time_ns = ns(time);
-  if (time_ns < earliest_time_ns_) {
-    LOG(WARNING) << "Ignoring past time. time: " << time_ns
-                 << ", earliest:" << earliest_time_ns_;
+  // Wait until the first request arrives.
+  if (window_.empty() && counter_ == 0) {
     return;
   }
-  PopLeft(time_ns);
-  auto idx = Index(time_ns);
-  CHECK_LT(idx, counters_.size());
-  ++counters_[idx];
+
+  // Skip the first seal.
+  if (last_time.time_since_epoch().count() == 0) {
+    counter_ = 0;
+    return;
+  }
+
+  // Maintain mean and n*variance
+  double rps = counter_ / ((now - last_time).count() * 1e-9);
+  if (window_.size() == size_) {
+    double old = window_[idx_];
+    double mean = avg_ + (rps - old) / size_;
+    nvar_ += (rps - old) * (rps - mean + old - avg_);
+    avg_ = mean;
+  } else if (window_.size() == 0) {
+    avg_ = rps;
+    nvar_ = 0;
+  } else {
+    double mean = avg_ + (rps - avg_) / (window_.size() + 1);
+    nvar_ += (rps - mean) * (rps - avg_);
+    avg_ = mean;
+  }
+
+  // Maintain window
+  if (window_.size() == size_) {
+    window_[idx_] = rps;
+  } else {
+    window_.push_back(rps);
+  }
+  idx_ = (idx_ + 1) % size_;
+  counter_ = 0;
+
+  // Maintain stddev
+  std_ = std::sqrt(nvar_ / window_.size());
 }
 
-std::optional<AvgStd> RpsMeter::Get(TimePoint now) {
-#ifdef HACK_RPSMETER
-  // FIXME
-  return {{hack_rps_, 0.0}};
-#endif
-
-  auto time_ns = ns(now);
-  if (time_ns < earliest_time_ns_) {
-    return std::nullopt;
+std::optional<AvgStd> RpsMeter::Get() {
+  if (!window_.empty()) {
+    return AvgStd(avg_, std_);
   }
-  PopLeft(time_ns);
-  auto idx = Index(time_ns);
-  CHECK_LT(idx, counters_.size());
-
-  double avg = 0;
-  for (size_t i = 0; i <= idx; ++i) avg += counters_[i];
-  avg /= (idx + 1);
-  double var = 0;
-  for (size_t i = 0; i <= idx; ++i)
-    var += (counters_[i] - avg) * (counters_[i] - avg);
-  double std = idx ? std::sqrt(var / idx) : 0;
-  double span = window_span_ns_ * 1e-9;
-  return {{avg / span, std / span}};
+  return std::nullopt;
 }
 
 }  // namespace nexus

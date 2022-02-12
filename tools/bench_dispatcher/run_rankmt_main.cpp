@@ -377,10 +377,10 @@ class DispatcherRunner {
 
   Options options_;
   RankmtConfig rankmt_options_;
-  std::vector<LoadGenContext> loadgen_contexts_;
   std::shared_ptr<ario::EpollExecutor> main_executor_;
   std::shared_ptr<ario::EpollExecutor> rank_executor_;
   std::vector<std::shared_ptr<ario::EpollExecutor>> model_executors_;
+  std::vector<LoadGenContext> loadgen_contexts_;
   std::unique_ptr<MultiThreadRankScheduler> scheduler_;
   std::vector<MultiThreadRankScheduler::RequestEntrance> request_entrances_;
   std::vector<ModelIndex> model_index_table_;
@@ -391,13 +391,6 @@ class DispatcherRunner {
   std::vector<std::thread> threads_;
   TimePoint start_at_;
 };
-
-DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
-              "Rankmt: control plane latency in microseconds.");
-DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
-              "Rankmt: data plane latency in microseconds.");
-DEFINE_uint32(rankmt_dresp, RankmtConfig::Default().resp_latency.count() / 1000,
-              "Rankmt: result latency in microseconds.");
 
 std::vector<TraceSegment> BuildTraceFromYaml(const YAML::Node& yaml,
                                              double segment_duration) {
@@ -473,12 +466,7 @@ int main(int argc, char** argv) {
   CHECK(config.IsMap());
   auto options = Options::FromYaml(config);
 
-  RankmtConfig rankmt;
-  rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
-  rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
-  rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);
-
   google::InstallFailureSignalHandler();
-  DispatcherRunner bencher(std::move(options), rankmt);
+  DispatcherRunner bencher(std::move(options), RankmtConfig::FromFlags());
   return bencher.Run();
 }

@@ -18,12 +18,6 @@ DEFINE_string(rdma_dev, "", "RDMA device name");
 DEFINE_uint32(port, SCHEDULER_DEFAULT_PORT,
               "TCP port used to setup RDMA connection.");
 DEFINE_string(pin_cpus, "all", "Example: `0,2-4,7-16`. Example: `all`");
-DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
-              "Rankmt: control plane latency in microseconds.");
-DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
-              "Rankmt: data plane latency in microseconds.");
-DEFINE_uint32(rankmt_dresp, RankmtConfig::Default().resp_latency.count() / 1000,
-              "Rankmt: result latency in microseconds.");
 
 std::vector<int> ParseCores(const std::string& s) {
   std::vector<int> cores;
@@ -71,12 +65,7 @@ int main(int argc, char** argv) {
     LOG(FATAL) << "Invalid poller type";
   }
 
-  RankmtConfig rankmt;
-  rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
-  rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
-  rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);
-
   Dispatcher dispatcher(poller_type, FLAGS_rdma_dev, FLAGS_port,
-                        std::move(cores), rankmt);
+                        std::move(cores), RankmtConfig::FromFlags());
   dispatcher.Run();
 }

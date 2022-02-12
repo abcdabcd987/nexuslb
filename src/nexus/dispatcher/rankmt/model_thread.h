@@ -90,6 +90,7 @@ class ModelThread {
   void OnDropTimer();
   void SendDroppedQueries(
       const std::vector<std::shared_ptr<QueryContext>>& drops);
+  void OnRpsMeterTimer();
 
   RankmtConfig config_;
   ario::EpollExecutor& executor_;
@@ -107,6 +108,7 @@ class ModelThread {
   std::unordered_map<GpuId, GpuDelegate*> gpus_;
   BatchSizeEstimator bse_;
   RpsMeter rps_meter_;
+  ario::Timer rps_meter_timer_;
   SortedQueryList unprocessed_queries_;
   IncrementalBatchPolicy batch_policy_;
   uint32_t target_batch_size_;

@@ -2,8 +2,8 @@
 #define NEXUS_COMMON_RPS_METER_H_
 
 #include <cstddef>
-#include <deque>
 #include <optional>
+#include <vector>
 
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
@@ -12,21 +12,24 @@ namespace nexus {
 
 class RpsMeter {
  public:
-  RpsMeter(double window_span_second, size_t history_length,
-           TimePoint start_time);
-  void Hit(TimePoint time);
-  std::optional<AvgStd> Get(TimePoint now);
+  explicit RpsMeter(size_t window_size);
+  void Hit();
+  void SealCounter(TimePoint now);
+  std::optional<AvgStd> Get();
 
  private:
-  void PopLeft(int64_t time_ns);
-  size_t Index(int64_t time_ns);
+  size_t size_;
+  size_t counter_ = 0;
+  TimePoint counter_start_at_;
 
-  int64_t window_span_ns_;
-  int64_t earliest_time_ns_;
-  double hack_rps_;
+  // Circular buffer
+  std::vector<double> window_;
+  size_t idx_ = 0;
 
-  // TODO: use a circular buffer
-  std::deque<size_t> counters_;
+  // Mean and stddev
+  double avg_ = 0;
+  double nvar_ = 0;
+  double std_ = 0;
 };
 
 }  // namespace nexus

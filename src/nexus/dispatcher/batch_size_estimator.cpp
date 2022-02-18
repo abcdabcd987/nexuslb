@@ -18,7 +18,8 @@ uint32_t BatchSizeEstimator::Estimate(const ModelProfile& profile,
     double l = profile.GetForwardLatency(bs) * 1e-6;
     double t = bs / l;
     double n = xrps_ * r / t;
-    if (l * (1 + 1 / n) > time_budget) {
+    double n1 = n > 1 ? n : 1;
+    if (l * (1 + 1 / n1) > time_budget) {
       return bs - 1;
     }
   }

@@ -197,7 +197,6 @@ class WorkloadSender {
       LOG(INFO) << "[" << model_sess_id_ << "] Next TracePoint idx=" << tp_idx_
                 << " rps=" << tp.rps << " duration=" << tp.duration;
       gapgen_ = options_.construct_gapgen(tp.rps);
-      next_time_ = tp_end_time_;
       tp_end_time_ +=
           std::chrono::nanoseconds(static_cast<long>(tp.duration * 1e9));
       tp_idx_ += 1;

@@ -335,7 +335,6 @@ class DispatcherRunner {
                 << "] Next TraceSegment idx=" << l.ts_idx << " rps=" << ts.rps
                 << " duration=" << ts.duration;
       l.gap_gen = w.gap_builder.Build(l.seed + l.ts_idx, ts.rps);
-      l.next_time = l.ts_end_at;
       l.ts_end_at +=
           std::chrono::nanoseconds(static_cast<long>(ts.duration * 1e9));
       l.ts_idx += 1;

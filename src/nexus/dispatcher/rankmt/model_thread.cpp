@@ -32,7 +32,7 @@ ModelThread::ModelThread(
       poller_(this),
       frontends_(std::move(frontends)),
       backends_(std::move(backends)),
-      bse_(1.0, 2.0),
+      bse_(1.0, 0.0),
       rps_meter_(config.rpsmeter_window),
       rps_meter_timer_(*CHECK_NOTNULL(executor)),
       batch_policy_(unprocessed_queries_),

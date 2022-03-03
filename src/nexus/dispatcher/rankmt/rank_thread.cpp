@@ -255,6 +255,7 @@ void RankThread::UpdateGpu(GpuContext* gctx, TimePoint free_at) {
 }
 
 void RankThread::Poll() {
+  if (stop_flag_) return;
   for (auto& mdata : model_threads_) {
     if (!mdata) {
       continue;

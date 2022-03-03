@@ -120,6 +120,7 @@ void ModelThread::PostGrantedGpu(GrantedGpuMessage cmd) {
 
 CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   CHECK_EQ(ario::EpollExecutor::ThisThreadExecutor(), &executor_);
+  if (stop_flag_) return CtrlStatus::SERVICE_UNAVAILABLE;
 
   ModelIndex model_index(request.query_without_input().model_index());
   if (model_index.t != model_index_.t) {
@@ -203,6 +204,7 @@ void ModelThread::UpdateCandidate() {
 }
 
 void ModelThread::OnDropTimer() {
+  if (stop_flag_) return;
   if (batch_policy_.inputs().empty()) {
     return;
   }
@@ -299,6 +301,7 @@ TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
 }
 
 void ModelThread::Poll() {
+  if (stop_flag_) return;
   MessagesFromRankThread rank_msg;
   {
     std::lock_guard lock(rank_msg_mutex_);

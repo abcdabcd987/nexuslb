@@ -24,11 +24,13 @@ bool BatchPlanIntersects(const BatchPlanProto& a, const BatchPlanProto& b) {
 
 FakeBackendDelegate::FakeBackendDelegate(ario::EpollExecutor* executor,
                                          uint32_t node_id,
-                                         FakeDispatcherAccessor* accessor)
+                                         FakeDispatcherAccessor* accessor,
+                                         bool save_archive)
     : BackendDelegate(NodeId(node_id),
                       {{GpuId(node_id), 0, "FakeGPU", "FakeUUID", 0}}),
       executor_(executor),
       accessor_(accessor),
+      save_archive_(save_archive),
       timer_(*executor_) {}
 
 void FakeBackendDelegate::Tick() {
@@ -80,8 +82,9 @@ void FakeBackendDelegate::SetupTimer() {
 }
 
 void FakeBackendDelegate::DrainBatchPlans() {
-  for (const auto& plan : batchplans_) {
+  for (auto& plan : batchplans_) {
     OnBatchFinish(plan);
+    SaveBatchPlan(std::move(plan));
   }
   batchplans_.clear();
 }
@@ -109,8 +112,15 @@ void FakeBackendDelegate::OnTimer(ario::ErrorCode) {
   }
   SetupTimer();
   lock.unlock();
-  for (const auto& plan : finished_plans) {
+  for (auto& plan : finished_plans) {
     OnBatchFinish(plan);
+    SaveBatchPlan(std::move(plan));
+  }
+}
+
+void FakeBackendDelegate::SaveBatchPlan(BatchPlanProto&& plan) {
+  if (save_archive_) {
+    batchplan_archive_.emplace_back(std::move(plan));
   }
 }
 

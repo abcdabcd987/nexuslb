@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 
 #include "ario/ario.h"
@@ -17,7 +18,10 @@ namespace dispatcher {
 class FakeBackendDelegate : public BackendDelegate {
  public:
   FakeBackendDelegate(ario::EpollExecutor* executor, uint32_t node_id,
-                      FakeDispatcherAccessor* accessor);
+                      FakeDispatcherAccessor* accessor, bool save_archive);
+  const std::deque<BatchPlanProto>& batchplan_archive() const {
+    return batchplan_archive_;
+  }
 
   void Tick() override;
   void SendLoadModelCommand(uint32_t gpu_idx, const ModelSession& model_session,
@@ -30,12 +34,15 @@ class FakeBackendDelegate : public BackendDelegate {
   void OnBatchFinish(const BatchPlanProto& plan);
   void OnTimer(ario::ErrorCode);
   void SetupTimer();
+  void SaveBatchPlan(BatchPlanProto&& plan);
 
   ario::EpollExecutor* executor_;
   FakeDispatcherAccessor* accessor_;
+  bool save_archive_;
   ario::Timer timer_;
   std::mutex mutex_;
   std::vector<BatchPlanProto> batchplans_;
+  std::deque<BatchPlanProto> batchplan_archive_;
 };
 
 }  // namespace dispatcher

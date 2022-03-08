@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -51,6 +52,7 @@ struct ModelOptions {
 struct Options {
   int64_t seed;
   bool multithread;
+  std::string dump_schedule;
   int gpus;
   std::vector<ModelOptions> models;
 
@@ -204,6 +206,10 @@ class DispatcherRunner {
     LOG(INFO) << "  " << buf;
     LOG(INFO) << "  Throughput: " << throughput << " rps";
 
+    if (!options_.dump_schedule.empty()) {
+      DumpBatchplan();
+    }
+
     if (sum_noreply) {
       LOG(ERROR) << "Buggy scheduler. There are " << sum_noreply
                  << " queries having no reply.";
@@ -228,9 +234,10 @@ class DispatcherRunner {
   void BuildFakeServers() {
     uint32_t next_backend_id = 10001;
     for (int i = 0; i < options_.gpus; ++i) {
+      bool save_archive = !options_.dump_schedule.empty();
       auto backend_id = next_backend_id++;
       auto backend = std::make_shared<FakeBackendDelegate>(
-          main_executor_.get(), backend_id, &accessor_);
+          main_executor_.get(), backend_id, &accessor_, save_archive);
       accessor_.AddBackend(NodeId(backend_id), backend);
       scheduler_->AddBackend(NodeId(backend_id), backend);
       backends_.push_back(backend);
@@ -258,6 +265,7 @@ class DispatcherRunner {
                                                   w.model_session);
       request_entrances_.push_back(entrance);
       model_index_table_.push_back(entrance.model_index());
+      CHECK_EQ(entrance.model_index() + 1, model_index_table_.size());
     }
   }
 
@@ -352,6 +360,49 @@ class DispatcherRunner {
     });
   }
 
+  FILE* OpenLogFile(const std::string& path) {
+    if (options_.dump_schedule == "stdout") {
+      return stdout;
+    }
+    FILE* f = fopen(options_.dump_schedule.c_str(), "w");
+    if (!f) {
+      LOG(ERROR) << "Cannot open log file to write: " << options_.dump_schedule;
+      return nullptr;
+    }
+    return f;
+  }
+
+  void CloseLogFile(const std::string& path, FILE* f) {
+    if (options_.dump_schedule != "stdout") {
+      fclose(f);
+    }
+  }
+
+  void DumpBatchplan() {
+    FILE* f = OpenLogFile(options_.dump_schedule);
+    if (!f) return;
+    for (size_t backend_idx = 0; backend_idx < backends_.size();
+         ++backend_idx) {
+      int gpu_idx = backend_idx;
+      const auto& archive = backends_[backend_idx]->batchplan_archive();
+      for (const auto& p : archive) {
+        int model_idx = p.model_index();
+        int plan_id = p.plan_id();
+        int batch_size = p.queries_size();
+        const auto& l = loadgen_contexts_[model_idx];
+        auto bench_start_ns = start_at_.time_since_epoch().count() +
+                              l.start_offset_ns + l.warmup_duration * 1e9;
+        double exec_at = (p.exec_time_ns() - bench_start_ns) / 1e9;
+        double finish_at = (p.expected_finish_time_ns() - bench_start_ns) / 1e9;
+        if (exec_at < 0 || finish_at > l.bench_duration) continue;
+        fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
+                model_idx, batch_size, exec_at, finish_at);
+      }
+    }
+    CloseLogFile(options_.dump_schedule, f);
+    LOG(INFO) << "BatchPlan dumped to " << options_.dump_schedule;
+  }
+
   struct LoadGenContext {
     ario::Timer timer;
 
@@ -418,6 +469,11 @@ Options Options::FromYaml(const YAML::Node& config) {
 
   // Use multiple threads to run RankMT
   opt.multithread = config["multithread"].as<bool>(false);
+
+  // Dump Schedule. Options: `false`, `stdout`, or path
+  if (config["dump_schedule"].as<bool>(true)) {
+    opt.dump_schedule = config["dump_schedule"].as<std::string>("");
+  }
 
   // Number of GPUs
   opt.gpus = config["gpus"].as<int>(1);

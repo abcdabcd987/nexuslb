@@ -175,9 +175,10 @@ class DispatcherRunner {
   void BuildFakeServers() {
     uint32_t next_backend_id = 10001;
     for (int i = 0; i < options_.backends; ++i) {
+      bool save_archive = false;
       auto backend_id = next_backend_id++;
       auto backend = std::make_shared<FakeBackendDelegate>(
-          main_executor_.get(), backend_id, &accessor_);
+          main_executor_.get(), backend_id, &accessor_, save_archive);
       accessor_.AddBackend(NodeId(backend_id), backend);
       scheduler_->AddBackend(NodeId(backend_id), backend);
       backends_.push_back(backend);

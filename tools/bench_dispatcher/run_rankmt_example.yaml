@@ -1,5 +1,6 @@
 seed: 0xabcdabcd987
 multithread: false
+dump_schedule: false  # Options: `false`, `stdout`, or path
 gpus: 8
 models:
 - framework: sleep#1082,5204,0,0

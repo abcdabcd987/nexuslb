@@ -391,7 +391,7 @@ class DispatcherRunner {
         int batch_size = p.queries_size();
         const auto& l = loadgen_contexts_[model_idx];
         auto bench_start_ns = start_at_.time_since_epoch().count() +
-                              l.start_offset_ns + l.warmup_duration * 1e9;
+                              static_cast<long>(l.warmup_duration * 1e9);
         double exec_at = (p.exec_time_ns() - bench_start_ns) / 1e9;
         double finish_at = (p.expected_finish_time_ns() - bench_start_ns) / 1e9;
         if (exec_at < 0 || finish_at > l.bench_duration) continue;

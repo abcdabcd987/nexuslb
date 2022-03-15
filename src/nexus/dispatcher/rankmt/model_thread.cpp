@@ -37,7 +37,8 @@ ModelThread::ModelThread(
       rps_meter_timer_(*CHECK_NOTNULL(executor)),
       batch_policy_(unprocessed_queries_),
       target_batch_size_(0),
-      drop_timer_(*CHECK_NOTNULL(executor)) {
+      drop_timer_(*CHECK_NOTNULL(executor)),
+      invalidate_timer_(*CHECK_NOTNULL(executor)) {
   // TODO: GPU performance heterogeneity
   auto profile_id = ModelSessionToProfileID(model_session_);
   for (auto& backend : backends_) {
@@ -178,24 +179,38 @@ void ModelThread::UpdateCandidate() {
   UpdateTargetBatchSize(rps);
   batch_policy_.Update(earliest_exec_at, target_batch_size_);
 
-  TimePoint exec_at;
+  TimePoint exec_at, invalid_after;
   const auto& inputs = batch_policy_.inputs();
   if (!inputs.empty()) {
     auto deadline = (*inputs.begin())->deadline;
     auto frontrun_elapse = EstimateExecElapse(profile_, inputs.size() + 1);
     auto frontrun_exec_at = deadline - frontrun_elapse;
-    exec_at = std::max(earliest_exec_at, frontrun_exec_at);
+    if (inputs.size() >= target_batch_size_) {
+      exec_at = earliest_exec_at;
+    } else {
+      exec_at = std::max(earliest_exec_at, frontrun_exec_at);
+    }
+    auto elapse = EstimateExecElapse(profile_, inputs.size());
+    invalid_after = deadline - elapse;
     drop_timer_.SetTimeout(deadline);
     drop_timer_.AsyncWait([this](ario::ErrorCode err) {
       if (err != ario::ErrorCode::kOk) return;
       OnDropTimer();
     });
+    invalidate_timer_.SetTimeout(invalid_after - config_.data_latency -
+                                 config_.ctrl_latency);
+    invalidate_timer_.AsyncWait([this](ario::ErrorCode err) {
+      if (err != ario::ErrorCode::kOk) return;
+      OnDropTimer();
+    });
   } else {
     exec_at = TimePoint::max();
+    invalid_after = TimePoint::min();
     drop_timer_.CancelAll();
+    invalidate_timer_.CancelAll();
   }
 
-  candidate_ = ExecutionCandidate{exec_at};
+  candidate_ = ExecutionCandidate{exec_at, invalid_after};
 
   // Send dropped queries
   if (!batch_policy_.drops().empty()) {

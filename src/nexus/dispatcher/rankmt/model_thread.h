@@ -114,6 +114,7 @@ class ModelThread {
   uint32_t target_batch_size_;
   ExecutionCandidate candidate_;
   ario::Timer drop_timer_;
+  ario::Timer invalidate_timer_;
 
   std::mutex rank_msg_mutex_;
   MessagesFromRankThread rank_msg_ /* GUARDED_BY(rank_msg_mutex_) */;

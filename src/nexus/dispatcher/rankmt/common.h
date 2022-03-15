@@ -46,8 +46,11 @@ std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
 
 struct ExecutionCandidate {
   TimePoint exec_at;
+  TimePoint invalid_after;
 
-  static ExecutionCandidate Invalid() { return {TimePoint::max()}; }
+  static ExecutionCandidate Invalid() {
+    return {TimePoint::max(), TimePoint::min()};
+  }
 };
 
 // RankThread -> ModelThread

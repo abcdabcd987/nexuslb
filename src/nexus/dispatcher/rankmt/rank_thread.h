@@ -81,11 +81,13 @@ class RankThread {
   };
 
   struct GpuContext {
-    GpuContext(GpuId gpu_id, GpuDelegate* delegate);
+    GpuContext(ario::EpollExecutor* executor, GpuId gpu_id,
+               GpuDelegate* delegate);
 
     GpuId gpu_id;
     GpuDelegate* delegate;
     TimePoint free_at;
+    ario::Timer free_timer;
   };
 
   // Handlers for commands from model threads
@@ -96,7 +98,9 @@ class RankThread {
   PlanId NextPlanId();
   void SetupActivePlan(PerModelThreadData& mdata);
   void OnPlanTimer(PerModelThreadData& mdata);
+  void GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx);
   void UpdateGpu(GpuContext* gctx, TimePoint free_at);
+  void OnGpuTimer(GpuContext* gctx);
 
   void Poll();
 
@@ -110,6 +114,7 @@ class RankThread {
   std::vector<std::unique_ptr<PerModelThreadData>> model_threads_;
 
   ValueRankedSplayMap<GpuId, TimePoint> gpu_availability_pool_;
+  ValueRankedSplayMap<PerModelThreadData*, TimePoint> plan_pool_;
 };
 
 }  // namespace rankmt

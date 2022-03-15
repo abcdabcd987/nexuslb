@@ -16,10 +16,12 @@ namespace nexus {
 namespace dispatcher {
 namespace rankmt {
 
-RankThread::GpuContext::GpuContext(GpuId gpu_id, GpuDelegate* delegate)
+RankThread::GpuContext::GpuContext(ario::EpollExecutor* executor, GpuId gpu_id,
+                                   GpuDelegate* delegate)
     : gpu_id(gpu_id),
       delegate(delegate),
-      free_at(std::chrono::nanoseconds(0)) {}
+      free_at(std::chrono::nanoseconds(0)),
+      free_timer(*CHECK_NOTNULL(executor)) {}
 
 RankThread::RankThread(RankmtConfig config, ario::EpollExecutor* executor)
     : config_(config),
@@ -162,7 +164,7 @@ void RankThread::PostAddBackend(NodeId backend_id,
         for (auto gpu : backend->GetGpuDelegates()) {
           auto gpu_id = gpu->gpu_id();
           CHECK(!gpus_.count(gpu_id));
-          auto gctx = std::make_shared<GpuContext>(gpu_id, gpu);
+          auto gctx = std::make_shared<GpuContext>(&executor_, gpu_id, gpu);
           gpus_[gpu_id] = gctx;
           gpu_availability_pool_.Upsert(gpu_id, gctx->free_at);
         }
@@ -190,6 +192,7 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   CHECK(mdata.candidate.has_value());
   const auto& candidate = mdata.candidate.value();
+  plan_pool_.Upsert(&mdata, candidate.exec_at);
 
   auto send_at =
       candidate.exec_at - config_.ctrl_latency - config_.data_latency;
@@ -216,6 +219,10 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
     auto us = duration_cast<microseconds>(timer_delay).count();
     LOG(WARNING) << "OnPlanTimer: huge timer delay: " << us << " us";
   }
+  auto earliest_exec_at = now + config_.data_latency + config_.ctrl_latency;
+  if (earliest_exec_at > mdata.candidate->invalid_after) {
+    return;
+  }
 
   // Try to assign backend if possible
   CHECK_EQ(gpu_availability_pool_.Size(), gpus_.size());
@@ -228,20 +235,27 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
     return;
   }
 
+  GrantGpuToModel(mdata, gctx.get());
+}
+
+void RankThread::GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx) {
   // Let ModelThread send out the plan
   GrantedGpuMessage msg;
-  msg.gpu_id = gpu_id;
+  msg.gpu_id = gctx->gpu_id;
   msg.plan_id = NextPlanId();
   msg._debug_free_at = gctx->free_at;
   mdata.model_thread.PostGrantedGpu(msg);
   VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
-          << " id=" << msg.plan_id.t << " gpu=" << gpu_id;
+          << " id=" << msg.plan_id.t << " gpu=" << gctx->gpu_id;
 
   // Mark backend unavailable.
   // Also set the candidate of this model to be invalid.
   // ModelThread will give us updates on the backend and new candidates.
-  UpdateGpu(gctx.get(), TimePoint::max());
+  UpdateGpu(gctx, TimePoint::max());
   mdata.candidate = std::nullopt;
+
+  // Remove the candidate because it's no longer valid.
+  plan_pool_.Remove(&mdata);
 
   // Reject candidate updates until ModelThread picks up the granted backend.
   // Because after the backend is granted and before ModelThread picks it up,
@@ -252,6 +266,47 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
 void RankThread::UpdateGpu(GpuContext* gctx, TimePoint free_at) {
   gctx->free_at = free_at;
   gpu_availability_pool_.Upsert(gctx->gpu_id, free_at);
+
+  auto send_time = gctx->free_at - config_.ctrl_latency - config_.data_latency;
+  gctx->free_timer.SetTimeout(send_time);
+  gctx->free_timer.AsyncWait([this, gctx](ario::ErrorCode error) {
+    if (error == ario::ErrorCode::kCancelled) return;
+    OnGpuTimer(gctx);
+  });
+}
+
+void RankThread::OnGpuTimer(GpuContext* gctx) {
+  if (stop_flag_) return;
+
+  // Remove invalid candidates.
+  while (plan_pool_.Size() > 0) {
+    auto* mdata = plan_pool_.GetByRank(0).key.get();
+    CHECK(mdata->candidate.has_value());
+    const auto& c = mdata->candidate;
+    if (gctx->free_at > c->invalid_after) {
+      // Note that if the predicate holds for the current gctx, it'll hold for
+      // any future gctx2 because gctx2->free_at > gctx->free_at.
+      plan_pool_.Remove(mdata);
+    } else {
+      break;
+    }
+  }
+  if (plan_pool_.Size() == 0) {
+    return;
+  }
+
+  // Check the top candidate. Skip if not reached exec_at yet
+  // because the candidates can be matched with GPU on the candidate's timer.
+  auto* mdata = plan_pool_.GetByRank(0).key.get();
+  CHECK(mdata->candidate.has_value());
+  const auto& c = mdata->candidate;
+  if (c->exec_at > gctx->free_at) {
+    // Note that if the predicate holds for the top candidate c, it'll hold for
+    // any lower ranked candidate c2 because c2->exec_at > c->exec_at.
+    return;
+  }
+
+  GrantGpuToModel(*mdata, gctx);
 }
 
 void RankThread::Poll() {

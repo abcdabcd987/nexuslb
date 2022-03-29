@@ -46,9 +46,8 @@ struct Options {
   int height;
   std::string imgext;
   int64_t seed;
-  std::string gap;
+  GapGeneratorBuilder gap_builder;
   std::vector<TracePoint> trace;
-  std::function<std::unique_ptr<GapGenerator>(double rps)> construct_gapgen;
 
   static Options FromYaml(size_t cfgidx, const YAML::Node& config);
 };
@@ -196,7 +195,8 @@ class WorkloadSender {
       const auto& tp = options_.trace[tp_idx_];
       LOG(INFO) << "[" << model_sess_id_ << "] Next TracePoint idx=" << tp_idx_
                 << " rps=" << tp.rps << " duration=" << tp.duration;
-      gapgen_ = options_.construct_gapgen(tp.rps);
+      auto seed = options_.seed + sender_idx_ * 31 + tp_idx_;
+      gapgen_ = options_.gap_builder.Build(seed, tp.rps);
       tp_end_time_ +=
           std::chrono::nanoseconds(static_cast<long>(tp.duration * 1e9));
       tp_idx_ += 1;
@@ -327,24 +327,8 @@ Options Options::FromYaml(size_t cfgidx, const YAML::Node& config) {
   // Random seed
   opt.seed = config["seed"].as<int64_t>(0xabcdabcd987LL);
 
-  // Request interval gap. Choices: ['const', 'exp']
-  opt.gap = config["gap"].as<std::string>("const");
-
-  // Gap factory
-  {
-    std::unordered_map<std::string, decltype(opt.construct_gapgen)> gap_factory;
-    gap_factory.emplace("const", [](double rps) {
-      return std::make_unique<ConstGapGenerator>(rps);
-    });
-    gap_factory.emplace("exp", [seed = opt.seed](double rps) {
-      return std::make_unique<ExpGapGenerator>(seed, rps);
-    });
-    auto iter = gap_factory.find(opt.gap);
-    if (iter == gap_factory.end()) {
-      LOG(FATAL) << "Unknown choice for `gap`: " << opt.gap;
-    }
-    opt.construct_gapgen = iter->second;
-  }
+  // Request interval gap. Choices: ['const', 'exp', 'gamma:shape']
+  opt.gap_builder = GapGeneratorBuilder::Parse(config["gap"].as<std::string>());
 
   // Trace
   const auto& trace = config["trace"];

@@ -392,9 +392,9 @@ int main(int argc, char** argv) {
   }
 
   // Cleanup
-  senders.clear();
   main_io_context.run();
   output_work.reset();
   output_io_context.run();
   output_thread.join();
+  senders.clear();
 }

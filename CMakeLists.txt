@@ -339,6 +339,12 @@ target_link_libraries(ario_test PRIVATE ario)
 
 
 
+###### tools/bench_tcp ######
+add_executable(bench_tcp tools/bench_tcp.cpp)
+target_link_libraries(bench_tcp PRIVATE Threads::Threads Boost::system)
+
+
+
 ###### examples/simple_app ######
 add_executable(simple examples/simple_app/src/simple.cpp)
 target_link_libraries(simple PRIVATE nexus gflags)

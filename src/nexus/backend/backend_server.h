@@ -103,16 +103,9 @@ class BackendServer {
 
   struct ConnContext {
     ario::RdmaQueuePair& conn;
-    std::mutex mutex;
-
-    size_t cnt_flying_image_fetch /* GUARDED_BY(mutex) */;
-    std::deque<std::shared_ptr<Task>>
-        pending_image_fetch_task /* GUARDED_BY(mutex) */;
 
     ConnContext(ario::RdmaQueuePair* conn);
   };
-
-  void PostImageFetch(std::shared_ptr<ConnContext> ctx);
 
  private:
   struct GpuContext {

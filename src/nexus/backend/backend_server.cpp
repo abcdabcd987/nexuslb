@@ -31,7 +31,7 @@ namespace backend {
 BackendServer::GpuContext::GpuContext() {}
 
 BackendServer::ConnContext::ConnContext(ario::RdmaQueuePair* conn)
-    : conn(*CHECK_NOTNULL(conn)), cnt_flying_image_fetch(0) {}
+    : conn(*CHECK_NOTNULL(conn)) {}
 
 BackendServer::BackendServer(ario::PollerType poller_type, std::string rdma_dev,
                              uint16_t port, std::string sch_addr,
@@ -232,11 +232,6 @@ void BackendServer::RdmaHandler::OnRdmaReadComplete(
                << " TODO: clear pending tasks.";
     return;
   }
-  {
-    std::lock_guard lock(frontend_connctx->mutex);
-    --frontend_connctx->cnt_flying_image_fetch;
-  }
-  outer_.PostImageFetch(frontend_connctx);
 }
 
 void BackendServer::RdmaHandler::OnRecv(ario::RdmaQueuePair* conn,
@@ -484,44 +479,23 @@ bool BackendServer::EnqueueQuery(std::shared_ptr<Task> task) {
     frontend_connctx = iter->second;
   }
   task->SetConnection(&frontend_connctx->conn);
+
+  // RDMA READ input image from Frontend
+  auto backend_fetch_image_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          Clock::now().time_since_epoch())
+          .count();
+  task->query.mutable_clock()->set_backend_fetch_image_ns(
+      backend_fetch_image_ns);
+  auto global_id = task->query.global_id();
+  auto wrid = frontend_connctx->conn.AsyncRead(large_buffers_.Allocate(),
+                                               task->rdma_read_offset,
+                                               task->rdma_read_length);
   {
-    std::lock_guard lock(frontend_connctx->mutex);
-    frontend_connctx->pending_image_fetch_task.push_back(task);
+    std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
+    tasks_pending_fetch_image_[wrid] = task;
   }
-  PostImageFetch(frontend_connctx);
   return true;
-}
-
-void BackendServer::PostImageFetch(std::shared_ptr<ConnContext> ctx) {
-  constexpr size_t kMaxFlying = 1;
-
-  for (;;) {
-    std::shared_ptr<Task> task;
-    {
-      std::lock_guard lock(ctx->mutex);
-      if (ctx->pending_image_fetch_task.empty()) break;
-      if (ctx->cnt_flying_image_fetch == kMaxFlying) break;
-      task = ctx->pending_image_fetch_task.front();
-      ctx->pending_image_fetch_task.pop_front();
-      ++ctx->cnt_flying_image_fetch;
-    }
-
-    // RDMA READ input image from Frontend
-    auto backend_fetch_image_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            Clock::now().time_since_epoch())
-            .count();
-    task->query.mutable_clock()->set_backend_fetch_image_ns(
-        backend_fetch_image_ns);
-    auto global_id = task->query.global_id();
-    auto wrid =
-        ctx->conn.AsyncRead(large_buffers_.Allocate(), task->rdma_read_offset,
-                            task->rdma_read_length);
-    {
-      std::lock_guard<std::mutex> lock(mu_tasks_pending_fetch_image_);
-      tasks_pending_fetch_image_[wrid] = task;
-    }
-  }
 }
 
 void BackendServer::HandleEnqueueBatchPlan(BatchPlanProto&& req,

@@ -19,6 +19,7 @@ BatchPlanContext::BatchPlanContext(BatchPlanProto proto)
   }
   pending_queries_ = global_ids_;
   batch_task_ = std::make_shared<BatchTask>(proto_.queries_size());
+  preprocessed_task_.reserve(proto_.queries_size());
 
   stats_.set_plan_id(proto_.plan_id());
   stats_.set_batch_size(proto_.queries_size());

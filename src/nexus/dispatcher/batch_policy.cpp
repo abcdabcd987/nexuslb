@@ -8,8 +8,11 @@ namespace dispatcher {
 namespace {
 
 void GetBatchByExpandedWindow(
-    TimePoint exec_time, uint32_t target_batch_size, SortedQueryList& queries,
-    const ModelProfile& profile, SortedQueryList& inputs,
+    TimePoint sched_at, TimePoint gpu_free_at,
+    std::chrono::duration<long, std::nano> dctrl,
+    std::chrono::duration<long, std::nano> ddata, uint32_t target_batch_size,
+    SortedQueryList& queries, const ModelProfile& profile,
+    SortedQueryList& inputs,
     std::vector<std::shared_ptr<QueryContext>>& drops) {
   using namespace std::chrono;
   auto proc_elapse = nanoseconds(0);
@@ -24,6 +27,9 @@ void GetBatchByExpandedWindow(
     auto deadline = (*inputs.begin())->deadline;
     auto fwd_elapse = nanoseconds(
         static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
+    auto earliest_exec_at =
+        sched_at + dctrl + ddata * static_cast<long>(inputs.size());
+    auto exec_time = std::max(earliest_exec_at, gpu_free_at);
     auto finish_time = exec_time + fwd_elapse + proc_elapse;
     if (deadline >= finish_time) {
       break;
@@ -48,6 +54,8 @@ void GetBatchByExpandedWindow(
       auto deadline = (*inputs.begin())->deadline;
       auto fwd_elapse =
           nanoseconds(static_cast<long>(profile.GetForwardLatency(bs) * 1e3));
+      auto earliest_exec_at = sched_at + dctrl + ddata * static_cast<long>(bs);
+      auto exec_time = std::max(earliest_exec_at, gpu_free_at);
       auto finish_time = exec_time + fwd_elapse + proc_elapse;
       if (deadline < finish_time) {
         drops.push_back(*inputs.begin());
@@ -60,8 +68,11 @@ void GetBatchByExpandedWindow(
     } else {
       auto deadline =
           min((*inputs.begin())->deadline, (*queries.begin())->deadline);
-      auto fwd_elapse = nanoseconds(static_cast<long>(
-          profile.GetForwardLatency(inputs.size() + 1) * 1e3));
+      auto bs = static_cast<long>(inputs.size() + 1);
+      auto fwd_elapse =
+          nanoseconds(static_cast<long>(profile.GetForwardLatency(bs) * 1e3));
+      auto earliest_exec_at = sched_at + dctrl + ddata * bs;
+      auto exec_time = std::max(earliest_exec_at, gpu_free_at);
       auto finish_time = exec_time + fwd_elapse + proc_elapse;
       if (finish_time < deadline) {
         inputs.insert(*queries.begin());
@@ -76,6 +87,7 @@ void GetBatchByExpandedWindow(
   if (!inputs.empty()) {
     auto fwd_elapse = nanoseconds(
         static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
+    auto exec_time = sched_at + dctrl + ddata * inputs.size();
     auto finish_time = exec_time + fwd_elapse + proc_elapse;
     auto deadline = (*inputs.begin())->deadline;
     CHECK(deadline >= finish_time);
@@ -84,19 +96,26 @@ void GetBatchByExpandedWindow(
 
 }  // namespace
 
-IncrementalBatchPolicy::IncrementalBatchPolicy(SortedQueryList& queries)
-    : queries_(queries), profile_(nullptr), last_exec_time_() {}
+IncrementalBatchPolicy::IncrementalBatchPolicy(
+    SortedQueryList& queries, std::chrono::duration<long, std::nano> dctrl,
+    std::chrono::duration<long, std::nano> ddata)
+    : queries_(queries),
+      dctrl_(dctrl),
+      ddata_(ddata),
+      profile_(nullptr),
+      last_sched_at_() {}
 
-void IncrementalBatchPolicy::Update(TimePoint exec_time,
+void IncrementalBatchPolicy::Update(TimePoint sched_at, TimePoint gpu_free_at,
                                     uint32_t target_batch_size) {
   CHECK_NE(profile_, nullptr) << "Profile not set.";
-  CHECK(last_exec_time_ <= exec_time)
+  CHECK(last_sched_at_ <= sched_at)
       << "Time can't go backwards. diff="
-      << (last_exec_time_ - exec_time).count() / 1e3 << "us";
-  last_exec_time_ = exec_time;
+      << (last_sched_at_ - sched_at).count() / 1e3 << "us";
+  last_sched_at_ = sched_at;
 
-  GetBatchByExpandedWindow(exec_time, target_batch_size, queries_, *profile_,
-                           inputs_, drops_);
+  GetBatchByExpandedWindow(sched_at, gpu_free_at, dctrl_, ddata_,
+                           target_batch_size, queries_, *profile_, inputs_,
+                           drops_);
 }
 
 void IncrementalBatchPolicy::SetProfile(const ModelProfile& profile) {

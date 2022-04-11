@@ -192,10 +192,12 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   CHECK(mdata.candidate.has_value());
   const auto& candidate = mdata.candidate.value();
-  plan_pool_.Upsert(&mdata, candidate.exec_at);
 
-  auto send_at =
-      candidate.exec_at - config_.ctrl_latency - config_.data_latency;
+  auto data_delay = config_.data_latency * candidate.batch_size;
+  auto send_at = candidate.exec_at - config_.ctrl_latency - data_delay;
+
+  plan_pool_.Upsert(&mdata, send_at);
+
   // Although Timer accepts expiration time at the past,
   // taking max with now here so that we can measure the timer delay
   // using Timer::timeout. See the beginning of OnPlanTimer.
@@ -219,7 +221,8 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
     auto us = duration_cast<microseconds>(timer_delay).count();
     LOG(WARNING) << "OnPlanTimer: huge timer delay: " << us << " us";
   }
-  auto earliest_exec_at = now + config_.data_latency + config_.ctrl_latency;
+  auto data_delay = config_.data_latency * mdata.candidate->batch_size;
+  auto earliest_exec_at = now + config_.ctrl_latency + data_delay;
   if (earliest_exec_at > mdata.candidate->invalid_after) {
     return;
   }
@@ -243,7 +246,7 @@ void RankThread::GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx) {
   GrantedGpuMessage msg;
   msg.gpu_id = gctx->gpu_id;
   msg.plan_id = NextPlanId();
-  msg._debug_free_at = gctx->free_at;
+  msg.free_at = gctx->free_at;
   mdata.model_thread.PostGrantedGpu(msg);
   VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
           << " id=" << msg.plan_id.t << " gpu=" << gctx->gpu_id;
@@ -267,7 +270,10 @@ void RankThread::UpdateGpu(GpuContext* gctx, TimePoint free_at) {
   gctx->free_at = free_at;
   gpu_availability_pool_.Upsert(gctx->gpu_id, free_at);
 
-  auto send_time = gctx->free_at - config_.ctrl_latency - config_.data_latency;
+  // FIXME
+  auto data_delay = config_.data_latency * 64;
+
+  auto send_time = gctx->free_at - config_.ctrl_latency - data_delay;
   gctx->free_timer.SetTimeout(send_time);
   gctx->free_timer.AsyncWait([this, gctx](ario::ErrorCode error) {
     if (error == ario::ErrorCode::kCancelled) return;

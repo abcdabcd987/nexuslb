@@ -30,9 +30,9 @@ struct RankmtConfig {
 
   static RankmtConfig Default() {
     RankmtConfig config;
-    config.ctrl_latency = std::chrono::microseconds(1000);
-    config.data_latency = std::chrono::microseconds(2000);
-    config.resp_latency = std::chrono::microseconds(1500);
+    config.ctrl_latency = std::chrono::microseconds(100);
+    config.data_latency = std::chrono::microseconds(40);
+    config.resp_latency = std::chrono::microseconds(2000);
     config.rpsmeter_rate = std::chrono::milliseconds(50);
     config.rpsmeter_window = 100;
     return config;
@@ -45,11 +45,12 @@ std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
                                             uint32_t batch_size);
 
 struct ExecutionCandidate {
+  long batch_size;
   TimePoint exec_at;
   TimePoint invalid_after;
 
   static ExecutionCandidate Invalid() {
-    return {TimePoint::max(), TimePoint::min()};
+    return {0, TimePoint::max(), TimePoint::min()};
   }
 };
 
@@ -57,7 +58,7 @@ struct ExecutionCandidate {
 struct GrantedGpuMessage {
   GpuId gpu_id;
   PlanId plan_id;
-  TimePoint _debug_free_at;
+  TimePoint free_at;
 };
 
 // ModelThread -> RankThread

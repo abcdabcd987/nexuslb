@@ -49,7 +49,15 @@ class Scheduler {
    *
    * \param request Load model request
    */
-  void LoadModel(const LoadModelRequest& request);
+  void LoadModel(const LoadModelRequest& request, NexusLoadModelReply* reply);
+  /*!
+   * \brief Handles ReportWorkload RPC.
+   *
+   * This function acquires mutex_.
+   *
+   * \param request Workload stats information
+   */
+  void ReportWorkload(const WorkloadStatsProto& request);
 
   /*!
    * \brief Registers frontend RPC client and fills in the register reply.

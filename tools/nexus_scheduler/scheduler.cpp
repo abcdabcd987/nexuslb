@@ -77,12 +77,16 @@ void Scheduler::Run() {
   }
 }
 
-void Scheduler::LoadModel(const LoadModelRequest& request) {
+void Scheduler::LoadModel(const LoadModelRequest& request,
+                          NexusLoadModelReply* reply) {
   ModelSession model_sess(request.model_session());
   {
     auto info = ModelDatabase::Singleton().GetModelInfo(
         ModelSessionToModelID(model_sess));
-    CHECK(info != nullptr) << "MODEL_NOT_FOUND";
+    if (info == nullptr) {
+      reply->set_status(MODEL_NOT_FOUND);
+      return;
+    }
     if ((*info)["resizable"] && (*info)["resizable"].as<bool>()) {
       if (model_sess.image_height() == 0) {
         // Set default image size for resizable CNN
@@ -96,19 +100,21 @@ void Scheduler::LoadModel(const LoadModelRequest& request) {
 
   std::lock_guard<std::mutex> lock(mutex_);
   auto frontend = GetFrontend(request.node_id());
-  CHECK(frontend != nullptr) << "CTRL_SERVER_NOT_REGISTERED";
+  if (frontend == nullptr) {
+    reply->set_status(CTRL_SERVER_NOT_REGISTERED);
+    return;
+  }
   auto session_iter = session_table_.find(model_sess_id);
   if (session_iter != session_table_.end()) {
     // TODO: For now, if model session is already loaded, don't allocate
     // new backends, just rely on epoch scheduling
+    reply->set_status(CTRL_OK);
+    GetModelRoute(model_sess_id, reply->mutable_model_route());
     frontend->SubscribeModel(model_sess_id);
     session_iter->second->SubscribeModelSession(frontend->node_id(),
                                                 model_sess_id);
     return;
   }
-
-  // Check prefix batching first
-  // Check TFShare models
 
   // Find best-fit backends to serve the workload
   std::vector<std::pair<BackendDelegatePtr, InstanceInfo> > assign_backends;
@@ -117,14 +123,20 @@ void Scheduler::LoadModel(const LoadModelRequest& request) {
     BackendDelegatePtr backend;
     InstanceInfo inst_info;
     FindBestBackend(model_sess, workload, used, &backend, &inst_info);
-    CHECK(backend != nullptr) << "NOT_ENOUGH_BACKENDS";
+    if (backend == nullptr) {
+      reply->set_status(NOT_ENOUGH_BACKENDS);
+      return;
+    }
     assign_backends.emplace_back(backend, inst_info);
   } else {
     while (workload > 1e-3) {
       BackendDelegatePtr backend;
       InstanceInfo inst_info;
       FindBestBackend(model_sess, workload, used, &backend, &inst_info);
-      CHECK(backend != nullptr) << "NOT_ENOUGH_BACKENDS";
+      if (backend == nullptr) {
+        reply->set_status(NOT_ENOUGH_BACKENDS);
+        return;
+      }
       assign_backends.emplace_back(backend, inst_info);
       used.insert(backend->node_id());
       workload -= inst_info.throughput;
@@ -147,6 +159,18 @@ void Scheduler::LoadModel(const LoadModelRequest& request) {
   session_info->SubscribeModelSession(frontend->node_id(), model_sess_id);
 
   // Fill route table in the reply
+  reply->set_status(CTRL_OK);
+  GetModelRoute(model_sess_id, reply->mutable_model_route());
+}
+
+void Scheduler::ReportWorkload(const WorkloadStatsProto& request) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto frontend = GetFrontend(request.node_id());
+  CHECK(frontend != nullptr) << "CTRL_SERVER_NOT_REGISTERED";
+  for (auto const& model_stats : request.model_stats()) {
+    auto session_info = session_table_.at(model_stats.model_session_id());
+    session_info->UpdateWorkload(request.node_id(), model_stats);
+  }
 }
 
 void Scheduler::RegisterFrontend(FrontendDelegatePtr frontend) {

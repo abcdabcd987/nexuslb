@@ -21,3 +21,13 @@ message ModelTableConfig {
   repeated ModelInstanceConfig model_instance_config = 1;
   double duty_cycle_us = 2;
 }
+
+message NexusLoadModelReply {
+  CtrlStatus status = 1;
+  ModelRouteProto model_route = 2;
+}
+
+message WorkloadStatsProto {
+  uint32 node_id = 1;
+  repeated ModelStatsProto model_stats = 2;
+}

@@ -2,15 +2,16 @@
 #define NEXUS_SCHEDULER_SCH_INFO_H_
 
 #include <deque>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <memory>
+
 #include "nexus/common/metric.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
-#include "nexus/proto/nexus.pb.h"
 #include "nexus/proto/control.pb.h"
+#include "nexus/proto/nexus.pb.h"
 
 DECLARE_int32(avg_interval);
 
@@ -21,16 +22,15 @@ using SessionGroup = std::vector<ModelSession>;
 using ServerList = std::unordered_set<uint32_t>;
 
 struct SessionInfo {
-  SessionInfo() :
-      has_static_workload(false),
-      unassigned_workload(0) {}
+  SessionInfo() : has_static_workload(false), unassigned_workload(0) {}
 
   double TotalThroughput() const;
 
   void SubscribeModelSession(uint32_t frontend_id,
                              const std::string& model_sess_id);
 
-  bool UnsubscribleModelSession(uint32_t frontend_id, const std::string& model_sess_id);
+  bool UnsubscribleModelSession(uint32_t frontend_id,
+                                const std::string& model_sess_id);
 
   void UpdateWorkload(uint32_t frontend_id, const ModelStatsProto& model_stats);
 
@@ -67,30 +67,30 @@ struct InstanceInfo {
   bool backup;
   std::unordered_map<uint32_t, BackendInfo> backup_backends;
 
-  InstanceInfo() :
-      batch(0),
-      max_batch(0),
-      profile(nullptr),
-      fwd_latency_us(0.),
-      max_duty_cycle_us(0.),
-      workload(0.),
-      throughput(0.),
-      weight(0.),
-      memory_usage(0),
-      backup(false) {}
+  InstanceInfo()
+      : batch(0),
+        max_batch(0),
+        profile(nullptr),
+        fwd_latency_us(0.),
+        max_duty_cycle_us(0.),
+        workload(0.),
+        throughput(0.),
+        weight(0.),
+        memory_usage(0),
+        backup(false) {}
 
-  InstanceInfo(const InstanceInfo& other) :
-      model_sessions(other.model_sessions),
-      batch(other.batch),
-      max_batch(other.max_batch),
-      profile(other.profile),
-      fwd_latency_us(other.fwd_latency_us),
-      max_duty_cycle_us(other.max_duty_cycle_us),
-      workload(other.workload),
-      throughput(other.throughput),
-      weight(other.weight),
-      memory_usage(other.memory_usage),
-      backup(other.backup) {}
+  InstanceInfo(const InstanceInfo& other)
+      : model_sessions(other.model_sessions),
+        batch(other.batch),
+        max_batch(other.max_batch),
+        profile(other.profile),
+        fwd_latency_us(other.fwd_latency_us),
+        max_duty_cycle_us(other.max_duty_cycle_us),
+        workload(other.workload),
+        throughput(other.throughput),
+        weight(other.weight),
+        memory_usage(other.memory_usage),
+        backup(other.backup) {}
 
   InstanceInfo& operator=(const InstanceInfo& other) {
     if (this != &other) {
@@ -109,12 +109,10 @@ struct InstanceInfo {
     return *this;
   }
 
-  double GetWeight() const {
-    return (weight > 0) ? weight : throughput;
-  }
+  double GetWeight() const { return (weight > 0) ? weight : throughput; }
 };
 
-} // namespace scheduler
-} // namespace nexus
+}  // namespace scheduler
+}  // namespace nexus
 
-#endif // NEXUS_SCHEDULE_SCH_INFO_H_
+#endif  // NEXUS_SCHEDULE_SCH_INFO_H_

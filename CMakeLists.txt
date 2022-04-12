@@ -301,6 +301,21 @@ add_executable(stress_rankmt tools/bench_dispatcher/stress_rankmt_main.cpp)
 target_link_libraries(stress_rankmt PUBLIC bench_dispatcher_obj)
 
 
+###### tools/run_nexus ######
+protobuf_generate_cpp(PROTO_NEXUS_CC PROTO_NEXUS_H
+        ${GENERATED_SRC_DIR}/src/nexus/proto
+        src/nexus/proto/nexus.proto)
+add_executable(run_nexus
+    ${PROTO_NEXUS_CC}
+    tools/nexus_scheduler/run_nexus_main.cpp
+    tools/nexus_scheduler/backend_delegate.cpp
+    tools/nexus_scheduler/frontend_delegate.cpp
+    tools/nexus_scheduler/sch_info.cpp
+    tools/nexus_scheduler/scheduler.cpp
+)
+target_link_libraries(run_nexus PUBLIC bench_dispatcher_obj)
+
+
 
 ###### tools/test_gpu_mem_sharing ######
 # if(USE_GPU AND USE_TENSORFLOW)

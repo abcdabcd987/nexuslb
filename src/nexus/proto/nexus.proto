@@ -1,0 +1,23 @@
+syntax = "proto3";
+package nexus;
+import "nnquery.proto";
+import "control.proto";
+
+
+message ModelRouteProto {
+  message BackendRate {
+    BackendInfo info = 1;
+    double throughput = 2;
+  }
+  string model_session_id = 1;
+  repeated BackendRate backend_rate = 2;
+}
+
+message ModelRouteUpdates {
+  repeated ModelRouteProto model_route = 1;
+}
+
+message ModelTableConfig {
+  repeated ModelInstanceConfig model_instance_config = 1;
+  double duty_cycle_us = 2;
+}

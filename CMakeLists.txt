@@ -309,7 +309,12 @@ add_executable(run_nexus
     ${PROTO_NEXUS_CC}
     tools/nexus_scheduler/run_nexus_main.cpp
     tools/nexus_scheduler/backend_delegate.cpp
+    tools/nexus_scheduler/fake_nexus_backend.cpp
+    tools/nexus_scheduler/fake_nexus_frontend.cpp
     tools/nexus_scheduler/frontend_delegate.cpp
+    tools/nexus_scheduler/gpu_executor.cpp
+    tools/nexus_scheduler/model_exec.cpp
+    tools/nexus_scheduler/model_handler.cpp
     tools/nexus_scheduler/sch_info.cpp
     tools/nexus_scheduler/scheduler.cpp
 )

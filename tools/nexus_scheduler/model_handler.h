@@ -14,9 +14,6 @@
 #include "nexus_scheduler/fake_object_accessor.h"
 
 namespace nexus {
-class FakeNexusBackend;
-class FakeNexusBackendPool;
-
 namespace app {
 
 class ModelHandler {
@@ -38,10 +35,10 @@ class ModelHandler {
 
   std::vector<uint32_t> BackendList();
 
-  FakeNexusBackend* GetBackend();
+  uint32_t GetBackend();
 
  private:
-  FakeNexusBackend* GetBackendDeficitRoundRobin();
+  uint32_t GetBackendDeficitRoundRobin();
 
   ModelSession model_session_;
   std::string model_session_id_;

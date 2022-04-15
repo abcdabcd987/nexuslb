@@ -76,18 +76,18 @@ std::vector<uint32_t> ModelHandler::BackendList() {
   return ret;
 }
 
-FakeNexusBackend* ModelHandler::GetBackend() {
+uint32_t ModelHandler::GetBackend() {
   std::lock_guard<std::mutex> lock(route_mu_);
   return GetBackendDeficitRoundRobin();
 }
 
-FakeNexusBackend* ModelHandler::GetBackendDeficitRoundRobin() {
+uint32_t ModelHandler::GetBackendDeficitRoundRobin() {
   for (size_t i = 0; i < 2 * backends_.size(); ++i) {
     size_t idx = (current_drr_index_ + i) % backends_.size();
     uint32_t backend_id = backends_[idx];
     if (backend_quanta_.at(backend_id) >= 1. - 1e-6) {
       backend_quanta_[backend_id] -= 1.;
-      return accessor_.backends.at(backend_id);
+      return backend_id;
     } else {
       auto rate = backend_rates_[backend_id];
       backend_quanta_[backend_id] += rate * quantum_to_rate_ratio_;

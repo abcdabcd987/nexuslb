@@ -89,12 +89,17 @@ class DispatcherRunner {
   void BuildScheduler() { scheduler_ = std::make_unique<Scheduler>(); }
 
   void BuildFakeServers() {
+    std::vector<ModelSession> model_sessions;
+    for (const auto& m : options_.models) {
+      model_sessions.push_back(m.model_session);
+    }
+
     uint32_t next_backend_id = 10001;
     for (int i = 0; i < options_.backends; ++i) {
       bool save_archive = !options_.dump_schedule.empty();
       auto backend_id = next_backend_id++;
-      auto backend = std::make_shared<FakeNexusBackend>(main_executor_.get(),
-                                                        backend_id, &accessor_);
+      auto backend = std::make_shared<FakeNexusBackend>(
+          main_executor_.get(), &accessor_, backend_id, model_sessions);
       backends_.push_back(backend);
 
       // Register backend at scheduler

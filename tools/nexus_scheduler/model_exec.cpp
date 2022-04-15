@@ -18,22 +18,7 @@ ModelExecutor::ModelExecutor(ModelSession model_session,
 
 ModelExecutor::~ModelExecutor() {}
 
-uint64_t ModelExecutor::Execute() {
-  auto batch_task = GetBatchTaskSlidingWindow(batch_);
-
-  if (batch_task.inputs.size() == 0) {
-    return 0;
-  }
-
-  long latency_us = profile_->GetForwardLatency(batch_task.inputs.size());
-  std::this_thread::sleep_for(std::chrono::microseconds(latency_us));
-
-  // TODO: return results
-
-  return latency_us;
-}
-
-ModelExecutor::GetBatchResult ModelExecutor::GetBatchTaskSlidingWindow(
+GetBatchResult ModelExecutor::GetBatchTaskSlidingWindow(
     uint32_t expect_batch_size) {
   GetBatchResult ret;
   if (expect_batch_size > input_queue_.size()) {
@@ -71,7 +56,7 @@ ModelExecutor::GetBatchResult ModelExecutor::GetBatchTaskSlidingWindow(
 void ModelExecutor::AddQuery(const QueryProto& query) {
   int64_t deadline_ns =
       query.clock().frontend_recv_ns() + model_session_.latency_sla() * 1000000;
-  Query q{query.frontend_id(), query.query_id(), deadline_ns};
+  QueryInput q{query.frontend_id(), query.query_id(), deadline_ns};
   std::lock_guard lock(task_mu_);
   input_queue_.push(q);
 }

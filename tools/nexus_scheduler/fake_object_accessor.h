@@ -5,19 +5,19 @@
 #include <vector>
 
 namespace nexus {
-class FakeNexusBackend;
-
 namespace app {
 class FakeNexusFrontend;
 }
-
+namespace backend {
+class FakeNexusBackend;
+}
 namespace scheduler {
 class Scheduler;
 }
 
 struct FakeObjectAccessor {
   scheduler::Scheduler* scheduler = nullptr;
-  std::unordered_map<uint32_t, FakeNexusBackend*> backends;
+  std::unordered_map<uint32_t, backend::FakeNexusBackend*> backends;
   std::unordered_map<uint32_t, app::FakeNexusFrontend*> frontends;
 };
 

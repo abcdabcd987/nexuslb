@@ -12,12 +12,11 @@ namespace app {
 
 FakeNexusFrontend::FakeNexusFrontend(boost::asio::io_context* io_context,
                                      const FakeObjectAccessor* accessor,
-                                     uint32_t node_id,
-                                     uint32_t beacon_interval_sec)
+                                     uint32_t node_id)
     : io_context_(*io_context),
       accessor_(*accessor),
       node_id_(node_id),
-      beacon_interval_sec_(beacon_interval_sec),
+      beacon_interval_sec_(accessor_.scheduler->beacon_interval_sec()),
       report_workload_timer_(io_context_) {}
 
 void FakeNexusFrontend::Start() { ReportWorkload(); }
@@ -31,7 +30,7 @@ void FakeNexusFrontend::UpdateModelRoutes(const ModelRouteUpdates& request) {
 }
 
 std::shared_ptr<ModelHandler> FakeNexusFrontend::LoadModel(
-    const NexusLoadModelReply& reply, size_t reserved_size) {
+    const NexusLoadModelReply& reply) {
   CHECK(reply.status() == CTRL_OK)
       << "Load model error: " << CtrlStatus_Name(reply.status());
   auto model_handler = std::make_shared<ModelHandler>(
@@ -42,11 +41,6 @@ std::shared_ptr<ModelHandler> FakeNexusFrontend::LoadModel(
   UpdateBackendPoolAndModelRoute(reply.model_route());
 
   models_.push_back(model_handler);
-  model_ctx_.push_back(std::make_unique<ModelContext>());
-  auto& mctx = model_ctx_.back();
-  mctx->reserved_size = reserved_size;
-  mctx->slo_ns = model_handler->model_session().latency_sla() * 1000000L;
-  mctx->queries.reset(new QueryContext[reserved_size]);
   return model_handler;
 }
 
@@ -85,35 +79,6 @@ void FakeNexusFrontend::ReportWorkload() {
     if (ec) return;
     ReportWorkload();
   });
-}
-
-void FakeNexusFrontend::ReceivedQuery(size_t model_idx, uint64_t query_id,
-                                      int64_t frontend_recv_ns) {
-  auto& mctx = model_ctx_.at(model_idx);
-  CHECK_LT(query_id, mctx->reserved_size);
-  auto& qctx = mctx->queries[query_id];
-  qctx.status = QueryStatus::kPending;
-  qctx.frontend_recv_ns = frontend_recv_ns;
-}
-
-void FakeNexusFrontend::GotDroppedReply(size_t model_idx, uint64_t query_id) {
-  auto& mctx = model_ctx_.at(model_idx);
-  CHECK_LT(query_id, mctx->reserved_size);
-  auto& qctx = mctx->queries[query_id];
-  qctx.status = QueryStatus::kDropped;
-}
-
-void FakeNexusFrontend::GotSuccessReply(size_t model_idx, uint64_t query_id,
-                                        int64_t finish_ns) {
-  auto& mctx = model_ctx_.at(model_idx);
-  CHECK_LT(query_id, mctx->reserved_size);
-  auto& qctx = mctx->queries[query_id];
-  auto deadline_ns = qctx.frontend_recv_ns + mctx->slo_ns;
-  if (finish_ns < deadline_ns) {
-    qctx.status = QueryStatus::kSuccess;
-  } else {
-    qctx.status = QueryStatus::kTimeout;
-  }
 }
 
 }  // namespace app

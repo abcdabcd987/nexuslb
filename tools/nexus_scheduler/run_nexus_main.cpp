@@ -3,6 +3,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <algorithm>
+#include <atomic>
 #include <boost/asio.hpp>
 #include <boost/system/error_code.hpp>
 #include <chrono>
@@ -33,6 +34,7 @@
 #include "nexus_scheduler/fake_nexus_frontend.h"
 #include "nexus_scheduler/fake_object_accessor.h"
 #include "nexus_scheduler/frontend_delegate.h"
+#include "nexus_scheduler/query_collector.h"
 #include "nexus_scheduler/scheduler.h"
 
 using namespace nexus;
@@ -58,7 +60,6 @@ struct Options {
   int frontends;
   int backends;
   int clients;
-  std::string dump_schedule;
   std::vector<ModelOptions> models;
 
   static Options FromYaml(const YAML::Node& config);
@@ -70,72 +71,82 @@ class DispatcherRunner {
     main_executor_ = std::make_shared<boost::asio::io_context>();
 
     LOG(INFO) << "Preparing the benchmark";
-    start_at_ = Clock::now() + std::chrono::seconds(2);
-    BuildWorkloads();
     BuildScheduler();
     BuildFakeServers();
+    start_at_ = Clock::now() + std::chrono::seconds(2);
+    BuildClients();
   }
 
   int Run() { return 0; }
 
  private:
-  void BuildWorkloads() {
-    loadgen_contexts_.resize(options_.models.size());
-    for (size_t i = 0; i < options_.models.size(); ++i) {
-      InitLoadGen(i);
-    }
+  void BuildScheduler() {
+    scheduler_ = std::make_unique<Scheduler>(main_executor_.get(), &accessor_,
+                                             Scheduler::Config::Default());
+    accessor_.scheduler = scheduler_.get();
   }
-
-  void BuildScheduler() { scheduler_ = std::make_unique<Scheduler>(); }
 
   void BuildFakeServers() {
     std::vector<ModelSession> model_sessions;
-    for (const auto& m : options_.models) {
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      const auto& m = options_.models[i];
       model_sessions.push_back(m.model_session);
+      long slo_ns = m.model_session.latency_sla() * 1000000L;
+      query_collector_.AddModel(CalcReservedSize(i), slo_ns);
     }
 
     uint32_t next_backend_id = 10001;
     for (int i = 0; i < options_.backends; ++i) {
-      bool save_archive = !options_.dump_schedule.empty();
       auto backend_id = next_backend_id++;
       auto backend = std::make_shared<FakeNexusBackend>(
           main_executor_.get(), &accessor_, backend_id, model_sessions);
       backends_.push_back(backend);
+      accessor_.backends[backend_id] = backend.get();
 
       // Register backend at scheduler
-      scheduler_->RegisterBackend(
-          std::make_shared<BackendDelegate>(backend_id, "FakeGPU", "FakeUUID"));
+      scheduler_->RegisterBackend(std::make_shared<BackendDelegate>(
+          &accessor_, backend_id, "FakeGPU", "FakeUUID"));
     }
 
     for (int i = 0; i < options_.frontends; ++i) {
       uint32_t frontend_id = 60001 + i;
-      auto frontend =
-          std::make_shared<FakeNexusFrontend>(frontend_id, &accessor_);
+      auto frontend = std::make_shared<FakeNexusFrontend>(
+          main_executor_.get(), &accessor_, frontend_id);
       frontends_.push_back(frontend);
-      auto& l = loadgen_contexts_[i];
-      l.frontend = frontend.get();
+      accessor_.frontends[frontend_id] = frontend.get();
 
       // Register frontend at scheduler
       scheduler_->RegisterFrontend(
-          std::make_shared<FrontendDelegate>(frontend_id));
+          std::make_shared<FrontendDelegate>(&accessor_, frontend_id));
 
       // Load model to the frontend
-      for (size_t j = 0; j < options_.models.size(); ++j) {
-        const auto& w = options_.models[j];
+      for (const auto& w : options_.models) {
         LoadModelRequest req;
         req.set_node_id(frontend_id);
         req.mutable_model_session()->CopyFrom(w.model_session);
         NexusLoadModelReply reply;
         scheduler_->LoadModel(req, &reply);
-        frontend->LoadModel(reply, CalcReservedSize(j));
+        frontend->LoadModel(reply);
       }
     }
   }
 
-  void InitLoadGen(size_t workload_idx) {
-    auto& l = loadgen_contexts_[workload_idx];
-    const auto& w = options_.models[workload_idx];
-    l.seed = options_.seed + workload_idx * 31;
+  void BuildClients() {
+    for (int i = 0; i < options_.clients; ++i) {
+      for (size_t j = 0; j < options_.models.size(); ++j) {
+        loadgen_contexts_.push_back(LoadGenContext(main_executor_.get(), i, j));
+        InitLoadGen(loadgen_contexts_.size() - 1);
+      }
+    }
+  }
+
+  void InitLoadGen(size_t loadgen_idx) {
+    auto& l = loadgen_contexts_[loadgen_idx];
+    l.frontend = frontends_[l.client_idx % frontends_.size()].get();
+    l.model_handler = l.frontend->GetModelHandler(l.model_idx);
+
+    const auto& w = options_.models[l.model_idx];
+    l.seed = options_.seed + loadgen_idx * 31;
     l.trace.insert(l.trace.end(), w.warmup.begin(), w.warmup.end());
     l.trace.insert(l.trace.end(), w.bench.begin(), w.bench.end());
     l.trace.insert(l.trace.end(), w.cooldown.begin(), w.cooldown.end());
@@ -153,8 +164,7 @@ class DispatcherRunner {
     l.next_time = start_at_ + std::chrono::nanoseconds(l.start_offset_ns);
     l.ts_end_at = l.next_time;
 
-    l.last_global_id = 1000000000 * (workload_idx + 1);
-    l.last_query_id = 0;
+    l.last_query_id = query_collector_.last_query_id(l.model_idx);
     l.model_session_id = ModelSessionToString(w.model_session);
   }
 
@@ -173,21 +183,14 @@ class DispatcherRunner {
     auto gap_ns = static_cast<long>(l.gap_gen->Next() * 1e9);
     l.next_time += std::chrono::nanoseconds(gap_ns);
     auto next_time_ns = l.next_time.time_since_epoch().count();
-    auto query_id = ++l.last_query_id;
-    auto global_id = ++l.last_global_id;
-    CHECK_LT(query_id, l.frontend->reserved_size(l.model_idx))
-        << "Reserved size not big enough.";
-    l.request.set_query_id(query_id);
-    auto* query = l.request.mutable_query_without_input();
+    auto query_id = l.last_query_id->fetch_add(1);
+    auto* query = &l.query;
     query->set_query_id(query_id);
-    query->set_global_id(global_id);
     query->set_frontend_id(l.frontend->node_id());
     auto* clock = query->mutable_clock();
     clock->set_frontend_recv_ns(next_time_ns);
-    clock->set_frontend_dispatch_ns(next_time_ns);
-    clock->set_dispatcher_recv_ns(next_time_ns);
 
-    l.frontend->ReceivedQuery(l.model_idx, query_id, next_time_ns);
+    query_collector_.ReceivedQuery(l.model_idx, query_id, next_time_ns);
   }
 
   void PostNextRequest(size_t workload_idx) {
@@ -214,61 +217,20 @@ class DispatcherRunner {
       if (ec) return;
       auto& l = loadgen_contexts_[workload_idx];
       l.model_handler->counter()->Increase(1);
-      auto next_backend = l.model_handler->GetBackend();
+      auto backend_id = l.model_handler->GetBackend();
+      auto backend = accessor_.backends.at(backend_id);
+      backend->EnqueueQuery(l.model_idx, l.query);
 
-      entrance.EnqueueQuery(std::move(l.request));
       PostNextRequest(workload_idx);
     });
   }
 
-  FILE* OpenLogFile(const std::string& path) {
-    if (options_.dump_schedule == "stdout") {
-      return stdout;
-    }
-    FILE* f = fopen(options_.dump_schedule.c_str(), "w");
-    if (!f) {
-      LOG(ERROR) << "Cannot open log file to write: " << options_.dump_schedule;
-      return nullptr;
-    }
-    return f;
-  }
-
-  void CloseLogFile(const std::string& path, FILE* f) {
-    if (options_.dump_schedule != "stdout") {
-      fclose(f);
-    }
-  }
-
-  void DumpBatchplan() {
-    FILE* f = OpenLogFile(options_.dump_schedule);
-    if (!f) return;
-    for (size_t backend_idx = 0; backend_idx < backends_.size();
-         ++backend_idx) {
-      int gpu_idx = backend_idx;
-      const auto& archive = backends_[backend_idx]->batchplan_archive();
-      for (const auto& p : archive) {
-        int model_idx = p.model_index();
-        int plan_id = p.plan_id();
-        int batch_size = p.queries_size();
-        const auto& l = loadgen_contexts_[model_idx];
-        auto bench_start_ns = start_at_.time_since_epoch().count() +
-                              static_cast<long>(l.warmup_duration * 1e9);
-        double exec_at = (p.exec_time_ns() - bench_start_ns) / 1e9;
-        double finish_at = (p.expected_finish_time_ns() - bench_start_ns) / 1e9;
-        if (exec_at < 0 || finish_at > l.bench_duration) continue;
-        fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
-                model_idx, batch_size, exec_at, finish_at);
-      }
-    }
-    CloseLogFile(options_.dump_schedule, f);
-    LOG(INFO) << "BatchPlan dumped to " << options_.dump_schedule;
-  }
-
   struct LoadGenContext {
+    boost::asio::system_timer timer;
+    size_t client_idx;
     size_t model_idx;
     FakeNexusFrontend* frontend;
     std::shared_ptr<ModelHandler> model_handler;
-    boost::asio::system_timer timer;
 
     long seed;
     std::vector<TraceSegment> trace;
@@ -277,26 +239,28 @@ class DispatcherRunner {
     double cooldown_duration;
     long start_offset_ns;
 
-    uint64_t last_global_id;
-    uint64_t last_query_id;
+    std::atomic<uint64_t>* last_query_id;
     std::string model_session_id;
-    DispatchRequest request;
+    QueryProto query;
 
     std::unique_ptr<GapGenerator> gap_gen;
     size_t ts_idx;
     TimePoint ts_end_at;
     TimePoint next_time;
 
-    LoadGenContext(boost::asio::io_context* io_context) : timer(*io_context) {}
+    LoadGenContext(boost::asio::io_context* io_context, size_t client_idx,
+                   size_t model_idx)
+        : timer(*io_context), client_idx(client_idx), model_idx(model_idx) {}
   };
 
   Options options_;
   std::shared_ptr<boost::asio::io_context> main_executor_;
-  std::vector<LoadGenContext> loadgen_contexts_;
+  QueryCollector query_collector_;
   std::unique_ptr<Scheduler> scheduler_;
   std::vector<std::shared_ptr<FakeNexusBackend>> backends_;
   std::vector<std::shared_ptr<FakeNexusFrontend>> frontends_;
   FakeObjectAccessor accessor_;
+  std::vector<LoadGenContext> loadgen_contexts_;
 
   std::vector<std::thread> threads_;
   TimePoint start_at_;
@@ -327,16 +291,15 @@ Options Options::FromYaml(const YAML::Node& config) {
   // Random seed
   opt.seed = config["seed"].as<int64_t>(0xabcdabcd987LL);
 
-  // Use multiple threads to run RankMT
-  opt.multithread = config["multithread"].as<bool>(false);
-
-  // Dump Schedule. Options: `false`, `stdout`, or path
-  if (config["dump_schedule"].as<bool>(true)) {
-    opt.dump_schedule = config["dump_schedule"].as<std::string>("");
-  }
+  // Number of frontends
+  opt.frontends = config["frontends"].as<int>(1);
 
   // Number of GPUs
-  opt.gpus = config["gpus"].as<int>(1);
+  opt.backends = config["backends"].as<int>(1);
+
+  // Number of clients
+  opt.clients = config["clients"].as<int>(1);
+  CHECK(opt.clients % opt.frontends == 0);
 
   // Models
   CHECK(config["models"].IsSequence());
@@ -382,6 +345,6 @@ int main(int argc, char** argv) {
   auto options = Options::FromYaml(config);
 
   google::InstallFailureSignalHandler();
-  DispatcherRunner bencher(std::move(options), RankmtConfig::FromFlags());
+  DispatcherRunner bencher(std::move(options));
   return bencher.Run();
 }

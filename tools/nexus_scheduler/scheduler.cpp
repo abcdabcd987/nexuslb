@@ -8,31 +8,36 @@
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
 
-DEFINE_bool(epoch_schedule, true, "Enable epoch scheduling");
-DEFINE_int32(beacon, 1, "Beacon interval in seconds");
-DEFINE_int32(epoch, 30, "Epoch scheduling interval in seconds");
-DEFINE_int32(min_epoch, 10,
-             "Minimum time interval in seconds to invoke "
-             "epoch schedule");
-DEFINE_int32(avg_interval, 10, "Moving average interval for backend rate");
-
 namespace nexus {
 namespace scheduler {
 
-Scheduler::Scheduler()
-    : beacon_interval_sec_(FLAGS_beacon),
-      epoch_interval_sec_(FLAGS_epoch),
-      enable_epoch_schedule_(FLAGS_epoch_schedule) {
-  history_len_ = (FLAGS_avg_interval * 3 + beacon_interval_sec_ - 1) /
-                 beacon_interval_sec_;
-  if (!enable_epoch_schedule_) {
-    LOG(INFO) << "Epoch scheduling is off";
-  }
+Scheduler::Config Scheduler::Config::Default() {
+  Config cfg;
+  cfg.beacon = 1;
+  cfg.epoch = 30;
+  cfg.min_epoch = 10;
+  cfg.avg_interval = 10;
+  return cfg;
 }
 
-void Scheduler::LoadWorkloadFile(const std::string& workload_file) {
-  LOG(INFO) << "Load workload file from " << workload_file;
-  YAML::Node config = YAML::LoadFile(workload_file);
+Scheduler::Scheduler(boost::asio::io_context* io_context,
+                     const FakeObjectAccessor* accessor, const Config& config)
+    : io_context_(*io_context),
+      accessor_(*accessor),
+      epoch_schedule_timer_(io_context_),
+      beacon_interval_sec_(config.beacon),
+      epoch_interval_sec_(config.epoch),
+      min_epoch_(config.min_epoch),
+      avg_interval_(config.avg_interval) {
+  history_len_ =
+      (avg_interval_ * 3 + beacon_interval_sec_ - 1) / beacon_interval_sec_;
+}
+
+void Scheduler::Start() { CheckEpochSchedule(); }
+
+void Scheduler::Stop() { epoch_schedule_timer_.cancel(); }
+
+void Scheduler::LoadWorkload(const YAML::Node& config) {
   // Load static workload configuration
   for (uint i = 0; i < config.size(); ++i) {
     const YAML::Node& backend_workload = config[i];
@@ -46,35 +51,30 @@ void Scheduler::LoadWorkloadFile(const std::string& workload_file) {
   }
 }
 
-void Scheduler::Run() {
-  running_ = true;
-  // main scheduler login
-  std::this_thread::sleep_for(std::chrono::seconds(beacon_interval_sec_));
-  auto last_epoch_schedule = std::chrono::system_clock::now();
-  while (running_) {
-    auto now = std::chrono::system_clock::now();
-    bool trigger = BeaconCheck();
-    if (enable_epoch_schedule_) {
-      if (trigger) {
-        auto elapse = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          now - last_epoch_schedule)
-                          .count();
-        if (elapse >= FLAGS_min_epoch * 1000) {
-          EpochSchedule();
-          last_epoch_schedule = std::chrono::system_clock::now();
-        }
-      } else {
-        auto elapse = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          now - last_epoch_schedule)
-                          .count();
-        if (elapse >= epoch_interval_sec_ * 1000) {
-          EpochSchedule();
-          last_epoch_schedule = std::chrono::system_clock::now();
-        }
-      }
+void Scheduler::CheckEpochSchedule() {
+  auto now = Clock::now();
+  auto elapse = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - last_epoch_schedule_)
+                    .count();
+  bool trigger = BeaconCheck();
+  if (trigger) {
+    if (elapse >= avg_interval_ * 1000) {
+      EpochSchedule();
+      last_epoch_schedule_ = Clock::now();
     }
-    std::this_thread::sleep_for(std::chrono::seconds(beacon_interval_sec_));
+  } else {
+    if (elapse >= epoch_interval_sec_ * 1000) {
+      EpochSchedule();
+      last_epoch_schedule_ = Clock::now();
+    }
   }
+
+  epoch_schedule_timer_.expires_from_now(
+      std::chrono::seconds(beacon_interval_sec_));
+  epoch_schedule_timer_.async_wait([this](boost::system::error_code ec) {
+    if (ec) return;
+    CheckEpochSchedule();
+  });
 }
 
 void Scheduler::LoadModel(const LoadModelRequest& request,
@@ -110,9 +110,8 @@ void Scheduler::LoadModel(const LoadModelRequest& request,
     // new backends, just rely on epoch scheduling
     reply->set_status(CTRL_OK);
     GetModelRoute(model_sess_id, reply->mutable_model_route());
-    frontend->SubscribeModel(model_sess_id);
     session_iter->second->SubscribeModelSession(frontend->node_id(),
-                                                model_sess_id);
+                                                model_sess_id, avg_interval_);
     return;
   }
 
@@ -155,8 +154,8 @@ void Scheduler::LoadModel(const LoadModelRequest& request,
   }
   session_info->model_sessions.push_back(model_sess);
   session_table_.emplace(model_sess_id, session_info);
-  frontend->SubscribeModel(model_sess_id);
-  session_info->SubscribeModelSession(frontend->node_id(), model_sess_id);
+  session_info->SubscribeModelSession(frontend->node_id(), model_sess_id,
+                                      avg_interval_);
 
   // Fill route table in the reply
   reply->set_status(CTRL_OK);
@@ -189,24 +188,6 @@ void Scheduler::RegisterBackend(BackendDelegatePtr backend) {
 
   // Update workload to new backend
   AddBackend(backend);
-}
-
-void Scheduler::UnregisterFrontend(uint32_t node_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto frontend = GetFrontend(node_id);
-  CHECK(frontend != nullptr);
-  frontends_.erase(frontend->node_id());
-  LOG(INFO) << "Remove frontend " << node_id;
-  RemoveFrontend(frontend);
-}
-
-void Scheduler::UnregisterBackend(uint32_t node_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto backend = GetBackend(node_id);
-  CHECK(backend != nullptr);
-  backends_.erase(backend->node_id());
-  LOG(INFO) << "Remove backend " << node_id;
-  RemoveBackend(backend);
 }
 
 void Scheduler::AddBackend(BackendDelegatePtr backend) {
@@ -265,98 +246,6 @@ void Scheduler::AddBackend(BackendDelegatePtr backend) {
 
   // 4. Update model info and route
   UpdateModelRoutes(changed_sessions);
-}
-
-void Scheduler::RemoveBackend(BackendDelegatePtr backend) {
-  if (backend->IsIdle()) {
-    return;
-  }
-  std::unordered_set<SessionInfoPtr> changed_sessions;
-  std::unordered_set<BackendDelegatePtr> changed_backends;
-
-  // 1. Remove backend from ModelInfo
-  std::vector<std::string> model_sessions = backend->GetModelSessions();
-  for (auto& model_sess_id : model_sessions) {
-    if (session_table_.count(model_sess_id) == 0) {
-      continue;
-    }
-    auto session_info = session_table_.at(model_sess_id);
-    // Because shared prefix models could share the same session_info,
-    // it's necessary to check whether session_info is already in the changed
-    // list
-    if (changed_sessions.count(session_info) == 0) {
-      session_info->backend_weights.erase(backend->node_id());
-      changed_sessions.insert(session_info);
-    }
-  }
-
-  // 2. Try to re-assign backend's workload to another idle one
-  BackendDelegatePtr assigned;
-  for (auto iter : backends_) {
-    if (iter.second->IsIdle() && iter.second->Assign(*backend)) {
-      assigned = iter.second;
-      break;
-    }
-  }
-  if (assigned != nullptr) {
-    for (auto& model_sess_id : model_sessions) {
-      session_table_.at(model_sess_id)
-          ->backend_weights.emplace(
-              assigned->node_id(), assigned->GetModelThroughput(model_sess_id));
-    }
-    if (assigned->workload_id() >= 0) {
-      assigned_static_workloads_.emplace(assigned->workload_id(),
-                                         assigned->node_id());
-      LOG(INFO) << "Reassign workload " << assigned->workload_id()
-                << " to backend " << assigned->node_id();
-    }
-    changed_backends.insert(assigned);
-  } else {  // assigned == nullptr
-    if (backend->workload_id() >= 0) {
-      assigned_static_workloads_.erase(backend->workload_id());
-      LOG(INFO) << "Remove workload " << backend->workload_id();
-    } else {
-      // 3. If it's not static configured workload, try to allocate model
-      // instances to other backends
-      for (auto& model_sess_id : model_sessions) {
-        double tp = backend->GetModelThroughput(model_sess_id);
-        session_table_.at(model_sess_id)->unassigned_workload += tp;
-      }
-      AllocateUnassignedWorkloads(&changed_sessions, &changed_backends);
-      // TODO: assign backup models to other backends
-    }
-  }
-
-  // 4. Update backend model table
-  for (auto b : changed_backends) {
-    b->UpdateModelTableRpc();
-  }
-
-  // 5. Update changed routes;
-  UpdateModelRoutes(changed_sessions);
-}
-
-void Scheduler::RemoveFrontend(FrontendDelegatePtr frontend) {
-  // Update subscribed model sessions
-  std::unordered_set<BackendDelegatePtr> update_backends;
-  for (auto model_sess_id : frontend->subscribe_models()) {
-    auto session_info = session_table_.at(model_sess_id);
-    bool remove = session_info->UnsubscribleModelSession(frontend->node_id(),
-                                                         model_sess_id);
-    if (remove) {
-      LOG(INFO) << "Remove model session: " << model_sess_id;
-      for (auto iter : session_info->backend_weights) {
-        auto backend = GetBackend(iter.first);
-        backend->UnloadModel(model_sess_id);
-        update_backends.insert(backend);
-      }
-      session_table_.erase(model_sess_id);
-    }
-  }
-  // Remove model sessions
-  for (auto backend : update_backends) {
-    backend->UpdateModelTableRpc();
-  }
 }
 
 BackendDelegatePtr Scheduler::GetBackend(uint32_t node_id) {
@@ -458,7 +347,7 @@ bool Scheduler::BeaconCheck() {
       session_info->rps_history.pop_front();
     }
     VLOG(2) << "Model " << model_sess_id << " rps: " << rps
-            << " req/s (avg over " << FLAGS_avg_interval << " seconds)";
+            << " req/s (avg over " << avg_interval_ << " seconds)";
   }
 
   // 3. Remove dead backend

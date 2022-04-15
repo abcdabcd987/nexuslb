@@ -20,6 +20,8 @@ class FakeNexusBackend {
   void Start();
   void Stop();
 
+  void EnqueueQuery(size_t model_idx, const QueryProto& query);
+
   void UpdateModelTable(const ModelTableConfig& request);
 
  private:

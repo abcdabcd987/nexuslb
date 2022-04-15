@@ -314,6 +314,7 @@ add_executable(run_nexus
     tools/nexus_scheduler/frontend_delegate.cpp
     tools/nexus_scheduler/model_exec.cpp
     tools/nexus_scheduler/model_handler.cpp
+    tools/nexus_scheduler/query_collector.cpp
     tools/nexus_scheduler/sch_info.cpp
     tools/nexus_scheduler/scheduler.cpp
 )

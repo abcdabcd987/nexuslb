@@ -3,16 +3,17 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <boost/asio.hpp>
 #include <chrono>
 #include <deque>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "nexus/proto/nexus.pb.h"
 #include "nexus_scheduler/backend_delegate.h"
+#include "nexus_scheduler/fake_object_accessor.h"
 #include "nexus_scheduler/frontend_delegate.h"
 #include "nexus_scheduler/sch_info.h"
 
@@ -26,17 +27,24 @@ using SessionInfoPtr = std::shared_ptr<SessionInfo>;
 /*! \brief Scheduler acts as a global centralized scheduler server. */
 class Scheduler {
  public:
-  Scheduler();
+  struct Config {
+    uint32_t beacon;     // Beacon interval in seconds
+    uint32_t epoch;      // Epoch scheduling interval in seconds
+    uint32_t min_epoch;  // Minimum interval in seconds to invoke epoch schedule
+    uint32_t avg_interval;  // Moving average interval for backend rate
+
+    static Config Default();
+  };
+  Scheduler(boost::asio::io_context* io_context,
+            const FakeObjectAccessor* accessor, const Config& config);
+  uint32_t beacon_interval_sec() const { return beacon_interval_sec_; }
+  void Start();
+  void Stop();
+
   /*!
-   * \brief Loads the workload configuation for backends from config file.
-   * \param config_file Config file path.
+   * \brief Loads the workload configuation for backends from config.
    */
-  void LoadWorkloadFile(const std::string& workload_file);
-  /*!
-   * \brief Starts the scheduler main thread that monitors the server
-   * aliveness and workload changes.
-   */
-  void Run();
+  void LoadWorkload(const YAML::Node& config);
   /*!
    * \brief Handles LoadModel RPC.
    *
@@ -71,22 +79,6 @@ class Scheduler {
    */
   void RegisterBackend(BackendDelegatePtr backend);
   /*!
-   * \brief Unregister frontend RPC client and fills in the register reply
-   *
-   * This function acquires mutex_.
-   *
-   * \param node_id Frontend node ID.
-   */
-  void UnregisterFrontend(uint32_t node_id);
-  /*!
-   * \brief Unregister frontend RPC client and fills in the register reply
-   *
-   * This function acquires mutex_.
-   *
-   * \param node_id Backend node ID.
-   */
-  void UnregisterBackend(uint32_t node_id);
-  /*!
    * \brief Update workload to the new added backend
    *
    * This function doesn't acquire mutex_.
@@ -94,25 +86,10 @@ class Scheduler {
    * \param backend Backend client pointer
    */
   void AddBackend(BackendDelegatePtr backend);
-  /*!
-   * \brief Assign the workload of the removed backend to other idle ones.
-   *
-   * This function doesn't acquire mutex_.
-   *
-   * \param backend Backend client pointer
-   */
-  void RemoveBackend(BackendDelegatePtr backend);
-  /*!
-   * \brief Update the model subscribers, and potentially remove the model
-   * sessions if no one subscribes it.
-   *
-   * This function doesn't acquire mutex_.
-   *
-   * \param backend Backend client pointer
-   */
-  void RemoveFrontend(FrontendDelegatePtr frontend);
 
  private:
+  void CheckEpochSchedule();
+
   /*!
    * \brief Get backend rpc client given the node id.
    *
@@ -199,16 +176,19 @@ class Scheduler {
    */
   void DisplayModelTable();
 
-  std::atomic<bool> running_;
+  boost::asio::io_context& io_context_;
+  const FakeObjectAccessor& accessor_;
+  boost::asio::system_timer epoch_schedule_timer_;
+  TimePoint last_epoch_schedule_;
 
   /*! \brief Beacon interval in seconds */
   uint32_t beacon_interval_sec_;
   /*! \brief Epoch duration in seconds */
   uint32_t epoch_interval_sec_;
+  uint32_t min_epoch_;
+  uint32_t avg_interval_;
   /*! \brief History length to keep in the model stats */
   uint32_t history_len_;
-  /*! \brief Flag for enabling epoch scheduling */
-  bool enable_epoch_schedule_;
   /*! \brief Static workload configuration */
   std::vector<std::vector<YAML::Node> > static_workloads_;
   /*! \brief Mapping from static workload id to backend node id */

@@ -6,6 +6,8 @@
 #include <sstream>
 
 #include "nexus/common/model_db.h"
+#include "nexus/common/model_def.h"
+#include "nexus_scheduler/fake_nexus_backend.h"
 #include "nexus_scheduler/scheduler.h"
 
 uint32_t BatchSizeCeilEps(double x, double eps) {
@@ -60,10 +62,12 @@ CalcCycleResult calc_cycle(const std::vector<InstanceInfoPtr>& models) {
   return {exec_cycle_us, duty_cycle_us, overload, changes};
 }
 
-BackendDelegate::BackendDelegate(uint32_t node_id,
+BackendDelegate::BackendDelegate(const FakeObjectAccessor* accessor,
+                                 uint32_t node_id,
                                  const std::string& gpu_device,
                                  const std::string& gpu_uuid)
-    : node_id_(node_id),
+    : accessor_(*accessor),
+      node_id_(node_id),
       gpu_device_(gpu_device),
       gpu_uuid_(gpu_uuid),
       workload_id_(-1),
@@ -299,12 +303,11 @@ void BackendDelegate::SpillOutWorkload(
   overload_ = false;
 }
 
-CtrlStatus BackendDelegate::UpdateModelTableRpc() {
+void BackendDelegate::UpdateModelTableRpc() {
   if (!dirty_model_table_) {
-    return CTRL_OK;
+    return;
   }
   ModelTableConfig request;
-  RpcReply reply;
   request.set_duty_cycle_us(duty_cycle_us_);
   for (auto inst_info : models_) {
     auto cfg = request.add_model_instance_config();
@@ -316,12 +319,10 @@ CtrlStatus BackendDelegate::UpdateModelTableRpc() {
     cfg->set_max_batch(inst_info->max_batch);
     cfg->set_memory_usage(inst_info->memory_usage);
   }
-  // LOG(INFO) << "Backend " << node_id_ << " update model table: " <<
-  //     request.DebugString();
 
-  // Invoke UpdateModelTable RPC
+  auto backend = accessor_.backends.at(node_id_);
+  backend->UpdateModelTable(request);
   dirty_model_table_ = false;
-  return CTRL_OK;
 }
 
 std::vector<std::string> BackendDelegate::GetModelSessions() const {

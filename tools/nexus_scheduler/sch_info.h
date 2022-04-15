@@ -9,11 +9,8 @@
 
 #include "nexus/common/metric.h"
 #include "nexus/common/model_db.h"
-#include "nexus/common/model_def.h"
 #include "nexus/proto/control.pb.h"
 #include "nexus/proto/nexus.pb.h"
-
-DECLARE_int32(avg_interval);
 
 namespace nexus {
 namespace scheduler {
@@ -27,7 +24,8 @@ struct SessionInfo {
   double TotalThroughput() const;
 
   void SubscribeModelSession(uint32_t frontend_id,
-                             const std::string& model_sess_id);
+                             const std::string& model_sess_id,
+                             uint32_t avg_interval);
 
   bool UnsubscribleModelSession(uint32_t frontend_id,
                                 const std::string& model_sess_id);

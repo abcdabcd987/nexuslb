@@ -9,8 +9,8 @@
 
 #include "nexus/common/metric.h"
 #include "nexus/common/model_db.h"
-#include "nexus/common/model_def.h"
 #include "nexus/proto/nexus.pb.h"
+#include "nexus_scheduler/fake_object_accessor.h"
 #include "nexus_scheduler/sch_info.h"
 
 namespace nexus {
@@ -22,8 +22,8 @@ using InstanceInfoPtr = std::shared_ptr<InstanceInfo>;
 
 class BackendDelegate {
  public:
-  BackendDelegate(uint32_t node_id, const std::string& gpu_device,
-                  const std::string& gpu_uuid);
+  BackendDelegate(const FakeObjectAccessor* accessor, uint32_t node_id,
+                  const std::string& gpu_device, const std::string& gpu_uuid);
 
   uint32_t node_id() const { return node_id_; }
 
@@ -63,7 +63,7 @@ class BackendDelegate {
   void SpillOutWorkload(
       std::vector<std::pair<SessionGroup, double> >* spillout);
 
-  CtrlStatus UpdateModelTableRpc();
+  void UpdateModelTableRpc();
 
   std::vector<std::string> GetModelSessions() const;
 
@@ -84,6 +84,7 @@ class BackendDelegate {
 
   void UpdateCycle();
 
+  const FakeObjectAccessor& accessor_;
   uint32_t node_id_;
   std::string gpu_device_;
   std::string gpu_uuid_;

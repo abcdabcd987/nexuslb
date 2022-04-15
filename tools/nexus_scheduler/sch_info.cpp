@@ -2,6 +2,8 @@
 
 #include <glog/logging.h>
 
+#include "nexus/common/model_def.h"
+
 namespace nexus {
 namespace scheduler {
 
@@ -29,13 +31,14 @@ double SessionInfo::TotalThroughput() const {
   return total;
 }
 void SessionInfo::SubscribeModelSession(uint32_t frontend_id,
-                                        const std::string &model_sess_id) {
+                                        const std::string &model_sess_id,
+                                        uint32_t avg_interval) {
   if (session_subscribers.count(model_sess_id) == 0) {
     session_subscribers.emplace(model_sess_id, ServerList{frontend_id});
   } else {
     session_subscribers.at(model_sess_id).insert(frontend_id);
   }
-  workloads.emplace(frontend_id, std::make_shared<EWMA>(1, FLAGS_avg_interval));
+  workloads.emplace(frontend_id, std::make_shared<EWMA>(1, avg_interval));
 }
 bool SessionInfo::UnsubscribleModelSession(uint32_t frontend_id,
                                            const std::string &model_sess_id) {

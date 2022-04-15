@@ -56,7 +56,7 @@ GetBatchResult ModelExecutor::GetBatchTaskSlidingWindow(
 void ModelExecutor::AddQuery(const QueryProto& query) {
   int64_t deadline_ns =
       query.clock().frontend_recv_ns() + model_session_.latency_sla() * 1000000;
-  QueryInput q{query.frontend_id(), query.query_id(), deadline_ns};
+  QueryInput q{query.query_id(), deadline_ns};
   std::lock_guard lock(task_mu_);
   input_queue_.push(q);
 }

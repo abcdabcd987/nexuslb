@@ -16,8 +16,7 @@ namespace app {
 class FakeNexusFrontend {
  public:
   FakeNexusFrontend(boost::asio::io_context* io_context,
-                    const FakeObjectAccessor* accessor, uint32_t node_id,
-                    uint32_t beacon_interval_sec);
+                    const FakeObjectAccessor* accessor, uint32_t node_id);
   void Start();
   void Stop();
 
@@ -25,8 +24,7 @@ class FakeNexusFrontend {
 
   void UpdateModelRoutes(const ModelRouteUpdates& request);
 
-  std::shared_ptr<ModelHandler> LoadModel(const NexusLoadModelReply& reply,
-                                          size_t reserved_size);
+  std::shared_ptr<ModelHandler> LoadModel(const NexusLoadModelReply& reply);
 
   std::shared_ptr<ModelHandler> GetModelHandler(size_t model_idx);
 
@@ -49,39 +47,6 @@ class FakeNexusFrontend {
   std::unordered_map<std::string, std::shared_ptr<ModelHandler>> model_pool_;
   std::vector<std::shared_ptr<ModelHandler>> models_;
 
-  // Scheduler-only test related:
- public:
-  enum class QueryStatus {
-    kPending,
-    kDropped,
-    kTimeout,
-    kSuccess,
-  };
-
-  struct QueryContext {
-    QueryStatus status;
-    int64_t frontend_recv_ns;
-  };
-
-  const QueryContext* queries(size_t model_idx) const {
-    return model_ctx_.at(model_idx)->queries.get();
-  }
-  size_t reserved_size(size_t model_idx) const {
-    return model_ctx_.at(model_idx)->reserved_size;
-  }
-
-  void ReceivedQuery(size_t model_idx, uint64_t query_id,
-                     int64_t frontend_recv_ns);
-  void GotDroppedReply(size_t model_idx, uint64_t query_id);
-  void GotSuccessReply(size_t model_idx, uint64_t query_id, int64_t finish_ns);
-
- private:
-  struct ModelContext {
-    size_t reserved_size;
-    long slo_ns;
-    std::unique_ptr<QueryContext[]> queries;
-  };
-  std::vector<std::unique_ptr<ModelContext>> model_ctx_;
   boost::asio::system_timer report_workload_timer_;
 };
 

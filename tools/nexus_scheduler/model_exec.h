@@ -14,7 +14,6 @@ namespace nexus {
 namespace backend {
 
 struct QueryInput {
-  uint32_t frontend_id;
   uint64_t query_id;
   long deadline_ns;
 };

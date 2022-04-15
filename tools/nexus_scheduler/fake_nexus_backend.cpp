@@ -5,6 +5,7 @@
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
 #include "nexus_scheduler/fake_nexus_frontend.h"
+#include "nexus_scheduler/query_collector.h"
 
 namespace nexus {
 namespace backend {
@@ -30,6 +31,10 @@ FakeNexusBackend::FakeNexusBackend(
 void FakeNexusBackend::Start() { StartExecution(); }
 
 void FakeNexusBackend::Stop() { exec_timer_.cancel(); }
+
+void FakeNexusBackend::EnqueueQuery(size_t model_idx, const QueryProto& query) {
+  models_.at(model_idx)->AddQuery(query);
+}
 
 void FakeNexusBackend::UpdateModelTable(const ModelTableConfig& request) {
   // Start to update model table
@@ -70,12 +75,12 @@ void FakeNexusBackend::ContinueExecution() {
       CHECK(exec_.has_value());
       auto finish_ns = exec_timer_.expires_at().time_since_epoch().count();
       for (const auto& q : exec_->batch.inputs) {
-        auto frontend = accessor_.frontends.at(q.frontend_id);
-        frontend->GotSuccessReply(exec_->model_idx, q.query_id, finish_ns);
+        accessor_.query_collector->GotSuccessReply(exec_->model_idx, q.query_id,
+                                                   finish_ns);
       }
       for (const auto& q : exec_->batch.drops) {
-        auto frontend = accessor_.frontends.at(q.frontend_id);
-        frontend->GotDroppedReply(exec_->model_idx, q.query_id);
+        accessor_.query_collector->GotDroppedReply(exec_->model_idx,
+                                                   q.query_id);
       }
 
       ++exec_->model_idx;

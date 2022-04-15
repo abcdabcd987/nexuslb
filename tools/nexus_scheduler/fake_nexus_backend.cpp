@@ -7,20 +7,12 @@
 
 namespace nexus {
 
-FakeNexusBackend::FakeNexusBackend(const BackendInfo& info)
-    : node_id_(info.node_id()) {}
+FakeNexusBackend::FakeNexusBackend(boost::asio::io_context* io_context,
+                                   uint32_t node_id,
+                                   const FakeObjectAccessor* accessor)
+    : io_context_(*io_context), node_id_(node_id), accessor_(*accessor) {}
 
 void FakeNexusBackend::UpdateModelTable(const ModelTableConfig& request) {
-  // Update backend pool
-  std::unordered_set<uint32_t> backend_list;
-  std::unordered_map<uint32_t, BackendInfo> backend_infos;
-  for (auto config : request.model_instance_config()) {
-    for (auto const& info : config.backup_backend()) {
-      backend_list.insert(info.node_id());
-      backend_infos.emplace(info.node_id(), info);
-    }
-  }
-
   // Count all sessions in model table
   std::unordered_set<std::string> all_sessions;
   for (auto const& config : request.model_instance_config()) {
@@ -53,60 +45,28 @@ void FakeNexusBackend::UpdateModelTable(const ModelTableConfig& request) {
     auto model_iter = model_table_.find(session_id);
     if (model_iter == model_table_.end()) {
       // Load new model instance
-      auto model = std::make_shared<backend::ModelExecutor>(gpu_id_, config,
-                                                            task_queue_);
+      auto* profile = CHECK_NOTNULL(ModelDatabase::Singleton().GetModelProfile(
+          "FakeGPU", "FakeUUID", ModelSessionToProfileID(model_sess)));
+      auto model =
+          std::make_shared<backend::ModelExecutor>(model_sess, *profile);
       model_table_.emplace(session_id, model);
       gpu_executor_->AddModel(model);
       LOG(INFO) << "Load model instance " << session_id
-                << ", batch: " << config.batch()
-                << ", backup: " << config.backup();
+                << ", batch: " << config.batch();
     } else {
       auto model = model_iter->second;
-      if (model->model()->batch() != config.batch()) {
+      if (model->batch() != config.batch()) {
         // Update the batch size
         LOG(INFO) << "Update model instance " << session_id
-                  << ", batch: " << model->model()->batch() << " -> "
-                  << config.batch();
+                  << ", batch: " << model->batch() << " -> " << config.batch();
         model->SetBatch(config.batch());
       }
-      model->UpdateBackupBackends(config);
     }
   }
 
   // Update duty cycle
   gpu_executor_->SetDutyCycle(request.duty_cycle_us());
   LOG(INFO) << "Duty cycle: " << request.duty_cycle_us() << " us";
-}
-
-std::shared_ptr<FakeNexusBackend> FakeNexusBackendPool::GetBackend(
-    uint32_t backend_id) {
-  std::lock_guard<std::mutex> lock(mu_);
-  auto iter = backends_.find(backend_id);
-  if (iter == backends_.end()) {
-    return nullptr;
-  }
-  return iter->second;
-}
-
-void FakeNexusBackendPool::AddBackend(
-    std::shared_ptr<FakeNexusBackend> backend) {
-  std::lock_guard<std::mutex> lock(mu_);
-  backends_.emplace(backend->node_id(), backend);
-}
-
-void FakeNexusBackendPool::RemoveBackend(
-    std::shared_ptr<FakeNexusBackend> backend) {
-  std::lock_guard<std::mutex> lock(mu_);
-  backends_.erase(backend->node_id());
-}
-
-void FakeNexusBackendPool::RemoveBackend(uint32_t backend_id) {
-  std::lock_guard<std::mutex> lock(mu_);
-  auto iter = backends_.find(backend_id);
-  if (iter == backends_.end()) {
-    return;
-  }
-  backends_.erase(iter);
 }
 
 }  // namespace nexus

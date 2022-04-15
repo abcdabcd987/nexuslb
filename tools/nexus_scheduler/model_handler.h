@@ -11,6 +11,7 @@
 #include "nexus/common/data_type.h"
 #include "nexus/common/metric.h"
 #include "nexus/proto/nexus.pb.h"
+#include "nexus_scheduler/fake_object_accessor.h"
 
 namespace nexus {
 class FakeNexusBackend;
@@ -20,7 +21,8 @@ namespace app {
 
 class ModelHandler {
  public:
-  ModelHandler(const std::string& model_session_id, FakeNexusBackendPool& pool);
+  ModelHandler(const std::string& model_session_id,
+               const FakeObjectAccessor* accessor);
 
   ~ModelHandler();
 
@@ -36,14 +38,14 @@ class ModelHandler {
 
   std::vector<uint32_t> BackendList();
 
+  FakeNexusBackend* GetBackend();
+
  private:
-  std::shared_ptr<FakeNexusBackend> GetBackend();
-  std::shared_ptr<FakeNexusBackend> GetBackendWeightedRoundRobin();
-  std::shared_ptr<FakeNexusBackend> GetBackendDeficitRoundRobin();
+  FakeNexusBackend* GetBackendDeficitRoundRobin();
 
   ModelSession model_session_;
   std::string model_session_id_;
-  FakeNexusBackendPool& backend_pool_;
+  const FakeObjectAccessor& accessor_;
 
   std::vector<uint32_t> backends_;
   /*!

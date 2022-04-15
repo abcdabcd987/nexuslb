@@ -16,9 +16,9 @@ namespace nexus {
 namespace app {
 
 ModelHandler::ModelHandler(const std::string& model_session_id,
-                           FakeNexusBackendPool& pool)
+                           const FakeObjectAccessor* accessor)
     : model_session_id_(model_session_id),
-      backend_pool_(pool),
+      accessor_(*accessor),
       total_throughput_(0.),
       rand_gen_(rd_()) {
   ParseModelSession(model_session_id, &model_session_);
@@ -76,63 +76,25 @@ std::vector<uint32_t> ModelHandler::BackendList() {
   return ret;
 }
 
-std::shared_ptr<FakeNexusBackend> ModelHandler::GetBackend() {
+FakeNexusBackend* ModelHandler::GetBackend() {
   std::lock_guard<std::mutex> lock(route_mu_);
-  auto backend = GetBackendDeficitRoundRobin();
-  if (backend != nullptr) {
-    return backend;
-  }
-  return GetBackendWeightedRoundRobin();
+  return GetBackendDeficitRoundRobin();
 }
 
-std::shared_ptr<FakeNexusBackend> ModelHandler::GetBackendWeightedRoundRobin() {
-  std::uniform_real_distribution<float> dis(0, total_throughput_);
-  float select = dis(rand_gen_);
-  uint i = 0;
-  for (; i < backends_.size(); ++i) {
-    uint32_t backend_id = backends_[i];
-    float rate = backend_rates_.at(backend_id);
-    select -= rate;
-    if (select < 0) {
-      auto backend_sess = backend_pool_.GetBackend(backend_id);
-      if (backend_sess != nullptr) {
-        return backend_sess;
-      }
-      break;
-    }
-  }
-  ++i;
-  for (uint j = 0; j < backends_.size(); ++j, ++i) {
-    auto backend_sess = backend_pool_.GetBackend(backends_[i]);
-    if (backend_sess != nullptr) {
-      return backend_sess;
-    }
-  }
-  return nullptr;
-}
-
-std::shared_ptr<FakeNexusBackend> ModelHandler::GetBackendDeficitRoundRobin() {
+FakeNexusBackend* ModelHandler::GetBackendDeficitRoundRobin() {
   for (size_t i = 0; i < 2 * backends_.size(); ++i) {
     size_t idx = (current_drr_index_ + i) % backends_.size();
     uint32_t backend_id = backends_[idx];
     if (backend_quanta_.at(backend_id) >= 1. - 1e-6) {
-      auto backend = backend_pool_.GetBackend(backend_id);
-      if (backend != nullptr) {
-        backend_quanta_[backend_id] -= 1.;
-        return backend;
-      } else {
-        // The backend has disappeared. Could this be fixed by
-        // making `backend_pool_` share the same lock with `backend_`?
-        current_drr_index_ = (current_drr_index_ + 1) % backends_.size();
-      }
+      backend_quanta_[backend_id] -= 1.;
+      return accessor_.backends.at(backend_id);
     } else {
       auto rate = backend_rates_[backend_id];
       backend_quanta_[backend_id] += rate * quantum_to_rate_ratio_;
       current_drr_index_ = (current_drr_index_ + 1) % backends_.size();
     }
   }
-
-  return nullptr;
+  CHECK(false) << "Deficit Round Robin could not decide.";
 }
 
 }  // namespace app

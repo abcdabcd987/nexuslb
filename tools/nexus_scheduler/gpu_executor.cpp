@@ -41,7 +41,6 @@ void GpuExecutorMultiBatching::Stop() {
 
 void GpuExecutorMultiBatching::AddModel(std::shared_ptr<ModelExecutor> model) {
   std::lock_guard<std::mutex> lock(models_mu_);
-  CHECK(!model->backup());
   models_.push_back(model);
 }
 
@@ -70,7 +69,6 @@ void GpuExecutorMultiBatching::Run() {
     for (auto model : models) {
       exec_cycle_us += model->Execute();
     }
-    double budget = duty_cycle_us_ - exec_cycle_us;
     if (exec_cycle_us < min_cycle_us) {
       // ensure the cycle to be at least min_cycle to avoid acquiring lock
       // too frequently in the ModelInstance

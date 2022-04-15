@@ -19,7 +19,7 @@ DEFINE_int32(avg_interval, 10, "Moving average interval for backend rate");
 namespace nexus {
 namespace scheduler {
 
-Scheduler::Scheduler(std::string port, size_t nthreads)
+Scheduler::Scheduler()
     : beacon_interval_sec_(FLAGS_beacon),
       epoch_interval_sec_(FLAGS_epoch),
       enable_epoch_schedule_(FLAGS_epoch_schedule) {
@@ -248,41 +248,6 @@ void Scheduler::AddBackend(BackendDelegatePtr backend) {
       session_info->backend_weights.emplace(
           backend->node_id(), backend->GetModelWeight(model_sess_id));
       changed_sessions.insert(session_info);
-      for (auto backup_id : session_info->backup_backends) {
-        auto backup_backend = GetBackend(backup_id);
-        if (backup_backend != nullptr) {
-          BackendInfo backup_info;
-          backup_backend->GetInfo(&backup_info);
-          backend->AddBackupForModel(model_sess_id, backup_info);
-        }
-      }
-    }
-    // Add backup model to session info
-    BackendInfo backend_info;
-    backend->GetInfo(&backend_info);
-    for (auto& model_sess_id : backend->GetBackupModelSessions()) {
-      LOG(INFO) << "backup model session: " << model_sess_id;
-      if (session_table_.find(model_sess_id) == session_table_.end()) {
-        auto session_info = std::make_shared<SessionInfo>();
-        session_info->has_static_workload = true;
-        ModelSession model_sess;
-        ParseModelSession(model_sess_id, &model_sess);
-        session_info->model_sessions.push_back(model_sess);
-        session_table_.emplace(model_sess_id, session_info);
-      }
-      auto session_info = session_table_.at(model_sess_id);
-      if (session_info->backup_backends.count(backend->node_id()) > 0) {
-        continue;
-      }
-      session_info->backup_backends.insert(backend->node_id());
-      for (auto iter : session_info->backend_weights) {
-        auto b = GetBackend(iter.first);
-        if (b == nullptr) {
-          continue;
-        }
-        b->AddBackupForModel(model_sess_id, backend_info);
-        changed_backends.insert(b);
-      }
     }
   } else {
     // 2. Check if there are unassigned workloads
@@ -346,37 +311,7 @@ void Scheduler::RemoveBackend(BackendDelegatePtr backend) {
                 << " to backend " << assigned->node_id();
     }
     changed_backends.insert(assigned);
-    // Remove backup models to session info
-    for (auto& model_sess_id : backend->GetBackupModelSessions()) {
-      auto session_info = session_table_.at(model_sess_id);
-      session_info->backup_backends.erase(backend->node_id());
-      session_info->backup_backends.insert(assigned->node_id());
-      BackendInfo info;
-      assigned->GetInfo(&info);
-      for (auto iter : session_info->backend_weights) {
-        auto b = GetBackend(iter.first);
-        if (b != nullptr) {
-          b->RemoveBackupForModel(model_sess_id, backend->node_id());
-          b->AddBackupForModel(model_sess_id, info);
-          changed_backends.insert(b);
-        }
-      }
-    }
   } else {  // assigned == nullptr
-    // Remove backup models to session info
-    for (auto& model_sess_id : backend->GetBackupModelSessions()) {
-      auto session_info = session_table_.at(model_sess_id);
-      if (session_info->backup_backends.erase(backend->node_id()) == 0) {
-        continue;
-      }
-      for (auto iter : session_info->backend_weights) {
-        auto b = GetBackend(iter.first);
-        if (b != nullptr) {
-          b->RemoveBackupForModel(model_sess_id, backend->node_id());
-          changed_backends.insert(b);
-        }
-      }
-    }
     if (backend->workload_id() >= 0) {
       assigned_static_workloads_.erase(backend->workload_id());
       LOG(INFO) << "Remove workload " << backend->workload_id();
@@ -735,9 +670,7 @@ void Scheduler::AllocateUnassignedWorkloads(
       }
       request_rate -= inst_info.throughput;
       backend->LoadModel(inst_info);
-      for (int i = 1; i < sessions.size(); ++i) {
-        backend->LoadPrefixModel(sessions[i], sessions[0]);
-      }
+      CHECK_EQ(sessions.size(), 1) << "PrefixModel not supported";
       session_info->backend_weights.emplace(backend->node_id(),
                                             inst_info.GetWeight());
       changed_sessions->insert(session_info);
@@ -785,13 +718,8 @@ void Scheduler::ConsolidateBackends(
       }
       backend->UnloadModel(model_sess_id);
       assign->LoadModel(new_inst_info);
-      if (inst_info->model_sessions.size() > 1) {
-        for (uint i = 1; i < inst_info->model_sessions.size(); ++i) {
-          assign->LoadPrefixModel(inst_info->model_sessions[i], model_sess);
-          backend->UnloadModel(
-              ModelSessionToString(inst_info->model_sessions[i]));
-        }
-      }
+      CHECK_EQ(inst_info->model_sessions.size(), 1)
+          << "PrefixModel not supported";
       // changed_backends->insert(assign);
       auto session_info = session_table_.at(model_sess_id);
       session_info->backend_weights.erase(backend->node_id());

@@ -26,12 +26,7 @@ using SessionInfoPtr = std::shared_ptr<SessionInfo>;
 /*! \brief Scheduler acts as a global centralized scheduler server. */
 class Scheduler {
  public:
-  /*!
-   * \brief Constructor for Scheduler object.
-   * \param address IP address and port, e.g., 127.0.0.1:1234.
-   * \param nthreads Number of threads that handle the RPC calls.
-   */
-  Scheduler(std::string port, size_t nthreads);
+  Scheduler();
   /*!
    * \brief Loads the workload configuation for backends from config file.
    * \param config_file Config file path.

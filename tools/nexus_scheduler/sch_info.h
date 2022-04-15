@@ -38,7 +38,6 @@ struct SessionInfo {
   /*! \brief Mapping from backend id to throughput */
   std::unordered_map<uint32_t, double> backend_weights;
 
-  std::unordered_set<uint32_t> backup_backends;
   /*! \brief Whether there is a static workload for this session */
   bool has_static_workload;
 
@@ -64,8 +63,6 @@ struct InstanceInfo {
   double throughput;
   double weight;
   uint64_t memory_usage;
-  bool backup;
-  std::unordered_map<uint32_t, BackendInfo> backup_backends;
 
   InstanceInfo()
       : batch(0),
@@ -76,8 +73,7 @@ struct InstanceInfo {
         workload(0.),
         throughput(0.),
         weight(0.),
-        memory_usage(0),
-        backup(false) {}
+        memory_usage(0) {}
 
   InstanceInfo(const InstanceInfo& other)
       : model_sessions(other.model_sessions),
@@ -89,8 +85,7 @@ struct InstanceInfo {
         workload(other.workload),
         throughput(other.throughput),
         weight(other.weight),
-        memory_usage(other.memory_usage),
-        backup(other.backup) {}
+        memory_usage(other.memory_usage) {}
 
   InstanceInfo& operator=(const InstanceInfo& other) {
     if (this != &other) {
@@ -104,7 +99,6 @@ struct InstanceInfo {
       throughput = other.throughput;
       weight = other.weight;
       memory_usage = other.memory_usage;
-      backup = other.backup;
     }
     return *this;
   }

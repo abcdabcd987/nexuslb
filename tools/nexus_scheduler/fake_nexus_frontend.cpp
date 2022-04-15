@@ -9,21 +9,23 @@
 namespace nexus {
 namespace app {
 
-Frontend::Frontend(uint32_t node_id) : node_id_(node_id), rand_gen_(rd_()) {}
+FakeNexusFrontend::FakeNexusFrontend(uint32_t node_id,
+                                     const FakeObjectAccessor* accessor)
+    : node_id_(node_id), rand_gen_(rd_()), accessor_(*accessor) {}
 
-Frontend::~Frontend() {}
+FakeNexusFrontend::~FakeNexusFrontend() {}
 
-void Frontend::Run() {
+void FakeNexusFrontend::Run() {
   running_ = true;
-  daemon_thread_ = std::thread(&Frontend::Daemon, this);
+  daemon_thread_ = std::thread(&FakeNexusFrontend::Daemon, this);
 }
 
-void Frontend::Stop() {
+void FakeNexusFrontend::Stop() {
   running_ = false;
   daemon_thread_.join();
 }
 
-void Frontend::UpdateModelRoutes(const ModelRouteUpdates& request) {
+void FakeNexusFrontend::UpdateModelRoutes(const ModelRouteUpdates& request) {
   int success = true;
   for (auto model_route : request.model_route()) {
     if (!UpdateBackendPoolAndModelRoute(model_route)) {
@@ -33,12 +35,12 @@ void Frontend::UpdateModelRoutes(const ModelRouteUpdates& request) {
   CHECK(success) << "MODEL_SESSION_NOT_LOADED";
 }
 
-std::shared_ptr<ModelHandler> Frontend::LoadModel(
+std::shared_ptr<ModelHandler> FakeNexusFrontend::LoadModel(
     const NexusLoadModelReply& reply) {
   CHECK(reply.status() == CTRL_OK)
       << "Load model error: " << CtrlStatus_Name(reply.status());
   auto model_handler = std::make_shared<ModelHandler>(
-      reply.model_route().model_session_id(), backend_pool_);
+      reply.model_route().model_session_id(), &accessor_);
   // Only happens at Setup stage, so no concurrent modification to model_pool_
   model_pool_.emplace(model_handler->model_session_id(), model_handler);
   UpdateBackendPoolAndModelRoute(reply.model_route());
@@ -46,7 +48,8 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(
   return model_handler;
 }
 
-bool Frontend::UpdateBackendPoolAndModelRoute(const ModelRouteProto& route) {
+bool FakeNexusFrontend::UpdateBackendPoolAndModelRoute(
+    const ModelRouteProto& route) {
   auto& model_session_id = route.model_session_id();
   LOG(INFO) << "Update model route for " << model_session_id;
   // LOG(INFO) << route.DebugString();
@@ -67,8 +70,6 @@ bool Frontend::UpdateBackendPoolAndModelRoute(const ModelRouteProto& route) {
       if (backend_sessions_.count(backend_id) == 0) {
         backend_sessions_.emplace(
             backend_id, std::unordered_set<std::string>{model_session_id});
-        backend_pool_.AddBackend(
-            std::make_shared<FakeNexusBackend>(backend.info()));
       } else {
         backend_sessions_.at(backend_id).insert(model_session_id);
       }
@@ -81,7 +82,6 @@ bool Frontend::UpdateBackendPoolAndModelRoute(const ModelRouteProto& route) {
         if (backend_sessions_.at(backend_id).empty()) {
           LOG(INFO) << "Remove backend " << backend_id;
           backend_sessions_.erase(backend_id);
-          backend_pool_.RemoveBackend(backend_id);
         }
       }
     }
@@ -91,7 +91,7 @@ bool Frontend::UpdateBackendPoolAndModelRoute(const ModelRouteProto& route) {
   return true;
 }
 
-void Frontend::Daemon() {
+void FakeNexusFrontend::Daemon() {
   while (running_) {
     auto next_time = Clock::now() + std::chrono::seconds(beacon_interval_sec_);
     WorkloadStatsProto workload_stats;
@@ -110,9 +110,39 @@ void Frontend::Daemon() {
   }
 }
 
-void Frontend::ReportWorkload(const WorkloadStatsProto& request) {
+void FakeNexusFrontend::ReportWorkload(const WorkloadStatsProto& request) {
   CHECK(false) << "TODO: call scheduler in the scheduler-only benchmark "
                   "driver.";
+}
+
+void FakeNexusFrontend::ReceivedQuery(size_t model_idx, uint64_t query_id,
+                                      int64_t frontend_recv_ns) {
+  auto& mctx = model_ctx_.at(model_idx);
+  CHECK_LT(query_id, mctx->reserved_size);
+  auto& qctx = mctx->queries[query_id];
+  qctx.status = QueryStatus::kPending;
+  qctx.frontend_recv_ns = frontend_recv_ns;
+}
+
+void FakeNexusFrontend::GotDroppedReply(size_t model_idx, uint64_t query_id) {
+  auto& mctx = model_ctx_.at(model_idx);
+  CHECK_LT(query_id, mctx->reserved_size);
+  auto& qctx = mctx->queries[query_id];
+  qctx.status = QueryStatus::kDropped;
+}
+
+void FakeNexusFrontend::GotSuccessReply(size_t model_idx, uint64_t query_id,
+                                        int64_t finish_ns) {
+  auto& mctx = model_ctx_.at(model_idx);
+  CHECK_LT(query_id, mctx->reserved_size);
+  auto& qctx = mctx->queries[query_id];
+  auto deadline_ns =
+      qctx.frontend_recv_ns + mctx->model_session.latency_sla() * 1000 * 1000;
+  if (finish_ns < deadline_ns) {
+    qctx.status = QueryStatus::kSuccess;
+  } else {
+    qctx.status = QueryStatus::kTimeout;
+  }
 }
 
 }  // namespace app

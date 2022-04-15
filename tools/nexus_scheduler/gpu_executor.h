@@ -3,11 +3,12 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
-#include "nexus/backend/model_exec.h"
+#include "nexus_scheduler/model_exec.h"
 
 namespace nexus {
 namespace backend {

@@ -12,16 +12,17 @@
 #include "nexus/common/spinlock.h"
 #include "nexus/proto/nexus.pb.h"
 #include "nexus_scheduler/fake_nexus_backend.h"
+#include "nexus_scheduler/fake_object_accessor.h"
 #include "nexus_scheduler/model_handler.h"
 
 namespace nexus {
 namespace app {
 
-class Frontend {
+class FakeNexusFrontend {
  public:
-  Frontend(uint32_t node_id);
+  FakeNexusFrontend(uint32_t node_id, const FakeObjectAccessor* accessor);
 
-  virtual ~Frontend();
+  virtual ~FakeNexusFrontend();
 
   uint32_t node_id() const { return node_id_; }
 
@@ -31,7 +32,6 @@ class Frontend {
 
   void UpdateModelRoutes(const ModelRouteUpdates& request);
 
- protected:
   std::shared_ptr<ModelHandler> LoadModel(const NexusLoadModelReply& reply);
 
  private:
@@ -54,26 +54,58 @@ class Frontend {
   uint32_t beacon_interval_sec_;
   /*! \brief Frontend node ID */
   uint32_t node_id_;
-  FakeNexusBackendPool backend_pool_;
   /*!
    * \brief Map from backend ID to model sessions servered at this backend.
    * Guarded by backend_sessions_mu_
    */
-  std::unordered_map<uint32_t, std::unordered_set<std::string> >
+  std::unordered_map<uint32_t, std::unordered_set<std::string>>
       backend_sessions_;
   /*!
    * \brief Map from model session ID to model handler.
    */
-  std::unordered_map<std::string, std::shared_ptr<ModelHandler> > model_pool_;
+  std::unordered_map<std::string, std::shared_ptr<ModelHandler>> model_pool_;
 
   std::thread daemon_thread_;
-  /*! \brief Mutex for connection_pool_ and user_sessions_ */
-  std::mutex user_mutex_;
 
   std::mutex backend_sessions_mu_;
   /*! \brief Random number generator */
   std::random_device rd_;
   std::mt19937 rand_gen_;
+
+  // Scheduler-only test related:
+ public:
+  enum class QueryStatus {
+    kPending,
+    kDropped,
+    kTimeout,
+    kSuccess,
+  };
+
+  struct QueryContext {
+    QueryStatus status;
+    int64_t frontend_recv_ns;
+  };
+
+  const QueryContext* queries(size_t model_idx) const {
+    return model_ctx_.at(model_idx)->queries.get();
+  }
+  size_t reserved_size(size_t model_idx) const {
+    return model_ctx_.at(model_idx)->reserved_size;
+  }
+
+  void ReceivedQuery(size_t model_idx, uint64_t query_id,
+                     int64_t frontend_recv_ns);
+  void GotDroppedReply(size_t model_idx, uint64_t query_id);
+  void GotSuccessReply(size_t model_idx, uint64_t query_id, int64_t finish_ns);
+
+ private:
+  struct ModelContext {
+    size_t reserved_size;
+    ModelSession model_session;
+    std::unique_ptr<QueryContext[]> queries;
+  };
+  const FakeObjectAccessor& accessor_;
+  std::vector<std::unique_ptr<ModelContext>> model_ctx_;
 };
 
 }  // namespace app

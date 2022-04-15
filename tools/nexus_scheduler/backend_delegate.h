@@ -23,13 +23,11 @@ using InstanceInfoPtr = std::shared_ptr<InstanceInfo>;
 class BackendDelegate {
  public:
   BackendDelegate(uint32_t node_id, const std::string& gpu_device,
-                  const std::string& gpu_uuid, size_t gpu_available_memory);
+                  const std::string& gpu_uuid);
 
   uint32_t node_id() const { return node_id_; }
 
   std::string gpu_device() const { return gpu_device_; }
-
-  size_t gpu_available_memory() const { return gpu_available_memory_; }
 
   int workload_id() const { return workload_id_; }
 
@@ -50,16 +48,8 @@ class BackendDelegate {
 
   void LoadModel(const YAML::Node& model_info);
 
-  void LoadPrefixModel(const ModelSession& model_session,
-                       const ModelSession& shared_session);
-
   void UnloadModel(const std::string& model_sess_id);
 
-  void AddBackupForModel(const std::string& model_sess_id,
-                         const BackendInfo& info);
-
-  void RemoveBackupForModel(const std::string& model_sess_id,
-                            uint32_t backend_id);
   /*!
    * \brief Update model throughput given model session id and throughput.
    * \param model_sess_id Model session ID.
@@ -76,8 +66,6 @@ class BackendDelegate {
   CtrlStatus UpdateModelTableRpc();
 
   std::vector<std::string> GetModelSessions() const;
-
-  std::vector<std::string> GetBackupModelSessions() const;
 
   std::vector<InstanceInfoPtr> GetModels() const { return models_; }
 
@@ -99,12 +87,10 @@ class BackendDelegate {
   uint32_t node_id_;
   std::string gpu_device_;
   std::string gpu_uuid_;
-  size_t gpu_available_memory_;
 
   int workload_id_;
 
   std::vector<InstanceInfoPtr> models_;
-  std::vector<InstanceInfoPtr> backup_models_;
   /*!
    * \brief Mapping from model session id to instance information.
    * It's possible that multiple model session ids mapping to same instance

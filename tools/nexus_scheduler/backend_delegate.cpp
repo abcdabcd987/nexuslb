@@ -62,12 +62,10 @@ CalcCycleResult calc_cycle(const std::vector<InstanceInfoPtr>& models) {
 
 BackendDelegate::BackendDelegate(uint32_t node_id,
                                  const std::string& gpu_device,
-                                 const std::string& gpu_uuid,
-                                 size_t gpu_available_memory)
+                                 const std::string& gpu_uuid)
     : node_id_(node_id),
       gpu_device_(gpu_device),
       gpu_uuid_(gpu_uuid),
-      gpu_available_memory_(gpu_available_memory),
       workload_id_(-1),
       exec_cycle_us_(0.),
       duty_cycle_us_(0.),
@@ -90,7 +88,6 @@ bool BackendDelegate::Assign(const BackendDelegate& other) {
   if (gpu_device_ == other.gpu_device_) {
     workload_id_ = other.workload_id_;
     models_ = other.models_;
-    backup_models_ = other.backup_models_;
     session_model_map_ = other.session_model_map_;
     exec_cycle_us_ = other.exec_cycle_us_;
     duty_cycle_us_ = other.exec_cycle_us_;
@@ -201,65 +198,22 @@ void BackendDelegate::LoadModel(const YAML::Node& model_info) {
       << "Model session " << model_session_id << " already exists.";
   session_model_map_.emplace(model_session_id, inst_info);
 
-  if (model_info["share_prefix"]) {
-    for (int i = 1; i < model_info["share_prefix"].size(); ++i) {
-      auto share_model_info = model_info["share_prefix"][i];
-      ModelSession share_sess;
-      share_sess.set_framework(share_model_info["framework"].as<std::string>());
-      share_sess.set_model_name(
-          share_model_info["model_name"].as<std::string>());
-      share_sess.set_version(share_model_info["version"].as<uint32_t>());
-      share_sess.set_latency_sla(
-          share_model_info["latency_sla"].as<uint32_t>());
-      if (model_info["image_height"]) {
-        share_sess.set_image_height(model_info["image_height"].as<uint32_t>());
-        share_sess.set_image_width(model_info["image_width"].as<uint32_t>());
-      }
-      std::string share_sess_id = ModelSessionToString(share_sess);
-      CHECK_EQ(session_model_map_.count(share_sess_id), 0)
-          << "Model session " << share_sess_id << " already exists.";
-      inst_info->model_sessions.push_back(share_sess);
-      session_model_map_.emplace(share_sess_id, inst_info);
-    }
-  }
-  if (model_info["backup"]) {
-    inst_info->backup = model_info["backup"].as<bool>();
-  }
   if (model_info["weight"]) {
     inst_info->weight = model_info["weight"].as<double>();
   }
 
-  if (inst_info->backup) {
-    backup_models_.push_back(inst_info);
-  } else {
-    models_.push_back(inst_info);
-    // update execution and batch cycles and throughput
-    exec_cycle_us_ += inst_info->fwd_latency_us;
-    duty_cycle_us_ += inst_info->fwd_latency_us;
-    for (auto other_info : models_) {
-      other_info->throughput = other_info->batch * 1e6 / duty_cycle_us_;
-    }
+  models_.push_back(inst_info);
+  // update execution and batch cycles and throughput
+  exec_cycle_us_ += inst_info->fwd_latency_us;
+  duty_cycle_us_ += inst_info->fwd_latency_us;
+  for (auto other_info : models_) {
+    other_info->throughput = other_info->batch * 1e6 / duty_cycle_us_;
   }
   dirty_model_table_ = true;
 
   LOG(INFO) << "Backend " << node_id_ << " loads " << model_session_id
             << ", batch " << inst_info->batch << ", exec cycle "
-            << exec_cycle_us_ << " us, duty cycle: " << duty_cycle_us_
-            << " us, backup: " << inst_info->backup;
-}
-
-void BackendDelegate::LoadPrefixModel(const ModelSession& model_session,
-                                      const ModelSession& shared_session) {
-  std::string model_session_id = ModelSessionToString(model_session);
-  std::string shared_session_id = ModelSessionToString(shared_session);
-  CHECK_EQ(session_model_map_.count(model_session_id), 0)
-      << "Model session " << model_session_id << " already exists.";
-  CHECK_GT(session_model_map_.count(shared_session_id), 0)
-      << "Model session " << shared_session_id << " doesn't exist.";
-  auto inst_info = session_model_map_.at(shared_session_id);
-  inst_info->model_sessions.push_back(model_session);
-  session_model_map_.emplace(model_session_id, inst_info);
-  dirty_model_table_ = true;
+            << exec_cycle_us_ << " us, duty cycle: " << duty_cycle_us_ << " us";
 }
 
 void BackendDelegate::UnloadModel(const std::string& model_sess_id) {
@@ -287,26 +241,6 @@ void BackendDelegate::UnloadModel(const std::string& model_sess_id) {
     UpdateCycle();
   }
   dirty_model_table_ = true;
-}
-
-void BackendDelegate::AddBackupForModel(const std::string& model_sess_id,
-                                        const BackendInfo& info) {
-  auto inst_info = session_model_map_.at(model_sess_id);
-  if (inst_info->backup_backends.count(info.node_id()) > 0) {
-    return;
-  }
-  LOG(INFO) << "Backend " << node_id_ << " add backup server " << info.node_id()
-            << " for " << model_sess_id;
-  inst_info->backup_backends.emplace(info.node_id(), info);
-  dirty_model_table_ = true;
-}
-
-void BackendDelegate::RemoveBackupForModel(const std::string& model_sess_id,
-                                           uint32_t backend_id) {
-  auto inst_info = session_model_map_.at(model_sess_id);
-  if (inst_info->backup_backends.erase(backend_id) > 0) {
-    dirty_model_table_ = true;
-  }
 }
 
 double BackendDelegate::UpdateModelThroughput(const std::string& model_sess_id,
@@ -358,9 +292,7 @@ void BackendDelegate::SpillOutWorkload(
       spillout->emplace_back(sessions, workload);
     } else {
       LoadModel(inst_info);
-      for (int i = 1; i < sessions.size(); ++i) {
-        LoadPrefixModel(sessions[i], sessions[0]);
-      }
+      CHECK_EQ(sessions.size(), 1) << "PrefixModel not supported";
     }
   }
   CHECK_LE(exec_cycle_us_, duty_cycle_us_);
@@ -383,20 +315,6 @@ CtrlStatus BackendDelegate::UpdateModelTableRpc() {
     cfg->set_batch(inst_info->batch);
     cfg->set_max_batch(inst_info->max_batch);
     cfg->set_memory_usage(inst_info->memory_usage);
-    cfg->set_backup(inst_info->backup);
-    for (auto iter : inst_info->backup_backends) {
-      cfg->add_backup_backend()->CopyFrom(iter.second);
-    }
-  }
-  for (auto inst_info : backup_models_) {
-    auto cfg = request.add_model_instance_config();
-    for (auto& model_sess : inst_info->model_sessions) {
-      cfg->add_model_session()->CopyFrom(model_sess);
-    }
-    cfg->set_batch(inst_info->batch);
-    cfg->set_max_batch(inst_info->max_batch);
-    cfg->set_memory_usage(inst_info->memory_usage);
-    cfg->set_backup(inst_info->backup);
   }
   // LOG(INFO) << "Backend " << node_id_ << " update model table: " <<
   //     request.DebugString();
@@ -409,19 +327,7 @@ CtrlStatus BackendDelegate::UpdateModelTableRpc() {
 std::vector<std::string> BackendDelegate::GetModelSessions() const {
   std::vector<std::string> sessions;
   for (auto const& iter : session_model_map_) {
-    if (!iter.second->backup) {
-      sessions.push_back(iter.first);
-    }
-  }
-  return sessions;
-}
-
-std::vector<std::string> BackendDelegate::GetBackupModelSessions() const {
-  std::vector<std::string> sessions;
-  for (auto const& iter : session_model_map_) {
-    if (iter.second->backup) {
-      sessions.push_back(iter.first);
-    }
+    sessions.push_back(iter.first);
   }
   return sessions;
 }

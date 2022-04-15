@@ -108,12 +108,11 @@ class DispatcherRunner {
     }
 
     for (int i = 0; i < options_.frontends; ++i) {
-      const auto& w = options_.models[i];
-      auto& l = loadgen_contexts_[i];
       uint32_t frontend_id = 60001 + i;
       auto frontend =
           std::make_shared<FakeNexusFrontend>(frontend_id, &accessor_);
       frontends_.push_back(frontend);
+      auto& l = loadgen_contexts_[i];
       l.frontend = frontend.get();
 
       // Register frontend at scheduler
@@ -121,13 +120,14 @@ class DispatcherRunner {
           std::make_shared<FrontendDelegate>(frontend_id));
 
       // Load model to the frontend
-      for (const auto& m : options_.models) {
+      for (size_t j = 0; j < options_.models.size(); ++j) {
+        const auto& w = options_.models[j];
         LoadModelRequest req;
         req.set_node_id(frontend_id);
         req.mutable_model_session()->CopyFrom(w.model_session);
         NexusLoadModelReply reply;
         scheduler_->LoadModel(req, &reply);
-        frontend->LoadModel(reply);
+        frontend->LoadModel(reply, CalcReservedSize(j));
       }
     }
   }

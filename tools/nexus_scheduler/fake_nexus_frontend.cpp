@@ -5,114 +5,86 @@
 
 #include "nexus/common/config.h"
 #include "nexus_scheduler/fake_nexus_backend.h"
+#include "nexus_scheduler/scheduler.h"
 
 namespace nexus {
 namespace app {
 
-FakeNexusFrontend::FakeNexusFrontend(uint32_t node_id,
-                                     const FakeObjectAccessor* accessor)
-    : node_id_(node_id), rand_gen_(rd_()), accessor_(*accessor) {}
+FakeNexusFrontend::FakeNexusFrontend(boost::asio::io_context* io_context,
+                                     const FakeObjectAccessor* accessor,
+                                     uint32_t node_id,
+                                     uint32_t beacon_interval_sec)
+    : io_context_(*io_context),
+      accessor_(*accessor),
+      node_id_(node_id),
+      beacon_interval_sec_(beacon_interval_sec),
+      report_workload_timer_(io_context_) {}
 
-FakeNexusFrontend::~FakeNexusFrontend() {}
+void FakeNexusFrontend::Start() { ReportWorkload(); }
 
-void FakeNexusFrontend::Run() {
-  running_ = true;
-  daemon_thread_ = std::thread(&FakeNexusFrontend::Daemon, this);
-}
-
-void FakeNexusFrontend::Stop() {
-  running_ = false;
-  daemon_thread_.join();
-}
+void FakeNexusFrontend::Stop() { report_workload_timer_.cancel(); }
 
 void FakeNexusFrontend::UpdateModelRoutes(const ModelRouteUpdates& request) {
-  int success = true;
   for (auto model_route : request.model_route()) {
-    if (!UpdateBackendPoolAndModelRoute(model_route)) {
-      success = false;
-    }
+    UpdateBackendPoolAndModelRoute(model_route);
   }
-  CHECK(success) << "MODEL_SESSION_NOT_LOADED";
 }
 
 std::shared_ptr<ModelHandler> FakeNexusFrontend::LoadModel(
-    const NexusLoadModelReply& reply) {
+    const NexusLoadModelReply& reply, size_t reserved_size) {
   CHECK(reply.status() == CTRL_OK)
       << "Load model error: " << CtrlStatus_Name(reply.status());
   auto model_handler = std::make_shared<ModelHandler>(
       reply.model_route().model_session_id(), &accessor_);
   // Only happens at Setup stage, so no concurrent modification to model_pool_
+  CHECK(!model_pool_.count(model_handler->model_session_id()));
   model_pool_.emplace(model_handler->model_session_id(), model_handler);
   UpdateBackendPoolAndModelRoute(reply.model_route());
 
+  models_.push_back(model_handler);
+  model_ctx_.push_back(std::make_unique<ModelContext>());
+  auto& mctx = model_ctx_.back();
+  mctx->reserved_size = reserved_size;
+  mctx->slo_ns = model_handler->model_session().latency_sla() * 1000000L;
+  mctx->queries.reset(new QueryContext[reserved_size]);
   return model_handler;
 }
 
-bool FakeNexusFrontend::UpdateBackendPoolAndModelRoute(
+std::shared_ptr<ModelHandler> FakeNexusFrontend::GetModelHandler(
+    size_t model_idx) {
+  return models_.at(model_idx);
+}
+
+void FakeNexusFrontend::UpdateBackendPoolAndModelRoute(
     const ModelRouteProto& route) {
   auto& model_session_id = route.model_session_id();
   LOG(INFO) << "Update model route for " << model_session_id;
-  // LOG(INFO) << route.DebugString();
-  auto iter = model_pool_.find(model_session_id);
-  if (iter == model_pool_.end()) {
-    LOG(ERROR) << "Cannot find model handler for " << model_session_id;
-    return false;
-  }
-  auto model_handler = iter->second;
-  // Update backend pool first
-  {
-    std::lock_guard<std::mutex> lock(backend_sessions_mu_);
-    auto old_backends = model_handler->BackendList();
-    std::unordered_set<uint32_t> new_backends;
-    // Add new backends
-    for (auto backend : route.backend_rate()) {
-      uint32_t backend_id = backend.info().node_id();
-      if (backend_sessions_.count(backend_id) == 0) {
-        backend_sessions_.emplace(
-            backend_id, std::unordered_set<std::string>{model_session_id});
-      } else {
-        backend_sessions_.at(backend_id).insert(model_session_id);
-      }
-      new_backends.insert(backend_id);
-    }
-    // Remove unused backends
-    for (auto backend_id : old_backends) {
-      if (new_backends.count(backend_id) == 0) {
-        backend_sessions_.at(backend_id).erase(model_session_id);
-        if (backend_sessions_.at(backend_id).empty()) {
-          LOG(INFO) << "Remove backend " << backend_id;
-          backend_sessions_.erase(backend_id);
-        }
-      }
-    }
-  }
+  auto model_handler = model_pool_.at(model_session_id);
+
   // Update route to backends with throughput in model handler
   model_handler->UpdateRoute(route);
-  return true;
 }
 
-void FakeNexusFrontend::Daemon() {
-  while (running_) {
-    auto next_time = Clock::now() + std::chrono::seconds(beacon_interval_sec_);
-    WorkloadStatsProto workload_stats;
-    workload_stats.set_node_id(node_id_);
-    for (auto const& iter : model_pool_) {
-      auto model_session_id = iter.first;
-      auto history = iter.second->counter()->GetHistory();
-      auto model_stats = workload_stats.add_model_stats();
-      model_stats->set_model_session_id(model_session_id);
-      for (auto nreq : history) {
-        model_stats->add_num_requests(nreq);
-      }
+void FakeNexusFrontend::ReportWorkload() {
+  WorkloadStatsProto workload_stats;
+  workload_stats.set_node_id(node_id_);
+  for (auto const& iter : model_pool_) {
+    auto model_session_id = iter.first;
+    auto history = iter.second->counter()->GetHistory();
+    auto model_stats = workload_stats.add_model_stats();
+    model_stats->set_model_session_id(model_session_id);
+    for (auto nreq : history) {
+      model_stats->add_num_requests(nreq);
     }
-    ReportWorkload(workload_stats);
-    std::this_thread::sleep_until(next_time);
   }
-}
+  accessor_.scheduler->ReportWorkload(workload_stats);
 
-void FakeNexusFrontend::ReportWorkload(const WorkloadStatsProto& request) {
-  CHECK(false) << "TODO: call scheduler in the scheduler-only benchmark "
-                  "driver.";
+  report_workload_timer_.expires_from_now(
+      std::chrono::seconds(beacon_interval_sec_));
+  report_workload_timer_.async_wait([this](boost::system::error_code ec) {
+    if (ec) return;
+    ReportWorkload();
+  });
 }
 
 void FakeNexusFrontend::ReceivedQuery(size_t model_idx, uint64_t query_id,
@@ -136,8 +108,7 @@ void FakeNexusFrontend::GotSuccessReply(size_t model_idx, uint64_t query_id,
   auto& mctx = model_ctx_.at(model_idx);
   CHECK_LT(query_id, mctx->reserved_size);
   auto& qctx = mctx->queries[query_id];
-  auto deadline_ns =
-      qctx.frontend_recv_ns + mctx->model_session.latency_sla() * 1000 * 1000;
+  auto deadline_ns = qctx.frontend_recv_ns + mctx->slo_ns;
   if (finish_ns < deadline_ns) {
     qctx.status = QueryStatus::kSuccess;
   } else {

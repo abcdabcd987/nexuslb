@@ -60,6 +60,7 @@ struct Options {
   int frontends;
   int backends;
   std::vector<ModelOptions> models;
+  YAML::Node static_schedule;
 
   static Options FromYaml(const YAML::Node& config);
 };
@@ -225,6 +226,9 @@ class NexusRunner {
     scheduler_ = std::make_unique<Scheduler>(&io_context_, &accessor_,
                                              Scheduler::Config::Default());
     accessor_.scheduler = scheduler_.get();
+    if (options_.static_schedule) {
+      scheduler_->LoadWorkload(options_.static_schedule);
+    }
   }
 
   void BuildFakeServers() {
@@ -481,6 +485,9 @@ Options Options::FromYaml(const YAML::Node& config) {
 
   // Number of GPUs
   opt.backends = config["backends"].as<int>(1);
+
+  // Static schedule
+  opt.static_schedule = config["schedule"];
 
   // Models
   CHECK(config["models"].IsSequence());

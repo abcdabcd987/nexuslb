@@ -47,7 +47,7 @@ class ModelExecutor {
   ModelSession model_session_;
   const ModelProfile* profile_;
 
-  std::atomic<uint32_t> batch_;
+  std::atomic<uint32_t> batch_ = 0;
 
   /*! \brief Priority queue of inputs based on deadline. Guarded by task_mu_. */
   std::priority_queue<QueryInput, std::vector<QueryInput>, QueryInputHeapCmp>

@@ -7,6 +7,7 @@
 
 #include "nexus/common/config.h"
 #include "nexus/common/model_db.h"
+#include "nexus/common/model_def.h"
 
 namespace nexus {
 namespace scheduler {
@@ -80,21 +81,6 @@ void Scheduler::CheckEpochSchedule() {
 void Scheduler::LoadModel(const LoadModelRequest& request,
                           NexusLoadModelReply* reply) {
   ModelSession model_sess(request.model_session());
-  {
-    auto info = ModelDatabase::Singleton().GetModelInfo(
-        ModelSessionToModelID(model_sess));
-    if (info == nullptr) {
-      reply->set_status(MODEL_NOT_FOUND);
-      return;
-    }
-    if ((*info)["resizable"] && (*info)["resizable"].as<bool>()) {
-      if (model_sess.image_height() == 0) {
-        // Set default image size for resizable CNN
-        model_sess.set_image_height((*info)["image_height"].as<uint32_t>());
-        model_sess.set_image_width((*info)["image_width"].as<uint32_t>());
-      }
-    }
-  }
   std::string model_sess_id = ModelSessionToString(model_sess);
   double workload = request.estimate_workload();
 
@@ -653,17 +639,18 @@ void Scheduler::DisplayModelTable() {
     double occ = backend->Occupancy();
     if (occ > 0) {
       used_backends.insert(backend->node_id());
-      ss << "Backend " << backend->node_id() << ": " << occ << "\n";
+      ss << "  Backend " << backend->node_id() << ": " << occ << "\n";
     }
   }
   if (!used_backends.empty()) {
-    VLOG(1) << "Total used GPUs: " << used_backends.size() << "\n" << ss.str();
+    LOG(INFO) << "Total used GPUs: " << used_backends.size();
+    VLOG(1) << "GPU occupancy:\n" << ss.str();
     std::stringstream ss1;
     for (auto iter : session_table_) {
       auto const& model_sess_id = iter.first;
       auto session_info = iter.second;
       double total_gpu_share = 0.;
-      ss1 << model_sess_id << ":";
+      ss1 << "  " << model_sess_id << ":";
       for (auto backend_iter : session_info->backend_weights) {
         auto backend = GetBackend(backend_iter.first);
         double share = backend->GetModelGPUShare(model_sess_id);
@@ -674,7 +661,7 @@ void Scheduler::DisplayModelTable() {
       }
       ss1 << ", total share: " << total_gpu_share << "\n";
     }
-    VLOG(1) << "Model table: \n" << ss1.str();
+    LOG(INFO) << "Model table: \n" << ss1.str();
   }
 }
 

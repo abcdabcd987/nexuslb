@@ -52,7 +52,7 @@ std::shared_ptr<ModelHandler> FakeNexusFrontend::GetModelHandler(
 void FakeNexusFrontend::UpdateBackendPoolAndModelRoute(
     const ModelRouteProto& route) {
   auto& model_session_id = route.model_session_id();
-  LOG(INFO) << "Update model route for " << model_session_id;
+  VLOG(1) << "Update model route for " << model_session_id;
   auto model_handler = model_pool_.at(model_session_id);
 
   // Update route to backends with throughput in model handler

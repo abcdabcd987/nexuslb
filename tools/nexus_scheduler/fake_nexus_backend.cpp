@@ -65,7 +65,10 @@ void FakeNexusBackend::ContinueExecution() {
     auto& model = models_.at(exec_->model_idx);
     exec_->batch = model->GetBatchTaskSlidingWindow(model->batch());
     auto batchsize = exec_->batch.inputs.size();
-    auto latency_us = model->profile()->GetForwardLatency(batchsize);
+    double latency_us = 0;
+    if (batchsize > 0) {
+      latency_us = model->profile()->GetForwardLatency(batchsize);
+    }
     exec_->exec_cycle_us += latency_us;
 
     exec_timer_.expires_from_now(

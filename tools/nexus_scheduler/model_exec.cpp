@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <thread>
 
 #include "nexus/common/model_db.h"
 #include "nexus/common/time_util.h"

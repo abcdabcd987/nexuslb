@@ -50,12 +50,12 @@ void ModelHandler::UpdateRoute(const ModelRouteProto& route) {
     const auto rate = itr.throughput();
     backend_rates_.emplace(backend_id, rate);
     total_throughput_ += rate;
-    LOG(INFO) << "- backend " << backend_id << ": " << rate;
+    VLOG(1) << "- backend " << backend_id << ": " << rate;
     if (backend_quanta_.count(backend_id) == 0) {
       backend_quanta_.emplace(backend_id, rate * quantum_to_rate_ratio_);
     }
   }
-  LOG(INFO) << "Total throughput: " << total_throughput_;
+  VLOG(1) << "Total throughput: " << total_throughput_;
   std::sort(backends_.begin(), backends_.end());
   current_drr_index_ %= backends_.size();
   for (auto iter = backend_quanta_.begin(); iter != backend_quanta_.end();) {

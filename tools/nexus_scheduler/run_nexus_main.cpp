@@ -59,47 +59,199 @@ struct Options {
   int64_t seed;
   int frontends;
   int backends;
-  int clients;
   std::vector<ModelOptions> models;
 
   static Options FromYaml(const YAML::Node& config);
 };
 
-class DispatcherRunner {
+class NexusRunner {
  public:
-  explicit DispatcherRunner(Options options) : options_(std::move(options)) {
-    main_executor_ = std::make_shared<boost::asio::io_context>();
-
+  explicit NexusRunner(Options options)
+      : options_(std::move(options)), ema_report_timer_(io_context_) {
     LOG(INFO) << "Preparing the benchmark";
+    accessor_.query_collector = &query_collector_;
     BuildScheduler();
     BuildFakeServers();
     start_at_ = Clock::now() + std::chrono::seconds(2);
     BuildClients();
   }
 
-  int Run() { return 0; }
+  int Run() {
+    ReportTimerDelay();
+    scheduler_->Start();
+    for (auto& backend : backends_) {
+      backend->Start();
+    };
+    for (auto& frontend : frontends_) {
+      frontend->Start();
+    }
+    for (size_t i = 0; i < loadgen_contexts_.size(); ++i) {
+      auto& l = loadgen_contexts_[i];
+      l.timer.expires_at(l.next_time);
+      l.timer.async_wait([this, i](boost::system::error_code ec) {
+        if (ec) return;
+        PostNextRequest(i);
+      });
+    }
+
+    threads_.emplace_back([this] {
+      while (!io_context_.stopped()) {
+        io_context_.poll();
+      }
+    });
+
+    long stop_offset_ns = 0;
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      auto& w = options_.models[i];
+      auto& l = loadgen_contexts_[i];
+      double duration = w.model_session.latency_sla() / 1e3 * 2;
+      duration += l.trace.warmup_duration + l.trace.bench_duration +
+                  l.trace.cooldown_duration;
+      long ns = l.start_offset_ns + duration * 1e9;
+      stop_offset_ns = std::max(stop_offset_ns, ns);
+    }
+    auto stop_at = start_at_ + std::chrono::nanoseconds(stop_offset_ns);
+
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool should_join = false;
+    boost::asio::system_timer wait_finish(io_context_, stop_at);
+    wait_finish.async_wait(
+        [this, &mutex, &cv, &should_join](boost::system::error_code) {
+          std::unique_lock lock(mutex);
+          should_join = true;
+          lock.unlock();
+          cv.notify_all();
+        });
+    {
+      std::unique_lock lock(mutex);
+      cv.wait(lock, [&should_join] { return should_join; });
+    }
+
+    for (auto& backend : backends_) {
+      backend->Stop();
+    };
+    for (auto& frontend : frontends_) {
+      frontend->Stop();
+    }
+    scheduler_->Stop();
+    io_context_.stop();
+    ReportTimerDelay();
+
+    for (auto iter = threads_.rbegin(); iter != threads_.rend(); ++iter) {
+      iter->join();
+    }
+    LOG(INFO) << "All threads joined.";
+
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%-12s %8s %8s %8s %8s %8s %8s", "model_name",
+             "noreply", "dropped", "timeout", "success", "total", "badrate");
+    LOG(INFO) << "Stats:";
+    LOG(INFO) << "  " << buf;
+    int sum_noreply = 0, sum_dropped = 0, sum_timeout = 0, sum_success = 0;
+    double worst_badrate = 0.0;
+    double throughput = 0;
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      const auto& m = options_.models[i];
+      auto trace = BuildTrace(m);
+      int cnt_noreply = 0, cnt_dropped = 0, cnt_timeout = 0, cnt_success = 0;
+      size_t n = query_collector_.last_query_id(i)->load();
+      auto bench_start_ns =
+          start_at_.time_since_epoch().count() + trace.warmup_duration * 1e9;
+      auto bench_end_ns = bench_start_ns + trace.bench_duration * 1e9;
+      const auto& queries = query_collector_.queries(i);
+      for (size_t j = 0; j < n; ++j) {
+        const auto& qctx = queries[j];
+        if (qctx.frontend_recv_ns < bench_start_ns ||
+            qctx.frontend_recv_ns > bench_end_ns) {
+          continue;
+        }
+        switch (qctx.status) {
+          case QueryCollector::QueryStatus::kDropped:
+            ++cnt_dropped;
+            break;
+          case QueryCollector::QueryStatus::kTimeout:
+            ++cnt_timeout;
+            break;
+          case QueryCollector::QueryStatus::kSuccess:
+            ++cnt_success;
+            break;
+          default:
+            ++cnt_noreply;
+            break;
+        }
+      }
+      const auto& model_name = options_.models[i].model_session.model_name();
+      int total = cnt_dropped + cnt_timeout + cnt_success + cnt_noreply;
+      double badrate = 100.0 - cnt_success * 100.0 / total;
+      snprintf(buf, sizeof(buf), "%-12s %8d %8d %8d %8d %8d %8.3f%%",
+               model_name.c_str(), cnt_noreply, cnt_dropped, cnt_timeout,
+               cnt_success, total, badrate);
+      LOG(INFO) << "  " << buf;
+      sum_noreply += cnt_noreply;
+      sum_dropped += cnt_dropped;
+      sum_timeout += cnt_timeout;
+      sum_success += cnt_success;
+      worst_badrate = std::max(worst_badrate, badrate);
+      throughput += total / trace.bench_duration;
+    }
+
+    int total_queries = sum_dropped + sum_timeout + sum_success + sum_noreply;
+    double avg_badrate = 100.0 - sum_success * 100.0 / total_queries;
+    snprintf(buf, sizeof(buf),
+             "%-12s %8d %8d %8d %8d %8d (avg %.3f%%, worst %.3f%%)", "TOTAL",
+             sum_noreply, sum_dropped, sum_timeout, sum_success, total_queries,
+             avg_badrate, worst_badrate);
+    LOG(INFO) << "  " << buf;
+    LOG(INFO) << "  Throughput: " << throughput << " rps";
+
+    if (sum_noreply) {
+      LOG(ERROR) << "Buggy scheduler. There are " << sum_noreply
+                 << " queries having no reply.";
+      return 1;
+    }
+    return 0;
+  }
 
  private:
+  struct TraceContext {
+    std::vector<TraceSegment> trace;
+    double warmup_duration;
+    double bench_duration;
+    double cooldown_duration;
+  };
+
   void BuildScheduler() {
-    scheduler_ = std::make_unique<Scheduler>(main_executor_.get(), &accessor_,
+    scheduler_ = std::make_unique<Scheduler>(&io_context_, &accessor_,
                                              Scheduler::Config::Default());
     accessor_.scheduler = scheduler_.get();
   }
 
   void BuildFakeServers() {
     std::vector<ModelSession> model_sessions;
+    double total_rps = 0;
     for (size_t i = 0; i < options_.models.size(); ++i) {
       const auto& m = options_.models[i];
       model_sessions.push_back(m.model_session);
       long slo_ns = m.model_session.latency_sla() * 1000000L;
-      query_collector_.AddModel(CalcReservedSize(i), slo_ns);
+
+      auto trace = BuildTrace(m);
+      query_collector_.AddModel(CalcReservedSize(trace), slo_ns);
+      double avg_rps = 0, duration = 0;
+      for (const auto& ts : trace.trace) {
+        avg_rps += ts.duration * ts.rps;
+        duration += ts.duration;
+      }
+      avg_rps /= duration;
+      total_rps += total_rps;
     }
+    ema_alpha_ = 1 - std::pow(0.5, 1 / total_rps);
 
     uint32_t next_backend_id = 10001;
     for (int i = 0; i < options_.backends; ++i) {
       auto backend_id = next_backend_id++;
       auto backend = std::make_shared<FakeNexusBackend>(
-          main_executor_.get(), &accessor_, backend_id, model_sessions);
+          &io_context_, &accessor_, backend_id, model_sessions);
       backends_.push_back(backend);
       accessor_.backends[backend_id] = backend.get();
 
@@ -111,7 +263,7 @@ class DispatcherRunner {
     for (int i = 0; i < options_.frontends; ++i) {
       uint32_t frontend_id = 60001 + i;
       auto frontend = std::make_shared<FakeNexusFrontend>(
-          main_executor_.get(), &accessor_, frontend_id);
+          &io_context_, &accessor_, frontend_id);
       frontends_.push_back(frontend);
       accessor_.frontends[frontend_id] = frontend.get();
 
@@ -132,12 +284,24 @@ class DispatcherRunner {
   }
 
   void BuildClients() {
-    for (int i = 0; i < options_.clients; ++i) {
+    for (int i = 0; i < options_.frontends; ++i) {
       for (size_t j = 0; j < options_.models.size(); ++j) {
-        loadgen_contexts_.push_back(LoadGenContext(main_executor_.get(), i, j));
+        loadgen_contexts_.push_back(LoadGenContext(&io_context_, i, j));
         InitLoadGen(loadgen_contexts_.size() - 1);
       }
     }
+  }
+
+  TraceContext BuildTrace(const ModelOptions& w) {
+    TraceContext l;
+    l.trace.insert(l.trace.end(), w.warmup.begin(), w.warmup.end());
+    l.trace.insert(l.trace.end(), w.bench.begin(), w.bench.end());
+    l.trace.insert(l.trace.end(), w.cooldown.begin(), w.cooldown.end());
+    l.warmup_duration = l.bench_duration = l.cooldown_duration = 0;
+    for (const auto& ts : w.warmup) l.warmup_duration += ts.duration;
+    for (const auto& ts : w.bench) l.bench_duration += ts.duration;
+    for (const auto& ts : w.cooldown) l.cooldown_duration += ts.duration;
+    return l;
   }
 
   void InitLoadGen(size_t loadgen_idx) {
@@ -147,15 +311,12 @@ class DispatcherRunner {
 
     const auto& w = options_.models[l.model_idx];
     l.seed = options_.seed + loadgen_idx * 31;
-    l.trace.insert(l.trace.end(), w.warmup.begin(), w.warmup.end());
-    l.trace.insert(l.trace.end(), w.bench.begin(), w.bench.end());
-    l.trace.insert(l.trace.end(), w.cooldown.begin(), w.cooldown.end());
-    l.warmup_duration = l.bench_duration = l.cooldown_duration = 0;
-    for (const auto& ts : w.warmup) l.warmup_duration += ts.duration;
-    for (const auto& ts : w.bench) l.bench_duration += ts.duration;
-    for (const auto& ts : w.cooldown) l.cooldown_duration += ts.duration;
+    l.trace = BuildTrace(w);
+    for (auto& ts : l.trace.trace) {
+      ts.rps /= options_.frontends;
+    }
 
-    double init_rps = l.trace.at(0).rps;
+    double init_rps = l.trace.trace.at(0).rps;
     std::mt19937 gen(l.seed);
     std::uniform_real_distribution<> dist;
     l.start_offset_ns = dist(gen) * 1e9 / init_rps;
@@ -168,8 +329,7 @@ class DispatcherRunner {
     l.model_session_id = ModelSessionToString(w.model_session);
   }
 
-  size_t CalcReservedSize(size_t workload_idx) {
-    auto& l = loadgen_contexts_[workload_idx];
+  size_t CalcReservedSize(const TraceContext& l) {
     double sz = 0;
     for (const auto& ts : l.trace) {
       sz += (1.0 + std::sqrt(ts.rps)) * ts.rps * ts.duration * 3;
@@ -177,9 +337,9 @@ class DispatcherRunner {
     return static_cast<size_t>(sz);
   }
 
-  void PrepareNextRequest(size_t workload_idx) {
-    auto& l = loadgen_contexts_[workload_idx];
-    const auto& workload = options_.models[workload_idx];
+  void PrepareNextRequest(size_t loadgen_idx) {
+    auto& l = loadgen_contexts_[loadgen_idx];
+    const auto& workload = options_.models[l.model_idx];
     auto gap_ns = static_cast<long>(l.gap_gen->Next() * 1e9);
     l.next_time += std::chrono::nanoseconds(gap_ns);
     auto next_time_ns = l.next_time.time_since_epoch().count();
@@ -193,15 +353,15 @@ class DispatcherRunner {
     query_collector_.ReceivedQuery(l.model_idx, query_id, next_time_ns);
   }
 
-  void PostNextRequest(size_t workload_idx) {
-    auto& w = options_.models[workload_idx];
-    auto& l = loadgen_contexts_[workload_idx];
+  void PostNextRequest(size_t loadgen_idx) {
+    auto& l = loadgen_contexts_[loadgen_idx];
+    auto& w = options_.models[l.model_idx];
     if (l.next_time >= l.ts_end_at) {
-      if (l.ts_idx == l.trace.size()) {
+      if (l.ts_idx == l.trace.trace.size()) {
         LOG(INFO) << "[" << l.model_session_id << "] Finished sending";
         return;
       }
-      const auto& ts = l.trace[l.ts_idx];
+      const auto& ts = l.trace.trace[l.ts_idx];
       LOG(INFO) << "[" << l.model_session_id
                 << "] Next TraceSegment idx=" << l.ts_idx << " rps=" << ts.rps
                 << " duration=" << ts.duration;
@@ -211,17 +371,40 @@ class DispatcherRunner {
       l.ts_idx += 1;
     }
 
-    PrepareNextRequest(workload_idx);
+    PrepareNextRequest(loadgen_idx);
     l.timer.expires_at(l.next_time);
-    l.timer.async_wait([this, workload_idx](boost::system::error_code ec) {
+    l.timer.async_wait([this, loadgen_idx](boost::system::error_code ec) {
       if (ec) return;
-      auto& l = loadgen_contexts_[workload_idx];
+      auto& l = loadgen_contexts_[loadgen_idx];
+      auto timer_delay_us = (Clock::now() - l.timer.expires_at()).count() / 1e3;
+      ema_timer_delay_us_ = (1 - ema_alpha_) * ema_timer_delay_us_.load() +
+                            ema_alpha_ * timer_delay_us;
+      ++cnt_timer_trigger_;
+      if (timer_delay_us > 1000) {
+        ++cnt_timer_delay_violation_;
+        LOG(WARNING) << "CPU overloaded. timer_delay="
+                     << static_cast<int>(timer_delay_us) << "us";
+      }
       l.model_handler->counter()->Increase(1);
       auto backend_id = l.model_handler->GetBackend();
       auto backend = accessor_.backends.at(backend_id);
       backend->EnqueueQuery(l.model_idx, l.query);
 
-      PostNextRequest(workload_idx);
+      PostNextRequest(loadgen_idx);
+    });
+  }
+
+  void ReportTimerDelay() {
+    auto bad = cnt_timer_delay_violation_.load();
+    auto all = cnt_timer_trigger_.load();
+    LOG(INFO) << "LoadGen timer EMA delay="
+              << static_cast<int>(ema_timer_delay_us_.load())
+              << "us violation=" << bad << "/" << all << "="
+              << (bad * 100.0 / all) << "%";
+    ema_report_timer_.expires_after(std::chrono::seconds(1));
+    ema_report_timer_.async_wait([this](boost::system::error_code ec) {
+      if (ec) return;
+      ReportTimerDelay();
     });
   }
 
@@ -233,11 +416,8 @@ class DispatcherRunner {
     std::shared_ptr<ModelHandler> model_handler;
 
     long seed;
-    std::vector<TraceSegment> trace;
-    double warmup_duration;
-    double bench_duration;
-    double cooldown_duration;
     long start_offset_ns;
+    TraceContext trace;
 
     std::atomic<uint64_t>* last_query_id;
     std::string model_session_id;
@@ -254,7 +434,7 @@ class DispatcherRunner {
   };
 
   Options options_;
-  std::shared_ptr<boost::asio::io_context> main_executor_;
+  boost::asio::io_context io_context_;
   QueryCollector query_collector_;
   std::unique_ptr<Scheduler> scheduler_;
   std::vector<std::shared_ptr<FakeNexusBackend>> backends_;
@@ -264,6 +444,11 @@ class DispatcherRunner {
 
   std::vector<std::thread> threads_;
   TimePoint start_at_;
+  boost::asio::system_timer ema_report_timer_;
+  double ema_alpha_ = 0;
+  std::atomic<double> ema_timer_delay_us_ = 0;
+  std::atomic<int> cnt_timer_delay_violation_ = 0;
+  std::atomic<int> cnt_timer_trigger_ = 0;
 };
 
 std::vector<TraceSegment> BuildTraceFromYaml(const YAML::Node& yaml,
@@ -296,10 +481,6 @@ Options Options::FromYaml(const YAML::Node& config) {
 
   // Number of GPUs
   opt.backends = config["backends"].as<int>(1);
-
-  // Number of clients
-  opt.clients = config["clients"].as<int>(1);
-  CHECK(opt.clients % opt.frontends == 0);
 
   // Models
   CHECK(config["models"].IsSequence());
@@ -345,6 +526,6 @@ int main(int argc, char** argv) {
   auto options = Options::FromYaml(config);
 
   google::InstallFailureSignalHandler();
-  DispatcherRunner bencher(std::move(options));
+  NexusRunner bencher(std::move(options));
   return bencher.Run();
 }

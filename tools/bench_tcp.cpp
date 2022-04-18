@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <boost/asio.hpp>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -7,8 +8,10 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -26,6 +29,7 @@ using TimePoint = std::chrono::time_point<Clock, std::chrono::nanoseconds>;
 void PrintErrorImpl(boost::asio::ip::tcp::socket& socket,
                     boost::system::error_code ec, int lineno) {
   if (ec) {
+    if (ec == boost::asio::error::operation_aborted) return;
     if (socket.is_open()) {
       fprintf(stderr, "L%d: Error peer=%s:%u code=%d message: %s\n", lineno,
               socket.remote_endpoint().address().to_string().c_str(),
@@ -279,13 +283,14 @@ class IncastBench {
     size_t warmups;
     size_t bench;
     size_t cooldown;
+    std::string dump_path;
   };
   IncastBench(Options options, boost::asio::io_context& io_context,
               bool& everyting_done)
       : options_(std::move(options)),
         io_context_(io_context),
-        everyting_done_(everyting_done),
-        test_elapse_ns_(options_.warmups + options_.bench + options_.cooldown) {
+        everyting_done_(everyting_done) {
+    count_elapse_us_.reserve(100000);
     for (size_t i = 0; i < options_.servers.size(); ++i) {
       clients_.push_back(std::make_unique<TcpClient>(io_context_));
     }
@@ -352,10 +357,13 @@ class IncastBench {
   }
 
   void TestDone(TimePoint test_done_time) {
-    auto elapse_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    auto elapse_us = std::chrono::duration_cast<std::chrono::microseconds>(
                          test_done_time - test_start_time_)
                          .count();
-    test_elapse_ns_[cnt_done_test_] = elapse_ns;
+    if (cnt_done_test_ >= options_.warmups &&
+        cnt_done_test_ < options_.warmups + options_.bench) {
+      ++count_elapse_us_[elapse_us];
+    }
     ++cnt_done_test_;
     ReportProgress(false);
     BenchMore();
@@ -381,14 +389,24 @@ class IncastBench {
     printf("avg bandwidth: %.3f Gbps\n", avg_gbps);
     printf("avg rate: %.3f kpps\n", avg_pps / 1000);
 
-    std::sort(test_elapse_ns_.begin(), test_elapse_ns_.end());
-    auto pp = [this](double p) {
-      size_t idx = std::floor(test_elapse_ns_.size() * p / 100.);
-      double latency_us = test_elapse_ns_[idx] / 1e3;
-      double throughput_gbps = target_complete_ * options_.read_size * 1.0 /
-                               test_elapse_ns_[idx] * 8;
-      printf("p%-5.2f: %4.0f us (%6.3f Gbps)\n", p, latency_us,
-             throughput_gbps);
+    std::vector<int> sorted_latency;
+    for (auto [latency, _] : count_elapse_us_) {
+      sorted_latency.push_back(latency);
+    }
+    std::sort(sorted_latency.begin(), sorted_latency.end());
+    int total_reqs = 0;
+    std::map<int, int> tail_latency;
+    for (auto latency : sorted_latency) {
+      tail_latency[total_reqs] = latency;
+      total_reqs += count_elapse_us_[latency];
+    }
+
+    auto pp = [this, total_reqs, &tail_latency](double p) {
+      int idx = static_cast<int>(std::floor(total_reqs * p / 100.));
+      int latency_us = tail_latency.lower_bound(idx)->second;
+      double throughput_gbps =
+          target_complete_ * options_.read_size * 8.0 / (latency_us * 1e3);
+      printf("p%-5.2f: %5d us (%6.3f Gbps)\n", p, latency_us, throughput_gbps);
     };
     pp(50);
     pp(75);
@@ -399,6 +417,18 @@ class IncastBench {
     pp(99.9);
     pp(99.95);
     pp(99.99);
+
+    if (FILE* f = fopen(options_.dump_path.c_str(), "w")) {
+      for (auto latency : sorted_latency) {
+        fprintf(f, "%d\t%d\n", latency, count_elapse_us_[latency]);
+      }
+      fclose(f);
+      fprintf(stderr, "Tail latency dumped to %s\n",
+              options_.dump_path.c_str());
+    } else {
+      fprintf(stderr, "Failed to dump tail latency to %s\n",
+              options_.dump_path.c_str());
+    }
 
     everyting_done_ = true;
   }
@@ -430,7 +460,7 @@ class IncastBench {
   std::vector<std::unique_ptr<TcpClient>> clients_;
   size_t cnt_connected_ = 0;
 
-  std::vector<long> test_elapse_ns_;
+  std::unordered_map<int, int> count_elapse_us_;
   TimePoint start_time_;
   TimePoint last_report_time_;
 
@@ -447,7 +477,7 @@ void DieUsage(const char* program) {
   printf("  %s server block|spin <listen_port> \n", program);
   printf(
       "  %s benchincast block|spin "
-      "<read_size> <concurrent_reads> <warmups> <tests> <cooldowns> "
+      "<read_size> <concurrent_reads> <warmups> <tests> <cooldowns> <dump_path>"
       "<ip:port>...\n",
       program);
   std::exit(1);
@@ -484,14 +514,15 @@ void ServerMain(int argc, char** argv) {
 }
 
 void IncastMain(int argc, char** argv) {
-  if (argc < 9) DieUsage(argv[0]);
+  if (argc < 10) DieUsage(argv[0]);
   IncastBench::Options options;
   options.read_size = std::stoul(argv[3]);
   options.concurrent_reads = std::stoul(argv[4]);
   options.warmups = std::stoul(argv[5]);
   options.bench = std::stoul(argv[6]);
   options.cooldown = std::stoul(argv[7]);
-  for (int i = 8; i < argc; ++i) {
+  options.dump_path = argv[8];
+  for (int i = 9; i < argc; ++i) {
     std::string s(argv[i]);
     auto pos = s.find(':');
     if (pos == std::string::npos) die("Failed to parse server address: " + s);

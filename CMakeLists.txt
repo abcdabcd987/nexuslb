@@ -362,6 +362,7 @@ target_link_libraries(ario_test PRIVATE ario)
 ###### tools/bench_tcp ######
 add_executable(bench_tcp tools/bench_tcp.cpp)
 target_link_libraries(bench_tcp PRIVATE Threads::Threads Boost::system)
+target_compile_options(bench_tcp PUBLIC -std=c++17)
 
 
 

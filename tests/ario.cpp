@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <map>
 #include <mutex>
 #include <random>
 #include <string>
@@ -20,8 +21,8 @@
 
 using namespace ario;
 
-constexpr size_t kRdmaBufPoolBits = __builtin_ctzl(16UL << 30);
-constexpr size_t kRdmaBufBlockBits = __builtin_ctzl(8 << 20);
+constexpr size_t kRdmaBufPoolBits = __builtin_ctzl(8UL << 30);
+constexpr size_t kRdmaBufBlockBits = __builtin_ctzl(256 << 10);
 
 #pragma pack(push, 1)
 struct RpcMessage {
@@ -186,7 +187,7 @@ class TestClientHandler : public TestHandler {
       program);
   printf(
       "  %s benchincast block|spin <dev_name> "
-      "<read_size> <concurrent_reads> <warmups> <tests> "
+      "<read_size> <concurrent_reads> <warmups> <tests> <dump_path> "
       "<ip:port>...\n",
       program);
   printf("  %s benchtimer block|spin <duration> <count>\n", program);
@@ -773,6 +774,7 @@ class IncastHandler : public ario::RdmaEventHandler {
     size_t concurrent_reads;
     size_t warmups;
     size_t tests;
+    std::string dump_path;
   };
 
   IncastHandler(Options options, ario::EpollExecutor &executor,
@@ -781,8 +783,9 @@ class IncastHandler : public ario::RdmaEventHandler {
         executor_(executor),
         allocator_(allocator),
         num_servers_(num_servers),
-        gen_(0xabcdabcd987LL),
-        test_elapse_ns_(options_.warmups + options_.tests) {}
+        gen_(0xabcdabcd987LL) {
+    count_elapse_us_.reserve(100000);
+  }
 
   void OnConnected(RdmaQueuePair *conn) override {}
   void OnRecv(RdmaQueuePair *conn, OwnedMemoryBlock buf) override {}
@@ -855,10 +858,13 @@ class IncastHandler : public ario::RdmaEventHandler {
   }
 
   void TestDone(TimePoint test_done_time) {
-    auto elapse_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    auto elapse_us = std::chrono::duration_cast<std::chrono::microseconds>(
                          test_done_time - test_start_time_)
                          .count();
-    test_elapse_ns_[cnt_done_test_] = elapse_ns;
+    if (cnt_done_test_ >= options_.warmups &&
+        cnt_done_test_ < options_.warmups + options_.tests) {
+      ++count_elapse_us_[elapse_us];
+    }
     ++cnt_done_test_;
     ReportProgress(false);
     BenchMore();
@@ -882,14 +888,24 @@ class IncastHandler : public ario::RdmaEventHandler {
     printf("avg bandwidth: %.3f Gbps\n", avg_gbps);
     printf("avg rate: %.3f kpps\n", avg_pps / 1000);
 
-    std::sort(test_elapse_ns_.begin(), test_elapse_ns_.end());
-    auto pp = [this](double p) {
-      size_t idx = std::floor(test_elapse_ns_.size() * p / 100.);
-      double latency_us = test_elapse_ns_[idx] / 1e3;
-      double throughput_gbps = target_complete_ * options_.read_size * 1.0 /
-                               test_elapse_ns_[idx] * 8;
-      printf("p%-5.2f: %4.0f us (%6.3f Gbps)\n", p, latency_us,
-             throughput_gbps);
+    std::vector<int> sorted_latency;
+    for (auto [latency, _] : count_elapse_us_) {
+      sorted_latency.push_back(latency);
+    }
+    std::sort(sorted_latency.begin(), sorted_latency.end());
+    int total_reqs = 0;
+    std::map<int, int> tail_latency;
+    for (auto latency : sorted_latency) {
+      tail_latency[total_reqs] = latency;
+      total_reqs += count_elapse_us_[latency];
+    }
+
+    auto pp = [this, total_reqs, &tail_latency](double p) {
+      int idx = static_cast<int>(std::floor(total_reqs * p / 100.));
+      int latency_us = tail_latency.lower_bound(idx)->second;
+      double throughput_gbps =
+          target_complete_ * options_.read_size * 8.0 / (latency_us * 1e3);
+      printf("p%-5.2f: %5d us (%6.3f Gbps)\n", p, latency_us, throughput_gbps);
     };
     pp(50);
     pp(75);
@@ -900,6 +916,18 @@ class IncastHandler : public ario::RdmaEventHandler {
     pp(99.9);
     pp(99.95);
     pp(99.99);
+
+    if (FILE *f = fopen(options_.dump_path.c_str(), "w")) {
+      for (auto latency : sorted_latency) {
+        fprintf(f, "%d\t%d\n", latency, count_elapse_us_[latency]);
+      }
+      fclose(f);
+      fprintf(stderr, "Tail latency dumped to %s\n",
+              options_.dump_path.c_str());
+    } else {
+      fprintf(stderr, "Failed to dump tail latency to %s\n",
+              options_.dump_path.c_str());
+    }
   }
 
   void ReportProgress(bool force) {
@@ -929,7 +957,7 @@ class IncastHandler : public ario::RdmaEventHandler {
   size_t num_servers_;
   std::vector<ServerInfo> servers_;
   std::mt19937 gen_;
-  std::vector<int64_t> test_elapse_ns_;
+  std::unordered_map<int, int> count_elapse_us_;
   TimePoint start_time_;
   TimePoint last_report_time_;
 
@@ -942,15 +970,16 @@ class IncastHandler : public ario::RdmaEventHandler {
 };
 
 void BenchIncastMain(int argc, char **argv) {
-  if (argc < 9) DieUsage(argv[0]);
+  if (argc < 10) DieUsage(argv[0]);
   std::string dev_name = argv[3];
   IncastHandler::Options options;
   options.read_size = std::stoul(argv[4]);
   options.concurrent_reads = std::stoul(argv[5]);
   options.warmups = std::stoul(argv[6]);
   options.tests = std::stoul(argv[7]);
+  options.dump_path = argv[8];
   std::vector<std::pair<std::string, uint16_t>> servers;
-  for (int i = 8; i < argc; ++i) {
+  for (int i = 9; i < argc; ++i) {
     std::string s(argv[i]);
     auto pos = s.find(':');
     if (pos == std::string::npos) die("Failed to parse server address: " + s);

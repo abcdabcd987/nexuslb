@@ -145,6 +145,11 @@ class DispatcherRunner {
       backend->DrainBatchPlans();
     }
 
+    FILE* fdump = nullptr;
+    if (!options_.dump_schedule.empty()) {
+      fdump = OpenLogFile(options_.dump_schedule);
+    }
+
     char buf[256];
     snprintf(buf, sizeof(buf), "%-12s %8s %8s %8s %8s %8s %8s", "model_name",
              "noreply", "dropped", "timeout", "success", "total", "badrate");
@@ -161,12 +166,19 @@ class DispatcherRunner {
       auto bench_start_ns = start_at_.time_since_epoch().count() +
                             l.start_offset_ns + l.warmup_duration * 1e9;
       auto bench_end_ns = bench_start_ns + l.bench_duration * 1e9;
+      size_t per_second_length =
+          static_cast<size_t>(std::ceil(l.bench_duration));
+      std::vector<int> per_second_send(per_second_length),
+          per_second_good(per_second_length);
       for (size_t j = 1; j <= n; ++j) {
         const auto& qctx = frontend->queries()[j];
         if (qctx.frontend_recv_ns < bench_start_ns ||
             qctx.frontend_recv_ns > bench_end_ns) {
           continue;
         }
+        long sec = (qctx.frontend_recv_ns - bench_start_ns) / 1000000000L;
+        CHECK(0 <= sec && sec < per_second_length);
+        ++per_second_send[sec];
         switch (qctx.status) {
           case FakeFrontendDelegate::QueryStatus::kDropped:
             ++cnt_dropped;
@@ -176,6 +188,7 @@ class DispatcherRunner {
             break;
           case FakeFrontendDelegate::QueryStatus::kSuccess:
             ++cnt_success;
+            ++per_second_good[sec];
             break;
           default:
             ++cnt_noreply;
@@ -195,6 +208,16 @@ class DispatcherRunner {
       sum_success += cnt_success;
       worst_badrate = std::max(worst_badrate, badrate);
       throughput += total / l.bench_duration;
+
+      if (fdump) {
+        fprintf(fdump, "PERSECOND-SEND %zu", i);
+        for (int x : per_second_send) fprintf(fdump, " %d", x);
+        fprintf(fdump, "\n");
+
+        fprintf(fdump, "PERSECOND-GOOD %zu", i);
+        for (int x : per_second_good) fprintf(fdump, " %d", x);
+        fprintf(fdump, "\n");
+      }
     }
 
     int total_queries = sum_dropped + sum_timeout + sum_success + sum_noreply;
@@ -206,8 +229,10 @@ class DispatcherRunner {
     LOG(INFO) << "  " << buf;
     LOG(INFO) << "  Throughput: " << throughput << " rps";
 
-    if (!options_.dump_schedule.empty()) {
-      DumpBatchplan();
+    if (fdump) {
+      DumpBatchplan(fdump);
+      CloseLogFile(options_.dump_schedule, fdump);
+      LOG(INFO) << "BatchPlan dumped to " << options_.dump_schedule;
     }
 
     if (sum_noreply) {
@@ -378,9 +403,7 @@ class DispatcherRunner {
     }
   }
 
-  void DumpBatchplan() {
-    FILE* f = OpenLogFile(options_.dump_schedule);
-    if (!f) return;
+  void DumpBatchplan(FILE* f) {
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
       int gpu_idx = backend_idx;
@@ -399,8 +422,6 @@ class DispatcherRunner {
                 model_idx, batch_size, exec_at, finish_at);
       }
     }
-    CloseLogFile(options_.dump_schedule, f);
-    LOG(INFO) << "BatchPlan dumped to " << options_.dump_schedule;
   }
 
   struct LoadGenContext {

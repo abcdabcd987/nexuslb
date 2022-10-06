@@ -9,7 +9,7 @@ TF_VERSION != grep -Po '(?<="tensorflow-).*(?=")' WORKSPACE
 CPU_SO := libtensorflow_wrapper.so.$(TF_VERSION)-cpu
 GPU_SO := libtensorflow_wrapper.so.$(TF_VERSION)-cuda$(TF_CUDA_VERSION)-cudnn$(TF_CUDNN_VERSION)
 
-DOCKER_IMAGE := gcr.io/tensorflow-testing/nosla-cuda11.2-cudnn8.1-ubuntu18.04-manylinux2010-multipython
+DOCKER_IMAGE := gcr.io/tensorflow-testing/nosla-cuda11.2-cudnn8.1-ubuntu20.04-manylinux2014-multipython
 DOCKER_NAME  := tensorflow_wrapper_builder
 DOCKER_START := docker run --rm -d --name $(DOCKER_NAME) -v $(shell pwd):/build --init $(DOCKER_IMAGE) sleep inf
 DOCKER_EXEC  := docker exec -t -w /build $(DOCKER_NAME)
@@ -17,7 +17,7 @@ DOCKER_CLEAN := $(DOCKER_EXEC) rm -rf bazel-bin bazel-out bazel-testlogs bazel-t
 DOCKER_STOP  := docker stop $(DOCKER_NAME)
 BAZEL_BUILD   = bazel build --color=yes --curses=yes \
 		--action_env=PYTHON_BIN_PATH=/usr/local/bin/python3.8 \
-		--crosstool_top=@org_tensorflow//third_party/toolchains/preconfig/ubuntu16.04/gcc7_manylinux2010-nvcc-cuda11.2:toolchain
+		--crosstool_top=@ubuntu20.04-gcc9_manylinux2014-cuda11.2-cudnn8.1-tensorrt7.2_config_cuda//crosstool:toolchain
 BAZEL_TARGET = //:libtensorflow_wrapper.so
 
 .NOTPARALLEL:

@@ -43,7 +43,7 @@ sudo ./mlnxofedinstall --without-fw-update --all
 
 ```bash
 wget https://developer.download.nvidia.com/compute/cuda/11.2.0/local_installers/cuda_11.2.0_460.27.04_linux.run
-sudo sh cuda_11.2.0_460.27.04_linux.run -silent -toolkit
+sudo sh cuda_11.2.0_460.27.04_linux.run --silent --toolkit
 sudo unlink /usr/local/cuda
 ```
 
@@ -70,8 +70,8 @@ git clone https://github.com/abcdabcd987/nexuslb.git
 cd nexuslb
 mkdir -p tensorflow/lib
 cd tensorflow/lib
-wget https://github.com/abcdabcd987/nexuslb/releases/download/libtensorflow_wrapper.so.2.5.0/libtensorflow_wrapper.so.2.5.0-cuda11.2-cudnn8
-ln -sf libtensorflow_wrapper.so.2.5.0-cuda11.2-cudnn8 libtensorflow_wrapper.so
+wget https://github.com/abcdabcd987/nexuslb/releases/download/libtensorflow_wrapper.so.2.10.0/libtensorflow_wrapper.so.2.10.0-cuda11.2-cudnn8
+ln -sf libtensorflow_wrapper.so.2.10.0-cuda11.2-cudnn8 libtensorflow_wrapper.so
 cd ../..
 ```
 
@@ -89,5 +89,6 @@ mkdir -p build
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=RelWithDebugInfo -DCUDA_PATH=/usr/local/cuda-11.2 -DUSE_TENSORFLOW=ON -DUSE_GPU=ON
 make -j$(nproc)
+cd ..
 python3 -m pip install --user --editable ./python
 ```

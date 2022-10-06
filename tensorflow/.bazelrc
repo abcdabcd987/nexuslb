@@ -1,19 +1,23 @@
 # Cherry-picked from https://github.com/tensorflow/tensorflow/blob/master/.bazelrc
 
 # TensorFlow common settings
+build --define=use_fast_cpp_protos=true
+build --define=allow_oversize_protos=true
 build --spawn_strategy=standalone
 build --announce_rc
 build --define=grpc_no_ares=true
 build --noincompatible_remove_legacy_whole_archive
-build --noincompatible_prohibit_aapt1
+build --define=with_xla_support=true
+build --experimental_cc_shared_library
 common --experimental_repo_remote_exec
 
-# TensorFlow uses C++14
-build --cxxopt=-std=c++14
-build --host_cxxopt=-std=c++14
+# TensorFlow uses C++17
+build --cxxopt=-std=c++17
+build --host_cxxopt=-std=c++17
 
 # Compiler optimization
 build -c opt
+build --copt=-mavx
 build --copt=-mavx2
 build --copt=-mfma
 
@@ -26,9 +30,9 @@ build --define=tf_api_version=2 --action_env=TF2_BEHAVIOR=1
 
 # Monolithic
 build --define=framework_shared_object=false
+buidl --experimental_link_static_libraries_once=false
 
 # Disable features
-build --define=with_xla_support=false
 build --define=no_aws_support=true
 build --define=no_gcp_support=true
 build --define=no_hdfs_support=true

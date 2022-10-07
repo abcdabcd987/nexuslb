@@ -2,101 +2,107 @@
 
 #include <glog/logging.h>
 
+#include "nexus/common/time_util.h"
+
 namespace nexus {
 namespace dispatcher {
 
-namespace {
+IncrementalBatchPolicy::IncrementalBatchPolicy(std::chrono::nanoseconds dctrl,
+                                               std::chrono::nanoseconds ddata,
+                                               SortedQueryList& queries)
+    : dctrl_(dctrl),
+      ddata_(ddata),
+      queries_(queries),
+      profile_(nullptr),
+      last_sched_at_(),
+      batch_size_(0),
+      deadline_(TimePoint::max()) {}
 
-void GetBatchByExpandedWindow(
-    TimePoint exec_time, uint32_t target_batch_size, SortedQueryList& queries,
-    const ModelProfile& profile, SortedQueryList& inputs,
-    std::vector<std::shared_ptr<QueryContext>>& drops) {
+void IncrementalBatchPolicy::Update(TimePoint sched_at, TimePoint gpu_free_at,
+                                    uint32_t target_batch_size) {
   using namespace std::chrono;
+  CHECK_NE(profile_, nullptr) << "Profile not set.";
+  CHECK(last_sched_at_ <= sched_at)
+      << "Time can't go backwards. diff="
+      << (last_sched_at_ - sched_at).count() / 1e3 << "us";
+  last_sched_at_ = sched_at;
+
   auto proc_elapse = nanoseconds(0);
   // TODO: WithNStd
   proc_elapse +=
-      nanoseconds(static_cast<long>(profile.GetPreprocessLatency() * 1e3));
+      nanoseconds(static_cast<long>(profile_->GetPreprocessLatency() * 1e3));
   proc_elapse +=
-      nanoseconds(static_cast<long>(profile.GetPostprocessLatency() * 1e3));
+      nanoseconds(static_cast<long>(profile_->GetPostprocessLatency() * 1e3));
 
-  // Drop existing timeout inputs
-  while (!inputs.empty()) {
-    auto deadline = (*inputs.begin())->deadline;
+  // Add new requests
+  for (auto& qctx : queries_) {
+    suffix_.insert(qctx);
+  }
+  queries_.clear();
+
+  // Update suffix
+  while (!suffix_.empty()) {
+    auto earliest_exec_at =
+        sched_at + dctrl_ + ddata_ * static_cast<long>(suffix_.size());
+    auto exec_at = std::max(earliest_exec_at, gpu_free_at);
     auto fwd_elapse = nanoseconds(
-        static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
-    auto finish_time = exec_time + fwd_elapse + proc_elapse;
-    if (deadline >= finish_time) {
+        static_cast<long>(profile_->GetForwardLatency(suffix_.size()) * 1e3));
+    auto finish_at = exec_at + fwd_elapse + proc_elapse;
+    auto deadline = (*suffix_.begin())->deadline;
+    if (deadline >= finish_at) {
       break;
     } else {
-      drops.push_back(*inputs.begin());
-      inputs.erase(inputs.begin());
-      auto& qctx = drops.back();
-      VLOG(1) << "Drop inputs. global_id=" << qctx->global_id.t
-              << " diff=" << (finish_time - qctx->deadline).count() / 1e3
-              << "us";
+      prefix_.insert(*suffix_.begin());
+      suffix_.erase(suffix_.begin());
     }
   }
-
-  // Sliding window policy
-  // See if there is any free lunch
-  while (!queries.empty()) {
-    if (inputs.size() < target_batch_size) {
-      auto bs =
-          std::min((size_t)target_batch_size, inputs.size() + queries.size());
-      inputs.insert(*queries.begin());
-      queries.erase(queries.begin());
-      auto deadline = (*inputs.begin())->deadline;
-      auto fwd_elapse =
-          nanoseconds(static_cast<long>(profile.GetForwardLatency(bs) * 1e3));
-      auto finish_time = exec_time + fwd_elapse + proc_elapse;
-      if (deadline < finish_time) {
-        drops.push_back(*inputs.begin());
-        inputs.erase(inputs.begin());
-        auto& qctx = drops.back();
-        VLOG(1) << "Drop head. global_id=" << qctx->global_id.t
-                << " diff=" << (finish_time - qctx->deadline).count() / 1e3
-                << "us";
-      }
-    } else {
-      auto deadline =
-          min((*inputs.begin())->deadline, (*queries.begin())->deadline);
-      auto fwd_elapse = nanoseconds(static_cast<long>(
-          profile.GetForwardLatency(inputs.size() + 1) * 1e3));
-      auto finish_time = exec_time + fwd_elapse + proc_elapse;
-      if (finish_time < deadline) {
-        inputs.insert(*queries.begin());
-        queries.erase(queries.begin());
-      } else {
-        break;
-      }
-    }
+  batch_size_ =
+      std::min(target_batch_size, static_cast<uint32_t>(suffix_.size()));
+  if (batch_size_ == 0) {
+    deadline_ = TimePoint::max();
+    return;
   }
 
-  // Sanity check
-  if (!inputs.empty()) {
+  // Match prefix
+  {
+    auto earliest_exec_at =
+        sched_at + dctrl_ + ddata_ * static_cast<long>(batch_size_);
+    auto exec_at = std::max(earliest_exec_at, gpu_free_at);
     auto fwd_elapse = nanoseconds(
-        static_cast<long>(profile.GetForwardLatency(inputs.size()) * 1e3));
-    auto finish_time = exec_time + fwd_elapse + proc_elapse;
-    auto deadline = (*inputs.begin())->deadline;
-    CHECK(deadline >= finish_time);
+        static_cast<long>(profile_->GetForwardLatency(batch_size_) * 1e3));
+    auto finish_at = exec_at + fwd_elapse + proc_elapse;
+    while (!prefix_.empty()) {
+      auto deadline = (*prefix_.begin())->deadline;
+      if (deadline >= finish_at) {
+        break;
+      } else {
+        drops_.push_back(*prefix_.begin());
+        prefix_.erase(prefix_.begin());
+      }
+    }
   }
-}
+  if (!prefix_.empty()) {
+    CHECK((*prefix_.rbegin())->deadline <= (*suffix_.begin())->deadline);
+    deadline_ = (*prefix_.begin())->deadline;
+  } else {
+    deadline_ = (*suffix_.begin())->deadline;
+  }
 
-}  // namespace
-
-IncrementalBatchPolicy::IncrementalBatchPolicy(SortedQueryList& queries)
-    : queries_(queries), profile_(nullptr), last_exec_time_() {}
-
-void IncrementalBatchPolicy::Update(TimePoint exec_time,
-                                    uint32_t target_batch_size) {
-  CHECK_NE(profile_, nullptr) << "Profile not set.";
-  CHECK(last_exec_time_ <= exec_time)
-      << "Time can't go backwards. diff="
-      << (last_exec_time_ - exec_time).count() / 1e3 << "us";
-  last_exec_time_ = exec_time;
-
-  GetBatchByExpandedWindow(exec_time, target_batch_size, queries_, *profile_,
-                           inputs_, drops_);
+  // Free lunch
+  auto total = prefix_.size() + suffix_.size();
+  while (batch_size_ < total) {
+    auto earliest_exec_at =
+        sched_at + dctrl_ + ddata_ * static_cast<long>(batch_size_ + 1);
+    auto exec_at = std::max(earliest_exec_at, gpu_free_at);
+    auto fwd_elapse = nanoseconds(
+        static_cast<long>(profile_->GetForwardLatency(batch_size_ + 1) * 1e3));
+    auto finish_at = exec_at + fwd_elapse + proc_elapse;
+    if (deadline_ >= finish_at) {
+      batch_size_++;
+    } else {
+      break;
+    }
+  }
 }
 
 void IncrementalBatchPolicy::SetProfile(const ModelProfile& profile) {
@@ -104,7 +110,18 @@ void IncrementalBatchPolicy::SetProfile(const ModelProfile& profile) {
 }
 
 SortedQueryList IncrementalBatchPolicy::PopInputs() {
-  return std::move(inputs_);
+  CHECK_LE(batch_size_, prefix_.size() + suffix_.size());
+  SortedQueryList inputs;
+  for (uint32_t i = 0; i < batch_size_; ++i) {
+    if (!prefix_.empty()) {
+      inputs.insert(*prefix_.begin());
+      prefix_.erase(prefix_.begin());
+    } else {
+      inputs.insert(*suffix_.begin());
+      suffix_.erase(suffix_.begin());
+    }
+  }
+  return std::move(inputs);
 }
 
 std::vector<std::shared_ptr<QueryContext>> IncrementalBatchPolicy::PopDrops() {

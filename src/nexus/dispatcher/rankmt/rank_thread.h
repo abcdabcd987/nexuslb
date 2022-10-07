@@ -1,6 +1,7 @@
 #ifndef NEXUS_DISPATCHER_RANKMT_RANK_THREAD_H_
 #define NEXUS_DISPATCHER_RANKMT_RANK_THREAD_H_
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -100,6 +101,7 @@ class RankThread {
   void OnPlanTimer(PerModelThreadData& mdata);
   void GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx);
   void UpdateGpu(GpuContext* gctx, TimePoint free_at);
+  void SetGpuTimer();
   void OnGpuTimer(GpuContext* gctx);
 
   void Poll();
@@ -114,7 +116,9 @@ class RankThread {
   std::vector<std::unique_ptr<PerModelThreadData>> model_threads_;
 
   ValueRankedSplayMap<GpuId, TimePoint> gpu_availability_pool_;
-  ValueRankedSplayMap<PerModelThreadData*, TimePoint> plan_pool_;
+  ValueRankedSplayMap<PerModelThreadData*, TimePoint> plans_rank_invalid_after_;
+  ValueRankedSplayMap<PerModelThreadData*, std::chrono::nanoseconds>
+      plans_rank_latency_;
 };
 
 }  // namespace rankmt

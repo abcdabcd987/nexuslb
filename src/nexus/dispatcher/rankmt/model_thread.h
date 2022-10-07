@@ -14,6 +14,7 @@
 #include "ario/ario.h"
 #include "nexus/common/model_db.h"
 #include "nexus/common/rps_meter.h"
+#include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/backend_delegate.h"
 #include "nexus/dispatcher/batch_policy.h"
@@ -112,6 +113,8 @@ class ModelThread {
   SortedQueryList unprocessed_queries_;
   IncrementalBatchPolicy batch_policy_;
   uint32_t target_batch_size_;
+  std::chrono::nanoseconds target_queuing_delay_;
+  TimePoint last_exec_at_;
   ExecutionCandidate candidate_;
   ario::Timer drop_timer_;
   ario::Timer invalidate_timer_;

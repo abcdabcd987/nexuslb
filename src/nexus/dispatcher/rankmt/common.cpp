@@ -1,9 +1,17 @@
 #include "nexus/dispatcher/rankmt/common.h"
 
 #include <gflags/gflags.h>
+#include <glog/logging.h>
+
+#include <optional>
+#include <string_view>
 
 using nexus::dispatcher::rankmt::RankmtConfig;
 
+DEFINE_string(
+    rankmt_schedulable, RankmtConfig::Default().schedulable.ToString(),
+    "Rankmt: condition for a Candidate to become schedulable. "
+    "Options: kImmediately, kTargetBatchSize, kTargetQueuingDelay, kFrontrun");
 DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
               "Rankmt: control plane latency in microseconds.");
 DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
@@ -20,8 +28,41 @@ namespace nexus {
 namespace dispatcher {
 namespace rankmt {
 
+constexpr const char* SchedulableCondition::ToString(SchedulableCondition c) {
+  switch (c.value_) {
+    case kImmediately:
+      return "kImmediately";
+    case kTargetBatchSize:
+      return "kTargetBatchSize";
+    case kTargetQueuingDelay:
+      return "kTargetQueuingDelay";
+    case kFrontrun:
+      return "kFrontrun";
+  }
+  CHECK(false) << "unreachable";
+}
+
+constexpr const char* SchedulableCondition::ToString() const {
+  return ToString(*this);
+}
+
+constexpr std::optional<SchedulableCondition> SchedulableCondition::Parse(
+    std::string_view s) {
+  if (s == "kImmediately") return SchedulableCondition::kImmediately;
+  if (s == "kTargetBatchSize") return SchedulableCondition::kTargetBatchSize;
+  if (s == "kTargetQueuingDelay")
+    return SchedulableCondition::kTargetQueuingDelay;
+  if (s == "kFrontrun") return SchedulableCondition::kFrontrun;
+  return std::nullopt;
+}
+
 RankmtConfig RankmtConfig::FromFlags() {
   RankmtConfig rankmt;
+  auto schedulable = SchedulableCondition::Parse(FLAGS_rankmt_schedulable);
+  if (!schedulable.has_value()) {
+    LOG(FATAL) << "Invalid value for --rankmt_schedulable";
+  }
+  rankmt.schedulable = schedulable.value();
   rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
   rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
   rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);

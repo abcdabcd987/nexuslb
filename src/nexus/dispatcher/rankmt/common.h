@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <variant>
 
 #include "nexus/common/model_db.h"
@@ -14,7 +15,35 @@ namespace nexus {
 namespace dispatcher {
 namespace rankmt {
 
+// Condition for a Candidate to become schedulable.
+class SchedulableCondition {
+ public:
+  enum Value {
+    // As soon as the Candidate is created.
+    kImmediately = 1,
+    // As soon as the Candidate reaches the target batch size.
+    kTargetBatchSize = 2,
+    // As soon as the Candidate has waited the target queuing delay.
+    kTargetQueuingDelay = 3,
+    // As soon as the current time reaches the Candidate's frontrun_at.
+    kFrontrun = 4,
+  };
+
+  constexpr SchedulableCondition() : value_(kTargetBatchSize) {}
+  constexpr SchedulableCondition(Value value) : value_(value) {}
+  constexpr operator Value() const { return value_; }
+  constexpr const char* ToString() const;
+  static constexpr const char* ToString(SchedulableCondition c);
+  static constexpr std::optional<SchedulableCondition> Parse(
+      std::string_view s);
+
+ private:
+  Value value_;
+};
+
 struct RankmtConfig {
+  SchedulableCondition schedulable;
+
   // Dispatcher -> Backend: Batchplan
   std::chrono::duration<long, std::nano> ctrl_latency;
 

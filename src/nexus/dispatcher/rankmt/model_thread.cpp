@@ -2,6 +2,7 @@
 
 #include <glog/logging.h>
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -37,6 +38,8 @@ ModelThread::ModelThread(
       rps_meter_timer_(*CHECK_NOTNULL(executor)),
       batch_policy_(unprocessed_queries_),
       target_batch_size_(0),
+      target_queuing_delay_(0),
+      last_exec_at_(TimePoint::min()),
       drop_timer_(*CHECK_NOTNULL(executor)),
       invalidate_timer_(*CHECK_NOTNULL(executor)) {
   // TODO: GPU performance heterogeneity
@@ -166,9 +169,13 @@ void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
     double time_budget_sec = time_budget.count();
     target_batch_size_ =
         bse_.Estimate(profile_, time_budget_sec, rps->avg, rps->std);
+    target_queuing_delay_ = std::chrono::nanoseconds(
+        static_cast<long>(target_batch_size_ / rps->avg * 1e9));
   } else {
     double time_budget_ms = model_session_.latency_sla() / 2.0;
     target_batch_size_ = profile_.GetMaxBatchWithFullBudget(time_budget_ms);
+    target_queuing_delay_ = std::chrono::nanoseconds(
+        static_cast<long>(model_session_.latency_sla() / 2.0 * 1e6));
   }
 }
 
@@ -183,13 +190,30 @@ void ModelThread::UpdateCandidate() {
   const auto& inputs = batch_policy_.inputs();
   if (!inputs.empty()) {
     auto deadline = (*inputs.begin())->deadline;
+    auto exec_elapse = EstimateExecElapse(profile_, inputs.size());
     auto frontrun_elapse = EstimateExecElapse(profile_, inputs.size() + 1);
+    auto latest_exec_at = deadline - exec_elapse;
     auto frontrun_exec_at = deadline - frontrun_elapse;
-    if (inputs.size() >= target_batch_size_) {
-      exec_at = earliest_exec_at;
-    } else {
-      exec_at = std::max(earliest_exec_at, frontrun_exec_at);
+
+    switch (config_.schedulable) {
+      case SchedulableCondition::kImmediately:
+        exec_at = earliest_exec_at;
+        break;
+      case SchedulableCondition::kTargetBatchSize:
+        exec_at = inputs.size() >= target_batch_size_ ? earliest_exec_at
+                                                      : frontrun_exec_at;
+        break;
+      case SchedulableCondition::kTargetQueuingDelay:
+        exec_at = last_exec_at_ + target_queuing_delay_;
+        break;
+      case SchedulableCondition::kFrontrun:
+        exec_at = frontrun_exec_at;
+        break;
+      default:
+        LOG(FATAL) << "Unreachable";
     }
+    exec_at = std::clamp(exec_at, earliest_exec_at, latest_exec_at);
+
     auto elapse = EstimateExecElapse(profile_, inputs.size());
     invalid_after = deadline - elapse;
     drop_timer_.SetTimeout(deadline);
@@ -311,6 +335,7 @@ TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
   delegate->EnqueueBatchPlan(std::move(proto));
 
   // Update candidate
+  last_exec_at_ = candidate_.exec_at;
   UpdateCandidate();
   return finish_at;
 }

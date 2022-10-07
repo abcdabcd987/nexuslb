@@ -55,6 +55,12 @@ void RpsMeter::SealCounter(TimePoint now) {
 
   // Maintain stddev
   std_ = std::sqrt(nvar_ / window_.size());
+
+  // Dealing with floating point issues
+  if (avg_ < 1e-9) {
+    avg_ = 0;
+    std_ = 0;
+  }
 }
 
 std::optional<AvgStd> RpsMeter::Get() {

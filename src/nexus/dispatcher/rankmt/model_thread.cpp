@@ -36,7 +36,8 @@ ModelThread::ModelThread(
       bse_(1.0, 0.0),
       rps_meter_(config.rpsmeter_window),
       rps_meter_timer_(*CHECK_NOTNULL(executor)),
-      batch_policy_(unprocessed_queries_),
+      batch_policy_(config_.ctrl_latency, config_.data_latency,
+                    unprocessed_queries_),
       target_batch_size_(0),
       target_queuing_delay_(0),
       last_exec_at_(TimePoint::min()),
@@ -151,7 +152,7 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   unprocessed_queries_.insert(qctx);
 
   // Update schedule
-  UpdateCandidate();
+  UpdateCandidate(TimePoint::min());
 
   // Notify the RankThread
   rank_thread_.PostExecutionCandidate(model_index_, candidate_);
@@ -179,29 +180,31 @@ void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   }
 }
 
-void ModelThread::UpdateCandidate() {
-  auto earliest_exec_at =
-      Clock::now() + config_.data_latency + config_.ctrl_latency;
+void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
+  auto sched_at = Clock::now();
   auto rps = rps_meter_.Get();
   UpdateTargetBatchSize(rps);
-  batch_policy_.Update(earliest_exec_at, target_batch_size_);
+  batch_policy_.Update(sched_at, gpu_free_at, target_batch_size_);
 
   TimePoint exec_at, invalid_after;
-  const auto& inputs = batch_policy_.inputs();
-  if (!inputs.empty()) {
-    auto deadline = (*inputs.begin())->deadline;
-    auto exec_elapse = EstimateExecElapse(profile_, inputs.size());
-    auto frontrun_elapse = EstimateExecElapse(profile_, inputs.size() + 1);
+  if (batch_policy_.batch_size() > 0) {
+    auto deadline = batch_policy_.deadline();
+    auto exec_elapse = EstimateExecElapse(profile_, batch_policy_.batch_size());
+    auto frontrun_elapse =
+        EstimateExecElapse(profile_, batch_policy_.batch_size() + 1);
     auto latest_exec_at = deadline - exec_elapse;
     auto frontrun_exec_at = deadline - frontrun_elapse;
+    auto earliest_exec_at =
+        sched_at + config_.data_latency + config_.ctrl_latency;
 
     switch (config_.schedulable) {
       case SchedulableCondition::kImmediately:
         exec_at = earliest_exec_at;
         break;
       case SchedulableCondition::kTargetBatchSize:
-        exec_at = inputs.size() >= target_batch_size_ ? earliest_exec_at
-                                                      : frontrun_exec_at;
+        exec_at = batch_policy_.batch_size() >= target_batch_size_
+                      ? earliest_exec_at
+                      : frontrun_exec_at;
         break;
       case SchedulableCondition::kTargetQueuingDelay:
         exec_at = last_exec_at_ + target_queuing_delay_;
@@ -209,12 +212,15 @@ void ModelThread::UpdateCandidate() {
       case SchedulableCondition::kFrontrun:
         exec_at = frontrun_exec_at;
         break;
+      case SchedulableCondition::kLatest:
+        exec_at = latest_exec_at;
+        break;
       default:
         LOG(FATAL) << "Unreachable";
     }
-    exec_at = std::clamp(exec_at, earliest_exec_at, latest_exec_at);
+    exec_at = std::max(earliest_exec_at, std::min(exec_at, latest_exec_at));
 
-    auto elapse = EstimateExecElapse(profile_, inputs.size());
+    auto elapse = EstimateExecElapse(profile_, batch_policy_.batch_size());
     invalid_after = deadline - elapse;
     drop_timer_.SetTimeout(deadline);
     drop_timer_.AsyncWait([this](ario::ErrorCode err) {
@@ -244,11 +250,11 @@ void ModelThread::UpdateCandidate() {
 
 void ModelThread::OnDropTimer() {
   if (stop_flag_) return;
-  if (batch_policy_.inputs().empty()) {
+  if (batch_policy_.batch_size() == 0) {
     return;
   }
 
-  UpdateCandidate();
+  UpdateCandidate(TimePoint::min());
   rank_thread_.PostExecutionCandidate(model_index_, candidate_);
 }
 
@@ -287,10 +293,9 @@ void ModelThread::SendDroppedQueries(
 TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
   using namespace std::chrono;
   auto now = Clock::now();
-  UpdateCandidate();
-  CHECK(candidate_.exec_at >= cmd._debug_free_at)
-      << "diff=" << (cmd._debug_free_at - candidate_.exec_at).count() * 1e-3
-      << "us";
+  UpdateCandidate(cmd.free_at);
+  CHECK(candidate_.exec_at >= cmd.free_at)
+      << "diff=" << (cmd.free_at - candidate_.exec_at).count() * 1e-3 << "us";
   auto inputs = batch_policy_.PopInputs();
   auto& delegate = gpus_.at(cmd.gpu_id);
 
@@ -336,7 +341,7 @@ TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
 
   // Update candidate
   last_exec_at_ = candidate_.exec_at;
-  UpdateCandidate();
+  UpdateCandidate(TimePoint::min());
   return finish_at;
 }
 

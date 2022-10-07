@@ -164,8 +164,10 @@ class DispatcherRunner {
       int cnt_noreply = 0, cnt_dropped = 0, cnt_timeout = 0, cnt_success = 0;
       auto n = loadgen_contexts_[i].last_query_id - 1;
       auto bench_start_ns = start_at_.time_since_epoch().count() +
-                            l.start_offset_ns + l.warmup_duration * 1e9;
-      auto bench_end_ns = bench_start_ns + l.bench_duration * 1e9;
+                            l.start_offset_ns +
+                            static_cast<long>(l.warmup_duration * 1e9);
+      auto bench_end_ns =
+          bench_start_ns + static_cast<long>(l.bench_duration * 1e9);
       size_t per_second_length =
           static_cast<size_t>(std::ceil(l.bench_duration));
       std::vector<int> per_second_send(per_second_length),

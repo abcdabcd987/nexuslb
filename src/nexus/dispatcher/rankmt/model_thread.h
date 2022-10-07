@@ -87,7 +87,7 @@ class ModelThread {
   TimePoint DoGrantedGpuMessage(GrantedGpuMessage& cmd);
 
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
-  void UpdateCandidate();
+  void UpdateCandidate(TimePoint gpu_free_at);
   void OnDropTimer();
   void SendDroppedQueries(
       const std::vector<std::shared_ptr<QueryContext>>& drops);

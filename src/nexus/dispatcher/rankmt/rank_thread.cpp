@@ -243,7 +243,7 @@ void RankThread::GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx) {
   GrantedGpuMessage msg;
   msg.gpu_id = gctx->gpu_id;
   msg.plan_id = NextPlanId();
-  msg._debug_free_at = gctx->free_at;
+  msg.free_at = gctx->free_at;
   mdata.model_thread.PostGrantedGpu(msg);
   VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
           << " id=" << msg.plan_id.t << " gpu=" << gctx->gpu_id;

@@ -27,6 +27,8 @@ class SchedulableCondition {
     kTargetQueuingDelay = 3,
     // As soon as the current time reaches the Candidate's frontrun_at.
     kFrontrun = 4,
+    // Latest possible
+    kLatest = 5,
   };
 
   constexpr SchedulableCondition() : value_(kTargetBatchSize) {}
@@ -86,7 +88,7 @@ struct ExecutionCandidate {
 struct GrantedGpuMessage {
   GpuId gpu_id;
   PlanId plan_id;
-  TimePoint _debug_free_at;
+  TimePoint free_at;
 };
 
 // ModelThread -> RankThread

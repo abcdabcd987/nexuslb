@@ -8,10 +8,11 @@
 
 using nexus::dispatcher::rankmt::RankmtConfig;
 
-DEFINE_string(
-    rankmt_schedulable, RankmtConfig::Default().schedulable.ToString(),
-    "Rankmt: condition for a Candidate to become schedulable. "
-    "Options: kImmediately, kTargetBatchSize, kTargetQueuingDelay, kFrontrun");
+DEFINE_string(rankmt_schedulable,
+              RankmtConfig::Default().schedulable.ToString(),
+              "Rankmt: condition for a Candidate to become schedulable. "
+              "Options: kImmediately, kTargetBatchSize, kTargetQueuingDelay, "
+              "kFrontrun, kLatest");
 DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
               "Rankmt: control plane latency in microseconds.");
 DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
@@ -38,6 +39,8 @@ constexpr const char* SchedulableCondition::ToString(SchedulableCondition c) {
       return "kTargetQueuingDelay";
     case kFrontrun:
       return "kFrontrun";
+    case kLatest:
+      return "kLatest";
   }
   CHECK(false) << "unreachable";
 }
@@ -53,6 +56,7 @@ constexpr std::optional<SchedulableCondition> SchedulableCondition::Parse(
   if (s == "kTargetQueuingDelay")
     return SchedulableCondition::kTargetQueuingDelay;
   if (s == "kFrontrun") return SchedulableCondition::kFrontrun;
+  if (s == "kLatest") return SchedulableCondition::kLatest;
   return std::nullopt;
 }
 

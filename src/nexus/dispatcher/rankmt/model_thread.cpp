@@ -142,8 +142,6 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
       request.query_without_input().clock().frontend_recv_ns()));
   deadline += std::chrono::milliseconds(model_session_.latency_sla());
   deadline -= config_.resp_latency;  // Backend -> Frontend: results
-  constexpr auto kBackendExecutionDelay = std::chrono::microseconds(2000);
-  deadline -= kBackendExecutionDelay;  // FIXME: investigate this
 
   auto qctx = std::make_shared<QueryContext>(std::move(request), deadline);
 
@@ -162,14 +160,12 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
 
 void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   if (rps.has_value()) {
-    double sec = model_session_.latency_sla() * 1e-3;
-    std::chrono::duration<double> time_budget(sec);
+    auto time_budget =
+        std::chrono::nanoseconds(model_session_.latency_sla() * 1000000L);
     time_budget -= config_.ctrl_latency;
-    time_budget -= config_.data_latency;
     time_budget -= config_.resp_latency;
-    double time_budget_sec = time_budget.count();
-    target_batch_size_ =
-        bse_.Estimate(profile_, time_budget_sec, rps->avg, rps->std);
+    target_batch_size_ = bse_.Estimate(
+        profile_, time_budget, config_.data_latency, rps->avg, rps->std);
     target_queuing_delay_ = std::chrono::nanoseconds(
         static_cast<long>(target_batch_size_ / rps->avg * 1e9));
   } else {
@@ -187,24 +183,25 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
   batch_policy_.Update(sched_at, gpu_free_at, target_batch_size_);
 
   TimePoint exec_at, invalid_after;
-  if (batch_policy_.batch_size() > 0) {
+  auto bs = batch_policy_.batch_size();
+  if (bs > 0) {
+    constexpr auto kTimerJitter = std::chrono::microseconds(100);
+    auto data_latency = config_.data_latency * bs;
     auto deadline = batch_policy_.deadline();
-    auto exec_elapse = EstimateExecElapse(profile_, batch_policy_.batch_size());
-    auto frontrun_elapse =
-        EstimateExecElapse(profile_, batch_policy_.batch_size() + 1);
-    auto latest_exec_at = deadline - exec_elapse;
-    auto frontrun_exec_at = deadline - frontrun_elapse;
-    auto earliest_exec_at =
-        sched_at + config_.data_latency + config_.ctrl_latency;
+    auto exec_elapse = EstimateExecElapse(profile_, bs);
+    auto frontrun_elapse = EstimateExecElapse(profile_, bs + 1);
+    auto latest_exec_at = deadline - kTimerJitter - exec_elapse;
+    auto frontrun_exec_at =
+        deadline - kTimerJitter - frontrun_elapse - config_.data_latency;
+    auto earliest_exec_at = sched_at + data_latency + config_.ctrl_latency;
 
     switch (config_.schedulable) {
       case SchedulableCondition::kImmediately:
         exec_at = earliest_exec_at;
         break;
       case SchedulableCondition::kTargetBatchSize:
-        exec_at = batch_policy_.batch_size() >= target_batch_size_
-                      ? earliest_exec_at
-                      : frontrun_exec_at;
+        exec_at =
+            bs >= target_batch_size_ ? earliest_exec_at : frontrun_exec_at;
         break;
       case SchedulableCondition::kTargetQueuingDelay:
         exec_at = last_exec_at_ + target_queuing_delay_;
@@ -218,16 +215,16 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
       default:
         LOG(FATAL) << "Unreachable";
     }
-    exec_at = std::max(earliest_exec_at, std::min(exec_at, latest_exec_at));
+    exec_at = std::max(
+        {earliest_exec_at, gpu_free_at, std::min(exec_at, latest_exec_at)});
+    invalid_after = deadline - exec_elapse;
 
-    auto elapse = EstimateExecElapse(profile_, batch_policy_.batch_size());
-    invalid_after = deadline - elapse;
     drop_timer_.SetTimeout(deadline);
     drop_timer_.AsyncWait([this](ario::ErrorCode err) {
       if (err != ario::ErrorCode::kOk) return;
       OnDropTimer();
     });
-    invalidate_timer_.SetTimeout(invalid_after - config_.data_latency -
+    invalidate_timer_.SetTimeout(invalid_after - data_latency -
                                  config_.ctrl_latency);
     invalidate_timer_.AsyncWait([this](ario::ErrorCode err) {
       if (err != ario::ErrorCode::kOk) return;
@@ -240,7 +237,7 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
     invalidate_timer_.CancelAll();
   }
 
-  candidate_ = ExecutionCandidate{exec_at, invalid_after};
+  candidate_ = ExecutionCandidate{bs, exec_at, invalid_after};
 
   // Send dropped queries
   if (!batch_policy_.drops().empty()) {

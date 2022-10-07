@@ -76,11 +76,12 @@ std::chrono::nanoseconds EstimateExecElapse(const ModelProfile& profile,
                                             uint32_t batch_size);
 
 struct ExecutionCandidate {
+  uint32_t batch_size;
   TimePoint exec_at;
   TimePoint invalid_after;
 
   static ExecutionCandidate Invalid() {
-    return {TimePoint::max(), TimePoint::min()};
+    return {0, TimePoint::max(), TimePoint::min()};
   }
 };
 

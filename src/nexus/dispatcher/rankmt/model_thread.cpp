@@ -194,7 +194,27 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
     auto frontrun_exec_at =
         deadline - kTimerJitter - frontrun_elapse - config_.data_latency;
     auto earliest_exec_at = sched_at + data_latency + config_.ctrl_latency;
-    exec_at = bs >= target_batch_size_ ? earliest_exec_at : frontrun_exec_at;
+
+    switch (config_.schedulable) {
+      case SchedulableCondition::kImmediately:
+        exec_at = earliest_exec_at;
+        break;
+      case SchedulableCondition::kTargetBatchSize:
+        exec_at =
+            bs >= target_batch_size_ ? earliest_exec_at : frontrun_exec_at;
+        break;
+      case SchedulableCondition::kTargetQueuingDelay:
+        exec_at = last_exec_at_ + target_queuing_delay_;
+        break;
+      case SchedulableCondition::kFrontrun:
+        exec_at = frontrun_exec_at;
+        break;
+      case SchedulableCondition::kLatest:
+        exec_at = latest_exec_at;
+        break;
+      default:
+        LOG(FATAL) << "Unreachable";
+    }
     exec_at = std::max(
         {earliest_exec_at, gpu_free_at, std::min(exec_at, latest_exec_at)});
     invalid_after = deadline - exec_elapse;

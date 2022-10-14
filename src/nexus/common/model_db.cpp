@@ -147,9 +147,11 @@ void ModelProfile::ForceMonotonicity() {
 
 double ModelProfile::GetForwardLatency(uint32_t batch) const {
   if (batch == 0 || batch >= forward_lats_.size()) {
-    LOG(FATAL) << "Cannot find forward latency: model=" << profile_id()
-               << " batch=" << batch;
-    return 0.;
+    // LOG(FATAL) << "Cannot find forward latency: model=" << profile_id()
+    //            << " batch=" << batch;
+    // return 0.;
+
+    return 3600 * 1e6;  // FIXME
   }
   auto entry = forward_lats_.at(batch);
   return entry.latency_mean + entry.latency_std;

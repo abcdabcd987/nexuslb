@@ -89,8 +89,7 @@ class ModelThread {
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
   void UpdateCandidate(TimePoint gpu_free_at);
   void OnDropTimer();
-  void SendDroppedQueries(
-      const std::vector<std::shared_ptr<QueryContext>>& drops);
+  void SendDroppedQueries(const SortedQueryList& drops);
   void OnRpsMeterTimer();
 
   RankmtConfig config_;

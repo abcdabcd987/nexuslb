@@ -237,7 +237,7 @@ class DispatcherRunner {
       LOG(INFO) << "BatchPlan dumped to " << options_.dump_schedule;
     }
 
-    if (sum_noreply) {
+    if (sum_noreply && rankmt_options_.drop != DropPolicy::kWindowFCFS) {
       LOG(ERROR) << "Buggy scheduler. There are " << sum_noreply
                  << " queries having no reply.";
       return 1;

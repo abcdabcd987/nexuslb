@@ -6,6 +6,8 @@
 #include <optional>
 #include <string_view>
 
+#include "nexus/dispatcher/batch_policy.h"
+
 using nexus::dispatcher::rankmt::RankmtConfig;
 
 DEFINE_string(rankmt_schedulable,
@@ -13,6 +15,9 @@ DEFINE_string(rankmt_schedulable,
               "Rankmt: condition for a Candidate to become schedulable. "
               "Options: kImmediately, kTargetBatchSize, kTargetQueuingDelay, "
               "kFrontrun, kLatest");
+DEFINE_string(rankmt_drop, RankmtConfig::Default().drop.ToString(),
+              "Rankmt: Whether to drop head of queue during batching. "
+              "Options: kDropTimeout, kWindowDrop, kWindowFCFS");
 DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
               "Rankmt: control plane latency in microseconds.");
 DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
@@ -27,6 +32,28 @@ DEFINE_uint64(rankmt_rpsmeter_window, RankmtConfig::Default().rpsmeter_window,
 
 namespace nexus {
 namespace dispatcher {
+
+constexpr const char* DropPolicy::ToString(DropPolicy c) {
+  switch (c.value_) {
+    case kDropTimeout:
+      return "kDropTimeout";
+    case kWindowDrop:
+      return "kWindowDrop";
+    case kWindowFCFS:
+      return "kWindowFCFS";
+  }
+  LOG(FATAL) << "DropPolicy: unreachable";
+}
+
+constexpr const char* DropPolicy::ToString() const { return ToString(*this); }
+
+constexpr std::optional<DropPolicy> DropPolicy::Parse(std::string_view s) {
+  if (s == "kDropTimeout") return DropPolicy::kDropTimeout;
+  if (s == "kWindowDrop") return DropPolicy::kWindowDrop;
+  if (s == "kWindowFCFS") return DropPolicy::kWindowFCFS;
+  return std::nullopt;
+}
+
 namespace rankmt {
 
 constexpr const char* SchedulableCondition::ToString(SchedulableCondition c) {
@@ -66,7 +93,12 @@ RankmtConfig RankmtConfig::FromFlags() {
   if (!schedulable.has_value()) {
     LOG(FATAL) << "Invalid value for --rankmt_schedulable";
   }
+  auto drop = DropPolicy::Parse(FLAGS_rankmt_drop);
+  if (!drop.has_value()) {
+    LOG(FATAL) << "Invalid value for --rankmt_drop";
+  }
   rankmt.schedulable = schedulable.value();
+  rankmt.drop = drop.value();
   rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
   rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
   rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);

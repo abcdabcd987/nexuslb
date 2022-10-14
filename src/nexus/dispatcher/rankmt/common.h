@@ -10,6 +10,7 @@
 #include "nexus/common/model_db.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
+#include "nexus/dispatcher/batch_policy.h"
 
 namespace nexus {
 namespace dispatcher {
@@ -45,6 +46,7 @@ class SchedulableCondition {
 
 struct RankmtConfig {
   SchedulableCondition schedulable;
+  DropPolicy drop;
 
   // Dispatcher -> Backend: Batchplan
   std::chrono::duration<long, std::nano> ctrl_latency;

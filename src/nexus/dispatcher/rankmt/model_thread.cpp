@@ -12,6 +12,8 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
+#include "nexus/dispatcher/batch_policy.h"
+#include "nexus/dispatcher/query_context.h"
 #include "nexus/dispatcher/rankmt/rank_thread.h"
 
 namespace nexus {
@@ -36,7 +38,7 @@ ModelThread::ModelThread(
       bse_(1.0, 0.0),
       rps_meter_(config.rpsmeter_window),
       rps_meter_timer_(*CHECK_NOTNULL(executor)),
-      batch_policy_(config_.ctrl_latency, config_.data_latency,
+      batch_policy_(config_.drop, config_.ctrl_latency, config_.data_latency,
                     unprocessed_queries_),
       target_batch_size_(0),
       target_queuing_delay_(0),
@@ -159,6 +161,11 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
 }
 
 void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
+  if (config_.drop == DropPolicy::kDropTimeout) {
+    target_batch_size_ = 1;
+    target_queuing_delay_ = std::chrono::nanoseconds(0);
+    return;
+  }
   if (rps.has_value()) {
     auto time_budget =
         std::chrono::nanoseconds(model_session_.latency_sla() * 1000000L);
@@ -240,7 +247,7 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
   candidate_ = ExecutionCandidate{bs, exec_at, invalid_after};
 
   // Send dropped queries
-  if (!batch_policy_.drops().empty()) {
+  if (batch_policy_.CountDrops() > 0) {
     SendDroppedQueries(batch_policy_.PopDrops());
   }
 }
@@ -255,8 +262,7 @@ void ModelThread::OnDropTimer() {
   rank_thread_.PostExecutionCandidate(model_index_, candidate_);
 }
 
-void ModelThread::SendDroppedQueries(
-    const std::vector<std::shared_ptr<QueryContext>>& drops) {
+void ModelThread::SendDroppedQueries(const SortedQueryList& drops) {
   std::unordered_map<NodeId, DispatchReply> replies;
 
   for (auto& qctx : drops) {

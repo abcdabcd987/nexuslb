@@ -59,6 +59,7 @@ struct Options {
   int64_t seed;
   int frontends;
   int backends;
+  std::string dump_schedule;
   std::vector<ModelOptions> models;
   YAML::Node static_schedule;
 
@@ -144,6 +145,11 @@ class NexusRunner {
     }
     LOG(INFO) << "All threads joined.";
 
+    FILE* fdump = nullptr;
+    if (!options_.dump_schedule.empty()) {
+      fdump = OpenLogFile(options_.dump_schedule);
+    }
+
     char buf[256];
     snprintf(buf, sizeof(buf), "%-12s %8s %8s %8s %8s %8s %8s", "model_name",
              "noreply", "dropped", "timeout", "success", "total", "badrate");
@@ -160,6 +166,10 @@ class NexusRunner {
       auto bench_start_ns =
           start_at_.time_since_epoch().count() + trace.warmup_duration * 1e9;
       auto bench_end_ns = bench_start_ns + trace.bench_duration * 1e9;
+      size_t per_second_length =
+          static_cast<size_t>(std::ceil(trace.bench_duration));
+      std::vector<int> per_second_send(per_second_length),
+          per_second_good(per_second_length);
       const auto& queries = query_collector_.queries(i);
       for (size_t j = 0; j < n; ++j) {
         const auto& qctx = queries[j];
@@ -167,6 +177,9 @@ class NexusRunner {
             qctx.frontend_recv_ns > bench_end_ns) {
           continue;
         }
+        long sec = (qctx.frontend_recv_ns - bench_start_ns) / 1000000000L;
+        CHECK(0 <= sec && sec < per_second_length);
+        ++per_second_send[sec];
         switch (qctx.status) {
           case QueryCollector::QueryStatus::kDropped:
             ++cnt_dropped;
@@ -176,6 +189,7 @@ class NexusRunner {
             break;
           case QueryCollector::QueryStatus::kSuccess:
             ++cnt_success;
+            ++per_second_good[sec];
             break;
           default:
             ++cnt_noreply;
@@ -195,6 +209,16 @@ class NexusRunner {
       sum_success += cnt_success;
       worst_badrate = std::max(worst_badrate, badrate);
       throughput += total / trace.bench_duration;
+
+      if (fdump) {
+        fprintf(fdump, "PERSECOND-SEND %zu", i);
+        for (int x : per_second_send) fprintf(fdump, " %d", x);
+        fprintf(fdump, "\n");
+
+        fprintf(fdump, "PERSECOND-GOOD %zu", i);
+        for (int x : per_second_good) fprintf(fdump, " %d", x);
+        fprintf(fdump, "\n");
+      }
     }
 
     int total_queries = sum_dropped + sum_timeout + sum_success + sum_noreply;
@@ -205,6 +229,12 @@ class NexusRunner {
              avg_badrate, worst_badrate);
     LOG(INFO) << "  " << buf;
     LOG(INFO) << "  Throughput: " << throughput << " rps";
+
+    if (fdump) {
+      DumpBatchplan(fdump);
+      CloseLogFile(options_.dump_schedule, fdump);
+      LOG(INFO) << "BatchPlan dumped to " << options_.dump_schedule;
+    }
 
     if (sum_noreply) {
       LOG(ERROR) << "Buggy scheduler. There are " << sum_noreply
@@ -412,6 +442,48 @@ class NexusRunner {
     });
   }
 
+  FILE* OpenLogFile(const std::string& path) {
+    if (options_.dump_schedule == "stdout") {
+      return stdout;
+    }
+    FILE* f = fopen(options_.dump_schedule.c_str(), "w");
+    if (!f) {
+      LOG(ERROR) << "Cannot open log file to write: " << options_.dump_schedule;
+      return nullptr;
+    }
+    return f;
+  }
+
+  void CloseLogFile(const std::string& path, FILE* f) {
+    if (options_.dump_schedule != "stdout") {
+      fclose(f);
+    }
+  }
+
+  void DumpBatchplan(FILE* f) {
+    int next_plan_id = 1;
+    for (size_t backend_idx = 0; backend_idx < backends_.size();
+         ++backend_idx) {
+      int gpu_idx = backend_idx;
+      const auto& archive = backends_[backend_idx]->batchplan_archive();
+      for (const auto& p : archive) {
+        int model_idx = p.model_idx;
+        int plan_id = next_plan_id++;
+        int batch_size = p.batch_size;
+        const auto& l = loadgen_contexts_[model_idx];
+        auto bench_start_ns = start_at_.time_since_epoch().count() +
+                              static_cast<long>(l.trace.warmup_duration * 1e9);
+        double exec_at =
+            (p.exec_at.time_since_epoch().count() - bench_start_ns) / 1e9;
+        double finish_at =
+            (p.finish_at.time_since_epoch().count() - bench_start_ns) / 1e9;
+        if (exec_at < 0 || finish_at > l.trace.bench_duration) continue;
+        fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
+                model_idx, batch_size, exec_at, finish_at);
+      }
+    }
+  }
+
   struct LoadGenContext {
     boost::asio::system_timer timer;
     size_t client_idx;
@@ -485,6 +557,11 @@ Options Options::FromYaml(const YAML::Node& config) {
 
   // Number of GPUs
   opt.backends = config["backends"].as<int>(1);
+
+  // Dump Schedule. Options: `false`, `stdout`, or path
+  if (config["dump_schedule"].as<bool>(true)) {
+    opt.dump_schedule = config["dump_schedule"].as<std::string>("");
+  }
 
   // Static schedule
   opt.static_schedule = config["schedule"];

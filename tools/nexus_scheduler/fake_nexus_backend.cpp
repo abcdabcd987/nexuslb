@@ -4,6 +4,7 @@
 
 #include "nexus/common/model_db.h"
 #include "nexus/common/model_def.h"
+#include "nexus/common/time_util.h"
 #include "nexus_scheduler/fake_nexus_frontend.h"
 #include "nexus_scheduler/query_collector.h"
 
@@ -71,12 +72,14 @@ void FakeNexusBackend::ContinueExecution() {
     }
     exec_->exec_cycle_us += latency_us;
 
-    exec_timer_.expires_from_now(
-        std::chrono::nanoseconds(static_cast<long>(latency_us * 1e3)));
-    exec_timer_.async_wait([this](boost::system::error_code ec) {
+    auto exec_at = Clock::now();
+    exec_timer_.expires_at(exec_at + std::chrono::nanoseconds(
+                                         static_cast<long>(latency_us * 1e3)));
+    exec_timer_.async_wait([this, exec_at](boost::system::error_code ec) {
       if (ec) return;
       CHECK(exec_.has_value());
-      auto finish_ns = exec_timer_.expires_at().time_since_epoch().count();
+      auto finish_at = exec_timer_.expires_at();
+      auto finish_ns = finish_at.time_since_epoch().count();
       for (const auto& q : exec_->batch.inputs) {
         accessor_.query_collector->GotSuccessReply(exec_->model_idx, q.query_id,
                                                    finish_ns);
@@ -84,6 +87,14 @@ void FakeNexusBackend::ContinueExecution() {
       for (const auto& q : exec_->batch.drops) {
         accessor_.query_collector->GotDroppedReply(exec_->model_idx,
                                                    q.query_id);
+      }
+      if (!exec_->batch.inputs.empty()) {
+        exec_history_.push_back(ExecutionHistoryEntry{
+            .model_idx = static_cast<int>(exec_->model_idx),
+            .batch_size = static_cast<int>(exec_->batch.inputs.size()),
+            .exec_at = exec_at,
+            .finish_at = finish_at,
+        });
       }
 
       ++exec_->model_idx;

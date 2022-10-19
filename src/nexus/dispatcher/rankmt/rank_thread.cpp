@@ -191,21 +191,28 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
 
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   CHECK(mdata.candidate.has_value());
-  const auto& candidate = mdata.candidate.value();
-  auto latency =
-      config_.ctrl_latency + config_.data_latency * candidate.batch_size;
-  auto send_at = candidate.exec_at - latency;
-  // Although Timer accepts expiration time at the past,
-  // taking max with now here so that we can measure the timer delay
-  // using Timer::timeout. See the beginning of OnPlanTimer.
-  auto now = Clock::now();
-  mdata.send_timer.SetTimeout(std::max(send_at, now));
-  mdata.send_timer.AsyncWait([this, pmdata = &mdata](ario::ErrorCode error) {
-    if (error == ario::ErrorCode::kCancelled) return;
-    OnPlanTimer(*pmdata);
-  });
   plans_rank_invalid_after_.Remove(&mdata);
   plans_rank_latency_.Remove(&mdata);
+  if (mdata.candidate->batch_size == 0 ||
+      mdata.candidate->exec_at == TimePoint::max() ||
+      mdata.candidate->invalid_after == TimePoint::min()) {
+    mdata.send_timer.CancelAll();
+    mdata.candidate = std::nullopt;
+  } else {
+    const auto& candidate = mdata.candidate.value();
+    auto latency =
+        config_.ctrl_latency + config_.data_latency * candidate.batch_size;
+    auto send_at = candidate.exec_at - latency;
+    // Although Timer accepts expiration time at the past,
+    // taking max with now here so that we can measure the timer delay
+    // using Timer::timeout. See the beginning of OnPlanTimer.
+    auto now = Clock::now();
+    mdata.send_timer.SetTimeout(std::max(send_at, now));
+    mdata.send_timer.AsyncWait([this, pmdata = &mdata](ario::ErrorCode error) {
+      if (error == ario::ErrorCode::kCancelled) return;
+      OnPlanTimer(*pmdata);
+    });
+  }
   SetGpuTimer();
 }
 

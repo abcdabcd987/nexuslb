@@ -208,7 +208,7 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
         break;
       case SchedulableCondition::kTargetBatchSize:
         exec_at =
-            bs >= target_batch_size_ ? earliest_exec_at : frontrun_exec_at;
+            bs >= target_batch_size_ ? earliest_exec_at : TimePoint::max();
         break;
       case SchedulableCondition::kTargetQueuingDelay:
         exec_at = last_exec_at_ + target_queuing_delay_;
@@ -222,21 +222,28 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
       default:
         LOG(FATAL) << "Unreachable";
     }
-    exec_at = std::max(
-        {earliest_exec_at, gpu_free_at, std::min(exec_at, latest_exec_at)});
-    invalid_after = deadline - exec_elapse;
+    if (exec_at > latest_exec_at) {
+      bs = 0;
+      exec_at = TimePoint::max();
+      invalid_after = TimePoint::min();
+      drop_timer_.CancelAll();
+      invalidate_timer_.CancelAll();
+    } else {
+      exec_at = std::max({earliest_exec_at, gpu_free_at, exec_at});
+      invalid_after = deadline - exec_elapse;
 
-    drop_timer_.SetTimeout(deadline);
-    drop_timer_.AsyncWait([this](ario::ErrorCode err) {
-      if (err != ario::ErrorCode::kOk) return;
-      OnDropTimer();
-    });
-    invalidate_timer_.SetTimeout(invalid_after - data_latency -
-                                 config_.ctrl_latency);
-    invalidate_timer_.AsyncWait([this](ario::ErrorCode err) {
-      if (err != ario::ErrorCode::kOk) return;
-      OnDropTimer();
-    });
+      drop_timer_.SetTimeout(deadline);
+      drop_timer_.AsyncWait([this](ario::ErrorCode err) {
+        if (err != ario::ErrorCode::kOk) return;
+        OnDropTimer();
+      });
+      invalidate_timer_.SetTimeout(invalid_after - data_latency -
+                                   config_.ctrl_latency);
+      invalidate_timer_.AsyncWait([this](ario::ErrorCode err) {
+        if (err != ario::ErrorCode::kOk) return;
+        OnDropTimer();
+      });
+    }
   } else {
     exec_at = TimePoint::max();
     invalid_after = TimePoint::min();
@@ -297,6 +304,9 @@ TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
   using namespace std::chrono;
   auto now = Clock::now();
   UpdateCandidate(cmd.free_at);
+  if (candidate_.batch_size == 0) {
+    return std::max(now, cmd.free_at);
+  }
   CHECK(candidate_.exec_at >= cmd.free_at)
       << "diff=" << (cmd.free_at - candidate_.exec_at).count() * 1e-3 << "us";
   auto inputs = batch_policy_.PopInputs();
@@ -304,7 +314,7 @@ TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
 
   // Early return when batch_size=0
   if (inputs.empty()) {
-    return now;
+    return std::max(now, cmd.free_at);
   }
 
   // Prepare the batchplan

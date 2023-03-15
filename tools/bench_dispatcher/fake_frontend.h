@@ -41,6 +41,8 @@ class FakeFrontendDelegate : public FrontendDelegate {
   const ModelSession& model_session() const { return model_session_; }
   const QueryContext* queries() const { return queries_.get(); }
   size_t reserved_size() const { return reserved_size_; }
+  size_t cnt_bad() const { return cnt_bad_; }
+  size_t cnt_total() const { return cnt_total_; }
 
  private:
   std::function<void(size_t cnt_done, size_t workload_idx)> on_request_done_;
@@ -48,6 +50,8 @@ class FakeFrontendDelegate : public FrontendDelegate {
   size_t workload_idx_;
   size_t reserved_size_;
   std::unique_ptr<QueryContext[]> queries_;
+  size_t cnt_bad_ = 0;
+  size_t cnt_total_ = 0;
 };
 
 }  // namespace dispatcher

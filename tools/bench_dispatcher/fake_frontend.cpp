@@ -35,6 +35,7 @@ void FakeFrontendDelegate::MarkQueriesDroppedByDispatcher(
     if (!queries_) break;
     auto& qctx = queries_[query.query_id()];
     qctx.status = QueryStatus::kDropped;
+    ++cnt_bad_;
   }
   ReportRequestDone(request.query_list_size());
 }
@@ -45,6 +46,7 @@ void FakeFrontendDelegate::ReceivedQuery(uint64_t query_id,
   auto& qctx = queries_[query_id];
   qctx.status = QueryStatus::kPending;
   qctx.frontend_recv_ns = frontend_recv_ns;
+  ++cnt_total_;
 }
 
 void FakeFrontendDelegate::GotBatchReply(const BatchPlanProto& plan) {
@@ -58,6 +60,7 @@ void FakeFrontendDelegate::GotBatchReply(const BatchPlanProto& plan) {
       qctx.status = QueryStatus::kSuccess;
     } else {
       qctx.status = QueryStatus::kTimeout;
+      ++cnt_bad_;
     }
   }
   ReportRequestDone(plan.queries_size());

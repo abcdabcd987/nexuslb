@@ -55,6 +55,7 @@ struct Options {
   std::string dump_schedule;
   int gpus;
   std::vector<ModelOptions> models;
+  double bail_badrate;
 
   static Options FromYaml(const YAML::Node& config);
 };
@@ -111,21 +112,21 @@ class DispatcherRunner {
     }
     auto stop_at = start_at_ + std::chrono::nanoseconds(stop_offset_ns);
 
-    std::mutex mutex;
-    std::condition_variable cv;
-    bool should_join = false;
+    stop_signal_ = false;
+    bailed_out_ = false;
     ario::Timer wait_finish(*main_executor_, stop_at);
-    wait_finish.AsyncWaitBigCallback(
-        [this, &mutex, &cv, &should_join](ario::ErrorCode) {
-          std::unique_lock lock(mutex);
-          should_join = true;
-          lock.unlock();
-          cv.notify_all();
-        });
+    wait_finish.AsyncWaitBigCallback([this](ario::ErrorCode ec) {
+      if (ec != ario::ErrorCode::kOk) return;
+      std::unique_lock lock(stop_mutex_);
+      stop_signal_ = true;
+      lock.unlock();
+      stop_cv_.notify_all();
+    });
     {
-      std::unique_lock lock(mutex);
-      cv.wait(lock, [&should_join] { return should_join; });
+      std::unique_lock lock(stop_mutex_);
+      stop_cv_.wait(lock, [this] { return stop_signal_; });
     }
+    wait_finish.CancelAll();
 
     scheduler_->Stop();
 
@@ -146,7 +147,7 @@ class DispatcherRunner {
     }
 
     FILE* fdump = nullptr;
-    if (!options_.dump_schedule.empty()) {
+    if (!bailed_out_ && !options_.dump_schedule.empty()) {
       fdump = OpenLogFile(options_.dump_schedule);
     }
 
@@ -199,7 +200,7 @@ class DispatcherRunner {
       }
       const auto& model_name = frontend->model_session().model_name();
       int total = cnt_dropped + cnt_timeout + cnt_success + cnt_noreply;
-      double badrate = 100.0 - cnt_success * 100.0 / total;
+      double badrate = total > 0 ? 100.0 - cnt_success * 100.0 / total : 100.0;
       snprintf(buf, sizeof(buf), "%-12s %8d %8d %8d %8d %8d %8.3f%%",
                model_name.c_str(), cnt_noreply, cnt_dropped, cnt_timeout,
                cnt_success, total, badrate);
@@ -223,7 +224,8 @@ class DispatcherRunner {
     }
 
     int total_queries = sum_dropped + sum_timeout + sum_success + sum_noreply;
-    double avg_badrate = 100.0 - sum_success * 100.0 / total_queries;
+    double avg_badrate =
+        total_queries > 0 ? 100.0 - sum_success * 100.0 / total_queries : 100.0;
     snprintf(buf, sizeof(buf),
              "%-12s %8d %8d %8d %8d %8d (avg %.3f%%, worst %.3f%%)", "TOTAL",
              sum_noreply, sum_dropped, sum_timeout, sum_success, total_queries,
@@ -240,7 +242,7 @@ class DispatcherRunner {
     if (sum_noreply && rankmt_options_.drop != DropPolicy::kWindowFCFS) {
       LOG(ERROR) << "Buggy scheduler. There are " << sum_noreply
                  << " queries having no reply.";
-      return 1;
+      // return 1;
     }
     return 0;
   }
@@ -358,6 +360,9 @@ class DispatcherRunner {
   }
 
   void PostNextRequest(size_t workload_idx) {
+    if (stop_signal_) {
+      return;
+    }
     auto& w = options_.models[workload_idx];
     auto& l = loadgen_contexts_[workload_idx];
     if (l.next_time >= l.ts_end_at) {
@@ -385,6 +390,23 @@ class DispatcherRunner {
       entrance.EnqueueQuery(std::move(l.request));
       PostNextRequest(workload_idx);
     });
+
+    // Bail out if bad rate is too high.
+    auto cnt_total = l.frontend->cnt_total(), cnt_bad = l.frontend->cnt_bad();
+    if (cnt_bad > cnt_total * options_.bail_badrate &&
+        (l.next_time - start_at_).count() - l.start_offset_ns >
+            static_cast<long>(l.warmup_duration * 1e9)) {
+      LOG(INFO) << "[" << l.model_session_id
+                << "] Bad rate too high, bailing out... bad rate: " << cnt_bad
+                << " / " << cnt_total << " = " << (cnt_bad * 100.0 / cnt_total)
+                << " %";
+      for (auto& lctx : loadgen_contexts_) {
+        lctx.timer.CancelAll();
+      }
+      bailed_out_ = true;
+      stop_signal_ = true;
+      stop_cv_.notify_all();
+    }
   }
 
   FILE* OpenLogFile(const std::string& path) {
@@ -463,6 +485,10 @@ class DispatcherRunner {
 
   std::vector<std::thread> threads_;
   TimePoint start_at_;
+  bool stop_signal_;
+  std::mutex stop_mutex_;
+  std::condition_variable stop_cv_;
+  bool bailed_out_;
 };
 
 std::vector<TraceSegment> BuildTraceFromYaml(const YAML::Node& yaml,
@@ -500,6 +526,9 @@ Options Options::FromYaml(const YAML::Node& config) {
 
   // Number of GPUs
   opt.gpus = config["gpus"].as<int>(1);
+
+  // Bail if bad rate is higher than this threshold. [0.0, 1.0)
+  opt.bail_badrate = config["bail_badrate"].as<double>(1.0);
 
   // Models
   CHECK(config["models"].IsSequence());

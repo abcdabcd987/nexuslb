@@ -14,7 +14,7 @@ DEFINE_string(rankmt_schedulable,
               RankmtConfig::Default().schedulable.ToString(),
               "Rankmt: condition for a Candidate to become schedulable. "
               "Options: kImmediately, kTargetBatchSize, kTargetQueuingDelay, "
-              "kFrontrun, kLatest");
+              "kFrontrun, kLatest, kCredit");
 DEFINE_string(rankmt_drop, RankmtConfig::Default().drop.ToString(),
               "Rankmt: Whether to drop head of queue during batching. "
               "Options: kDropTimeout, kWindowDrop, kWindowFCFS");
@@ -29,6 +29,12 @@ DEFINE_uint32(rankmt_rpsmeter_rate,
               "Rankmt: RpsMeter sample rate in milliseconds.");
 DEFINE_uint64(rankmt_rpsmeter_window, RankmtConfig::Default().rpsmeter_window,
               "Rankmt: RpsMeter window length.");
+DEFINE_uint32(
+    rankmt_credit_reset_period, RankmtConfig::Default().credit_reset_period,
+    "Rankmt: Credit-based scheduling: credit reset period multiplier.");
+DEFINE_uint32(
+    rankmt_credit_reset_value, RankmtConfig::Default().credit_reset_value,
+    "Rankmt: Credit-based scheduling: credit reset value multiplier.");
 
 namespace nexus {
 namespace dispatcher {
@@ -68,6 +74,8 @@ constexpr const char* SchedulableCondition::ToString(SchedulableCondition c) {
       return "kFrontrun";
     case kLatest:
       return "kLatest";
+    case kCredit:
+      return "kCredit";
   }
   CHECK(false) << "unreachable";
 }
@@ -84,6 +92,7 @@ constexpr std::optional<SchedulableCondition> SchedulableCondition::Parse(
     return SchedulableCondition::kTargetQueuingDelay;
   if (s == "kFrontrun") return SchedulableCondition::kFrontrun;
   if (s == "kLatest") return SchedulableCondition::kLatest;
+  if (s == "kCredit") return SchedulableCondition::kCredit;
   return std::nullopt;
 }
 
@@ -104,6 +113,8 @@ RankmtConfig RankmtConfig::FromFlags() {
   rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);
   rankmt.rpsmeter_rate = std::chrono::milliseconds(FLAGS_rankmt_rpsmeter_rate);
   rankmt.rpsmeter_window = FLAGS_rankmt_rpsmeter_window;
+  rankmt.credit_reset_period = FLAGS_rankmt_credit_reset_period;
+  rankmt.credit_reset_value = FLAGS_rankmt_credit_reset_value;
   return rankmt;
 }
 

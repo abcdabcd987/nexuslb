@@ -30,6 +30,8 @@ class SchedulableCondition {
     kFrontrun = 4,
     // Latest possible
     kLatest = 5,
+    // Credit-based scheduling
+    kCredit = 6,
   };
 
   constexpr SchedulableCondition() : value_(kFrontrun) {}
@@ -61,6 +63,10 @@ struct RankmtConfig {
   std::chrono::duration<long, std::nano> rpsmeter_rate;
   size_t rpsmeter_window;
 
+  // Credit-based scheduling
+  int credit_reset_period;
+  int credit_reset_value;
+
   static RankmtConfig Default() {
     RankmtConfig config;
     config.ctrl_latency = std::chrono::microseconds(100);
@@ -68,6 +74,8 @@ struct RankmtConfig {
     config.resp_latency = std::chrono::microseconds(2000);
     config.rpsmeter_rate = std::chrono::milliseconds(50);
     config.rpsmeter_window = 100;
+    config.credit_reset_period = 10;
+    config.credit_reset_value = 1;
     return config;
   };
 

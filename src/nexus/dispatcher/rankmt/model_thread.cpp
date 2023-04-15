@@ -43,8 +43,10 @@ ModelThread::ModelThread(
       target_batch_size_(0),
       target_queuing_delay_(0),
       last_exec_at_(TimePoint::min()),
+      schedule_credit_(0),
       drop_timer_(*CHECK_NOTNULL(executor)),
-      invalidate_timer_(*CHECK_NOTNULL(executor)) {
+      invalidate_timer_(*CHECK_NOTNULL(executor)),
+      reset_credit_timer_(*CHECK_NOTNULL(executor)) {
   // TODO: GPU performance heterogeneity
   auto profile_id = ModelSessionToProfileID(model_session_);
   for (auto& backend : backends_) {
@@ -64,6 +66,7 @@ ModelThread::ModelThread(
   batch_policy_.SetProfile(profile_);
   UpdateTargetBatchSize(std::nullopt);
   OnRpsMeterTimer();
+  OnResetCreditTimer();
 
   executor_.AddPoller(poller_);
 }
@@ -74,12 +77,12 @@ ModelThread::~ModelThread() {
 
 void ModelThread::Stop(std::mutex& mutex, size_t& cnt,
                        std::condition_variable& cv) {
-  // TODO
   executor_.PostBigCallback(
       [this, &mutex, &cnt, &cv](ario::ErrorCode) {
         stop_flag_ = true;
         drop_timer_.CancelAll();
         rps_meter_timer_.CancelAll();
+        reset_credit_timer_.CancelAll();
         {
           std::lock_guard lock(mutex);
           cnt += 1;
@@ -160,6 +163,48 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   return CtrlStatus::CTRL_OK;
 }
 
+void ModelThread::OnResetCreditTimer() {
+  auto diff = CalcCreditDiff(1);
+  auto delay = std::chrono::nanoseconds(
+      std::max(-diff * config_.credit_reset_period, 1000000L));
+  auto new_credit = -diff * config_.credit_reset_value;
+  if (VLOG_IS_ON(1) && model_index_ == 0) {
+    VLOG(1) << "OnResetCreditTimer model: " << model_session_.model_name()
+            << " old_credit: " << schedule_credit_ / 1e6 << "ms"
+            << " new_credit: " << new_credit / 1e6 << "ms"
+            << " delay: " << delay.count() / 1e6 << "ms";
+  }
+  schedule_credit_ = new_credit;
+
+  auto now = Clock::now();
+  reset_credit_timer_.SetTimeout(now + delay);
+  reset_credit_timer_.AsyncWait([this](ario::ErrorCode error) {
+    if (error != ario::ErrorCode::kOk) return;
+    OnResetCreditTimer();
+  });
+}
+
+long ModelThread::CalcCreditDiff(uint32_t bs) const {
+  // `l(tbs)/tbs` is the target throughput.
+  // `l(tbs)/tbs * b` is the latency of `b` if running at target throughput.
+  // `l(tbs)/tbs*b - l(b)` is the saved time.
+  auto l_tbs =
+      static_cast<long>(profile_.GetForwardLatency(target_batch_size_) * 1e3);
+  auto l_bs = static_cast<long>(profile_.GetForwardLatency(bs) * 1e3);
+  return bs * l_tbs / target_batch_size_ - l_bs;
+}
+
+void ModelThread::UpdateCredit(uint32_t bs) {
+  auto diff = CalcCreditDiff(bs);
+  schedule_credit_ += diff;
+  if (VLOG_IS_ON(1) && model_index_ == 0) {
+    VLOG(1) << "UpdateCredit model: " << model_session_.model_name()
+            << " tbs: " << target_batch_size_ << " bs: " << bs
+            << " diff: " << diff / 1e6
+            << "ms new_credit: " << schedule_credit_ / 1e6 << "ms";
+  }
+}
+
 void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   if (config_.drop == DropPolicy::kDropTimeout) {
     target_batch_size_ = 1;
@@ -201,6 +246,7 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
     auto frontrun_exec_at =
         deadline - kTimerJitter - frontrun_elapse - config_.data_latency;
     auto earliest_exec_at = sched_at + data_latency + config_.ctrl_latency;
+    auto credit_diff = CalcCreditDiff(bs);
 
     switch (config_.schedulable) {
       case SchedulableCondition::kImmediately:
@@ -218,6 +264,10 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
         break;
       case SchedulableCondition::kLatest:
         exec_at = latest_exec_at;
+        break;
+      case SchedulableCondition::kCredit:
+        exec_at = schedule_credit_ + credit_diff >= 0 ? earliest_exec_at
+                                                      : frontrun_exec_at;
         break;
       default:
         LOG(FATAL) << "Unreachable";
@@ -306,6 +356,9 @@ TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
   if (inputs.empty()) {
     return now;
   }
+
+  // Update credit
+  UpdateCredit(inputs.size());
 
   // Prepare the batchplan
   BatchPlanProto proto;

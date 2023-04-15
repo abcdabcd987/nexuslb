@@ -86,6 +86,9 @@ class ModelThread {
   // Command handlers
   TimePoint DoGrantedGpuMessage(GrantedGpuMessage& cmd);
 
+  long CalcCreditDiff(uint32_t bs) const;
+  void UpdateCredit(uint32_t bs);
+  void OnResetCreditTimer();
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
   void UpdateCandidate(TimePoint gpu_free_at);
   void OnDropTimer();
@@ -114,9 +117,11 @@ class ModelThread {
   uint32_t target_batch_size_;
   std::chrono::nanoseconds target_queuing_delay_;
   TimePoint last_exec_at_;
+  long schedule_credit_;
   ExecutionCandidate candidate_;
   ario::Timer drop_timer_;
   ario::Timer invalidate_timer_;
+  ario::Timer reset_credit_timer_;
 
   std::mutex rank_msg_mutex_;
   MessagesFromRankThread rank_msg_ /* GUARDED_BY(rank_msg_mutex_) */;

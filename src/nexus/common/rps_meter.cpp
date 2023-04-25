@@ -63,7 +63,7 @@ void RpsMeter::SealCounter(TimePoint now) {
   }
 }
 
-std::optional<AvgStd> RpsMeter::Get() {
+std::optional<AvgStd> RpsMeter::Get() const {
   if (!window_.empty()) {
     return AvgStd(avg_, std_);
   }

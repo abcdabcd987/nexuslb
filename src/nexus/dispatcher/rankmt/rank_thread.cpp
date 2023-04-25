@@ -191,20 +191,14 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
 
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   CHECK(mdata.candidate.has_value());
-  const auto& candidate = mdata.candidate.value();
-  auto latency =
-      config_.ctrl_latency + config_.data_latency * candidate.batch_size;
-  auto send_at = candidate.exec_at - latency;
-  // Although Timer accepts expiration time at the past,
-  // taking max with now here so that we can measure the timer delay
-  // using Timer::timeout. See the beginning of OnPlanTimer.
-  auto now = Clock::now();
-  mdata.send_timer.SetTimeout(std::max(send_at, now));
+  const auto& c = mdata.candidate.value();
+  mdata.send_timer.SetTimeout(c.schedulable_at);
   mdata.send_timer.AsyncWait([this, pmdata = &mdata](ario::ErrorCode error) {
     if (error == ario::ErrorCode::kCancelled) return;
     OnPlanTimer(*pmdata);
   });
   plans_rank_invalid_after_.Remove(&mdata);
+  plans_rank_priority_.Remove(&mdata);
   plans_rank_latency_.Remove(&mdata);
   SetGpuTimer();
 }
@@ -232,11 +226,6 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
     return;
   }
   TimePoint now = Clock::now();
-  auto timer_delay = now - mdata.send_timer.timeout();
-  if (timer_delay > microseconds(100)) {
-    auto us = duration_cast<microseconds>(timer_delay).count();
-    LOG(WARNING) << "OnPlanTimer: huge timer delay: " << us << " us";
-  }
   auto latency =
       config_.ctrl_latency + config_.data_latency * mdata.candidate->batch_size;
   auto earliest_exec_at = now + latency;
@@ -244,21 +233,28 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
     return;
   }
 
-  // Try to assign backend if possible
+  // Edge case: GPUs are not added to the cluster yet.
   CHECK_EQ(gpu_availability_pool_.Size(), gpus_.size());
   if (gpu_availability_pool_.Size() == 0) {
     return;
   }
+
+  // Find the earliest available GPU
   auto gpu_id = gpu_availability_pool_.GetByRank(0).key.get();
   auto& gctx = gpus_.at(gpu_id);
-  if (gctx->free_at > mdata.candidate->exec_at) {
+  if (gctx->free_at <= mdata.candidate->exec_at) {
+    // Primary matchmaking mechanism: Initiated by Model.
+    ++stats_.cnt_matched_by_primary;
+    GrantGpuToModel(mdata, gctx.get());
+    return;
+  } else {
+    // Secondary matchmaking mechanism: Initiated by GPU.
     plans_rank_invalid_after_.Upsert(&mdata, mdata.candidate->invalid_after);
+    plans_rank_priority_.Upsert(&mdata, mdata.candidate->priority);
     plans_rank_latency_.Upsert(&mdata, latency);
     SetGpuTimer();
     return;
   }
-
-  GrantGpuToModel(mdata, gctx.get());
 }
 
 void RankThread::GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx) {
@@ -279,6 +275,7 @@ void RankThread::GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx) {
 
   // Remove the candidate because it's no longer valid.
   plans_rank_invalid_after_.Remove(&mdata);
+  plans_rank_priority_.Remove(&mdata);
   plans_rank_latency_.Remove(&mdata);
 
   // Reject candidate updates until ModelThread picks up the granted backend.
@@ -307,14 +304,16 @@ void RankThread::OnGpuTimer(GpuContext* gctx) {
       // Note that if the predicate holds for the current gctx, it'll hold for
       // any future gctx2 because gctx2->free_at > gctx->free_at.
       plans_rank_invalid_after_.Remove(mdata);
+      plans_rank_priority_.Remove(mdata);
       plans_rank_latency_.Remove(mdata);
     } else {
       break;
     }
   }
-  if (plans_rank_invalid_after_.Size() != 0) {
-    auto* mdata = plans_rank_invalid_after_.GetByRank(0).key.get();
+  if (plans_rank_priority_.Size() != 0) {
+    auto* mdata = plans_rank_priority_.GetByRank(0).key.get();
     CHECK(mdata->candidate.has_value());
+    ++stats_.cnt_matched_by_secondary;
     GrantGpuToModel(*mdata, gctx);
   }
   SetGpuTimer();

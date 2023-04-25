@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <variant>
 
@@ -32,6 +33,9 @@ class SchedulableCondition {
     kLatest = 5,
     // Credit-based scheduling
     kCredit = 6,
+    // Comparing the current batch size with the product of target batch size
+    // and request rate.
+    kBetaLambda = 7,
   };
 
   constexpr SchedulableCondition() : value_(kFrontrun) {}
@@ -74,7 +78,7 @@ struct RankmtConfig {
     config.resp_latency = std::chrono::microseconds(2000);
     config.rpsmeter_rate = std::chrono::milliseconds(50);
     config.rpsmeter_window = 100;
-    config.credit_reset_period = 10;
+    config.credit_reset_period = 100;
     config.credit_reset_value = 1;
     return config;
   };
@@ -89,9 +93,14 @@ struct ExecutionCandidate {
   uint32_t batch_size;
   TimePoint exec_at;
   TimePoint invalid_after;
+  TimePoint schedulable_at;
+
+  // Priority for the GPU-initiated scheduling (see `OnGpuTimer()`).
+  TimePoint priority;
 
   static ExecutionCandidate Invalid() {
-    return {0, TimePoint::max(), TimePoint::min()};
+    return {0, TimePoint::max(), TimePoint::min(), TimePoint::max(),
+            TimePoint::max()};
   }
 };
 

@@ -138,6 +138,14 @@ void IncrementalBatchPolicy::SetProfile(const ModelProfile& profile) {
   profile_ = &profile;
 }
 
+TimePoint IncrementalBatchPolicy::earlist_arrival() const {
+  CHECK_GT(batch_size_, 0);
+  QueryContext* qctx =
+      !prefix_.empty() ? prefix_.begin()->get() : suffix_.begin()->get();
+  auto ns = qctx->request.query_without_input().clock().frontend_recv_ns();
+  return TimePoint(std::chrono::nanoseconds(ns));
+}
+
 SortedQueryList IncrementalBatchPolicy::PopInputs() {
   const auto cnt_timeout =
       drop_policy_ == DropPolicy::kWindowFCFS ? timeout_.size() : 0;

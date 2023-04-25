@@ -139,6 +139,12 @@ void MultiThreadRankScheduler::RemoveFrontend(NodeId frontend_id) {
   }
 }
 
+MultiThreadRankScheduler::Statistics MultiThreadRankScheduler::stats() const {
+  return {
+      .rank_stats = rank_thread_.stats(),
+  };
+}
+
 }  // namespace rankmt
 }  // namespace dispatcher
 }  // namespace nexus

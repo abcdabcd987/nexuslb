@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -14,6 +15,7 @@
 #include "nexus/common/typedef.h"
 #include "nexus/dispatcher/batch_policy.h"
 #include "nexus/dispatcher/query_context.h"
+#include "nexus/dispatcher/rankmt/common.h"
 #include "nexus/dispatcher/rankmt/rank_thread.h"
 
 namespace nexus {
@@ -44,9 +46,9 @@ ModelThread::ModelThread(
       target_queuing_delay_(0),
       last_exec_at_(TimePoint::min()),
       schedule_credit_(0),
+      schedule_credit_reset_countdown_(0),
       drop_timer_(*CHECK_NOTNULL(executor)),
-      invalidate_timer_(*CHECK_NOTNULL(executor)),
-      reset_credit_timer_(*CHECK_NOTNULL(executor)) {
+      invalidate_timer_(*CHECK_NOTNULL(executor)) {
   // TODO: GPU performance heterogeneity
   auto profile_id = ModelSessionToProfileID(model_session_);
   for (auto& backend : backends_) {
@@ -66,7 +68,7 @@ ModelThread::ModelThread(
   batch_policy_.SetProfile(profile_);
   UpdateTargetBatchSize(std::nullopt);
   OnRpsMeterTimer();
-  OnResetCreditTimer();
+  MaybeResetCredit();
 
   executor_.AddPoller(poller_);
 }
@@ -82,7 +84,6 @@ void ModelThread::Stop(std::mutex& mutex, size_t& cnt,
         stop_flag_ = true;
         drop_timer_.CancelAll();
         rps_meter_timer_.CancelAll();
-        reset_credit_timer_.CancelAll();
         {
           std::lock_guard lock(mutex);
           cnt += 1;
@@ -163,25 +164,22 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   return CtrlStatus::CTRL_OK;
 }
 
-void ModelThread::OnResetCreditTimer() {
+void ModelThread::MaybeResetCredit() {
+  if (schedule_credit_reset_countdown_ > 0) {
+    return;
+  }
+  schedule_credit_reset_countdown_ =
+      config_.credit_reset_period * target_batch_size_;
+
   auto diff = CalcCreditDiff(1);
-  auto delay = std::chrono::nanoseconds(
-      std::max(-diff * config_.credit_reset_period, 1000000L));
   auto new_credit = -diff * config_.credit_reset_value;
   if (VLOG_IS_ON(1) && model_index_ == 0) {
-    VLOG(1) << "OnResetCreditTimer model: " << model_session_.model_name()
+    VLOG(1) << "ResetCredit. model: " << model_session_.model_name()
             << " old_credit: " << schedule_credit_ / 1e6 << "ms"
-            << " new_credit: " << new_credit / 1e6 << "ms"
-            << " delay: " << delay.count() / 1e6 << "ms";
+            << " new_credit: " << new_credit / 1e6 << "ms";
+    ;
   }
   schedule_credit_ = new_credit;
-
-  auto now = Clock::now();
-  reset_credit_timer_.SetTimeout(now + delay);
-  reset_credit_timer_.AsyncWait([this](ario::ErrorCode error) {
-    if (error != ario::ErrorCode::kOk) return;
-    OnResetCreditTimer();
-  });
 }
 
 long ModelThread::CalcCreditDiff(uint32_t bs) const {
@@ -203,6 +201,26 @@ void ModelThread::UpdateCredit(uint32_t bs) {
             << " diff: " << diff / 1e6
             << "ms new_credit: " << schedule_credit_ / 1e6 << "ms";
   }
+}
+
+bool ModelThread::IsBetaLambdaSchedulable(uint32_t bs) const {
+  auto rps = rps_meter_.Get();
+  if (!rps.has_value()) {
+    return false;
+  }
+  if (bs >= target_batch_size_) {
+    return true;
+  }
+  float lambda = rps->avg;
+
+  float x1 = bs != target_batch_size_ ? target_batch_size_ : bs + 1;
+  float l1 = profile_.GetForwardLatency(x1) * 1e-6;
+  float lb = profile_.GetForwardLatency(bs) * 1e-6;
+  float alpha = (l1 - lb) / (x1 - bs);
+  float beta = l1 - alpha * x1;
+
+  float beta_lambda = beta * lambda;
+  return bs >= beta_lambda;
 }
 
 void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
@@ -234,10 +252,11 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
   UpdateTargetBatchSize(rps);
   batch_policy_.Update(sched_at, gpu_free_at, target_batch_size_);
 
-  TimePoint exec_at, invalid_after;
+  auto c = ExecutionCandidate::Invalid();
   auto bs = batch_policy_.batch_size();
   if (bs > 0) {
     constexpr auto kTimerJitter = std::chrono::microseconds(100);
+    c.batch_size = bs;
     auto data_latency = config_.data_latency * bs;
     auto deadline = batch_policy_.deadline();
     auto exec_elapse = EstimateExecElapse(profile_, bs);
@@ -245,56 +264,59 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
     auto latest_exec_at = deadline - kTimerJitter - exec_elapse;
     auto frontrun_exec_at =
         deadline - kTimerJitter - frontrun_elapse - config_.data_latency;
+    auto frontrun_scheduable_at =
+        frontrun_exec_at - config_.ctrl_latency - data_latency;
     auto earliest_exec_at = sched_at + data_latency + config_.ctrl_latency;
     auto credit_diff = CalcCreditDiff(bs);
 
     switch (config_.schedulable) {
       case SchedulableCondition::kImmediately:
-        exec_at = earliest_exec_at;
-        break;
-      case SchedulableCondition::kTargetBatchSize:
-        exec_at =
-            bs >= target_batch_size_ ? earliest_exec_at : frontrun_exec_at;
-        break;
-      case SchedulableCondition::kTargetQueuingDelay:
-        exec_at = last_exec_at_ + target_queuing_delay_;
+        c.exec_at = earliest_exec_at;
+        c.schedulable_at = sched_at;
+        c.priority = batch_policy_.earlist_arrival();
         break;
       case SchedulableCondition::kFrontrun:
-        exec_at = frontrun_exec_at;
-        break;
-      case SchedulableCondition::kLatest:
-        exec_at = latest_exec_at;
+        c.exec_at = frontrun_exec_at;
+        c.schedulable_at = frontrun_scheduable_at;
+        c.priority = frontrun_exec_at;
         break;
       case SchedulableCondition::kCredit:
-        exec_at = schedule_credit_ + credit_diff >= 0 ? earliest_exec_at
-                                                      : frontrun_exec_at;
+        c.exec_at = earliest_exec_at;
+        c.schedulable_at = schedule_credit_ + credit_diff >= 0
+                               ? sched_at
+                               : frontrun_scheduable_at;
+        c.priority = frontrun_exec_at;
+        break;
+      case SchedulableCondition::kBetaLambda:
+        c.exec_at = earliest_exec_at;
+        c.schedulable_at =
+            IsBetaLambdaSchedulable(bs) ? sched_at : frontrun_scheduable_at;
+        c.priority = frontrun_exec_at;
         break;
       default:
-        LOG(FATAL) << "Unreachable";
+        LOG(FATAL) << "Unreachable. config_.schedulable="
+                   << config_.schedulable;
     }
-    exec_at = std::max(
-        {earliest_exec_at, gpu_free_at, std::min(exec_at, latest_exec_at)});
-    invalid_after = deadline - exec_elapse;
+    c.exec_at = std::max(
+        {earliest_exec_at, gpu_free_at, std::min(c.exec_at, latest_exec_at)});
+    c.invalid_after = deadline - exec_elapse;
 
     drop_timer_.SetTimeout(deadline);
     drop_timer_.AsyncWait([this](ario::ErrorCode err) {
       if (err != ario::ErrorCode::kOk) return;
       OnDropTimer();
     });
-    invalidate_timer_.SetTimeout(invalid_after - data_latency -
+    invalidate_timer_.SetTimeout(c.invalid_after - data_latency -
                                  config_.ctrl_latency);
     invalidate_timer_.AsyncWait([this](ario::ErrorCode err) {
       if (err != ario::ErrorCode::kOk) return;
       OnDropTimer();
     });
   } else {
-    exec_at = TimePoint::max();
-    invalid_after = TimePoint::min();
     drop_timer_.CancelAll();
     invalidate_timer_.CancelAll();
   }
-
-  candidate_ = ExecutionCandidate{bs, exec_at, invalid_after};
+  candidate_ = c;
 
   // Send dropped queries
   if (batch_policy_.CountDrops() > 0) {
@@ -359,6 +381,8 @@ TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
 
   // Update credit
   UpdateCredit(inputs.size());
+  schedule_credit_reset_countdown_ -= inputs.size();
+  MaybeResetCredit();
 
   // Prepare the batchplan
   BatchPlanProto proto;

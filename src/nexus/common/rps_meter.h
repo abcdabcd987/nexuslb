@@ -15,7 +15,7 @@ class RpsMeter {
   explicit RpsMeter(size_t window_size);
   void Hit();
   void SealCounter(TimePoint now);
-  std::optional<AvgStd> Get();
+  std::optional<AvgStd> Get() const;
 
  private:
   size_t size_;

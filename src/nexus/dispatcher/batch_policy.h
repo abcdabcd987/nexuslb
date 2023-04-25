@@ -50,6 +50,7 @@ class IncrementalBatchPolicy {
   IncrementalBatchPolicy& operator=(IncrementalBatchPolicy&& other) = delete;
 
   uint32_t batch_size() const { return batch_size_; }
+  TimePoint earlist_arrival() const;
   TimePoint deadline() const { return deadline_; }
   SortedQueryList PopInputs();
   SortedQueryList PopDrops();

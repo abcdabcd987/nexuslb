@@ -51,6 +51,12 @@ class RankThread {
   void PostExecutionCandidate(ModelIndex model_index,
                               ExecutionCandidate candidate);
 
+  struct Statistics {
+    long cnt_matched_by_primary = 0;
+    long cnt_matched_by_secondary = 0;
+  };
+  Statistics stats() const { return stats_; }
+
  private:
   class Poller : public ario::EventPoller {
    public:
@@ -107,6 +113,7 @@ class RankThread {
   void Poll();
 
   RankmtConfig config_;
+  Statistics stats_;
   ario::EpollExecutor& executor_;
   bool stop_flag_;
   Poller poller_;
@@ -117,6 +124,7 @@ class RankThread {
 
   ValueRankedSplayMap<GpuId, TimePoint> gpu_availability_pool_;
   ValueRankedSplayMap<PerModelThreadData*, TimePoint> plans_rank_invalid_after_;
+  ValueRankedSplayMap<PerModelThreadData*, TimePoint> plans_rank_priority_;
   ValueRankedSplayMap<PerModelThreadData*, std::chrono::nanoseconds>
       plans_rank_latency_;
 };

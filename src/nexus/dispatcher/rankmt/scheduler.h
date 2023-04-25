@@ -58,6 +58,11 @@ class MultiThreadRankScheduler {
   void RemoveBackend(NodeId backend_id);
   void RemoveFrontend(NodeId frontend_id);
 
+  struct Statistics {
+    RankThread::Statistics rank_stats;
+  };
+  Statistics stats() const;
+
  private:
   RankmtConfig config_;
   ario::EpollExecutor& executor_;

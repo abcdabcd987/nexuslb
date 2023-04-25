@@ -14,7 +14,7 @@ DEFINE_string(rankmt_schedulable,
               RankmtConfig::Default().schedulable.ToString(),
               "Rankmt: condition for a Candidate to become schedulable. "
               "Options: kImmediately, kTargetBatchSize, kTargetQueuingDelay, "
-              "kFrontrun, kLatest, kCredit");
+              "kFrontrun, kLatest, kCredit, kBetaLambda");
 DEFINE_string(rankmt_drop, RankmtConfig::Default().drop.ToString(),
               "Rankmt: Whether to drop head of queue during batching. "
               "Options: kDropTimeout, kWindowDrop, kWindowFCFS");
@@ -76,6 +76,8 @@ constexpr const char* SchedulableCondition::ToString(SchedulableCondition c) {
       return "kLatest";
     case kCredit:
       return "kCredit";
+    case kBetaLambda:
+      return "kBetaLambda";
   }
   CHECK(false) << "unreachable";
 }
@@ -93,6 +95,7 @@ constexpr std::optional<SchedulableCondition> SchedulableCondition::Parse(
   if (s == "kFrontrun") return SchedulableCondition::kFrontrun;
   if (s == "kLatest") return SchedulableCondition::kLatest;
   if (s == "kCredit") return SchedulableCondition::kCredit;
+  if (s == "kBetaLambda") return SchedulableCondition::kBetaLambda;
   return std::nullopt;
 }
 

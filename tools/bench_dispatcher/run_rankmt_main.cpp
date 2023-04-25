@@ -446,6 +446,12 @@ class DispatcherRunner {
                 model_idx, batch_size, exec_at, finish_at);
       }
     }
+
+    auto stats = scheduler_->stats();
+    fprintf(f, "SCHEDULER rank cnt_matched_by_primary %ld\n",
+            stats.rank_stats.cnt_matched_by_primary);
+    fprintf(f, "SCHEDULER rank cnt_matched_by_secondary %ld\n",
+            stats.rank_stats.cnt_matched_by_secondary);
   }
 
   struct LoadGenContext {

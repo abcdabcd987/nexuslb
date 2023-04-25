@@ -88,7 +88,8 @@ class ModelThread {
 
   long CalcCreditDiff(uint32_t bs) const;
   void UpdateCredit(uint32_t bs);
-  void OnResetCreditTimer();
+  void MaybeResetCredit();
+  bool IsBetaLambdaSchedulable(uint32_t bs) const;
   void UpdateTargetBatchSize(const std::optional<AvgStd>& rps);
   void UpdateCandidate(TimePoint gpu_free_at);
   void OnDropTimer();
@@ -118,10 +119,10 @@ class ModelThread {
   std::chrono::nanoseconds target_queuing_delay_;
   TimePoint last_exec_at_;
   long schedule_credit_;
+  int schedule_credit_reset_countdown_;
   ExecutionCandidate candidate_;
   ario::Timer drop_timer_;
   ario::Timer invalidate_timer_;
-  ario::Timer reset_credit_timer_;
 
   std::mutex rank_msg_mutex_;
   MessagesFromRankThread rank_msg_ /* GUARDED_BY(rank_msg_mutex_) */;

@@ -208,9 +208,6 @@ bool ModelThread::IsBetaLambdaSchedulable(uint32_t bs) const {
   if (!rps.has_value()) {
     return false;
   }
-  if (bs >= target_batch_size_) {
-    return true;
-  }
   float lambda = rps->avg;
 
   float x1 = bs != target_batch_size_ ? target_batch_size_ : bs + 1;
@@ -273,26 +270,27 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
       case SchedulableCondition::kImmediately:
         c.exec_at = earliest_exec_at;
         c.schedulable_at = sched_at;
-        c.priority = batch_policy_.earlist_arrival();
+        c.priority = deadline - exec_elapse;
         break;
       case SchedulableCondition::kFrontrun:
         c.exec_at = frontrun_exec_at;
         c.schedulable_at = frontrun_scheduable_at;
         c.priority = frontrun_exec_at;
         break;
-      case SchedulableCondition::kCredit:
-        c.exec_at = earliest_exec_at;
-        c.schedulable_at = schedule_credit_ + credit_diff >= 0
-                               ? sched_at
-                               : frontrun_scheduable_at;
+      case SchedulableCondition::kCredit: {
+        bool b = schedule_credit_ + credit_diff >= 0;
+        c.exec_at = b ? earliest_exec_at : frontrun_exec_at;
+        c.schedulable_at = b ? sched_at : frontrun_scheduable_at;
         c.priority = frontrun_exec_at;
         break;
-      case SchedulableCondition::kBetaLambda:
-        c.exec_at = earliest_exec_at;
-        c.schedulable_at =
-            IsBetaLambdaSchedulable(bs) ? sched_at : frontrun_scheduable_at;
+      }
+      case SchedulableCondition::kBetaLambda: {
+        bool b = IsBetaLambdaSchedulable(bs);
+        c.exec_at = b ? earliest_exec_at : frontrun_exec_at;
+        c.schedulable_at = b ? sched_at : frontrun_scheduable_at;
         c.priority = frontrun_exec_at;
         break;
+      }
       default:
         LOG(FATAL) << "Unreachable. config_.schedulable="
                    << config_.schedulable;

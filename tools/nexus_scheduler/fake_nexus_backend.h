@@ -1,5 +1,6 @@
 #pragma once
 #include <boost/asio.hpp>
+#include <cstdint>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -17,6 +18,7 @@ struct ExecutionHistoryEntry {
   int batch_size;
   TimePoint exec_at;
   TimePoint finish_at;
+  std::vector<uint64_t> query_ids;
 };
 
 class FakeNexusBackend {

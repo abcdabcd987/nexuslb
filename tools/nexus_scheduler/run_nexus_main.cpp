@@ -461,6 +461,7 @@ class NexusRunner {
   }
 
   void DumpBatchplan(FILE* f) {
+    std::vector<std::vector<long>> qd(options_.models.size());
     int next_plan_id = 1;
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
@@ -478,8 +479,36 @@ class NexusRunner {
         double finish_at =
             (p.finish_at.time_since_epoch().count() - bench_start_ns) / 1e9;
         if (exec_at < 0 || finish_at > l.trace.bench_duration) continue;
+
+        const auto& queries = query_collector_.queries(model_idx);
+        for (auto qid : p.query_ids) {
+          auto queue_delay_ns = p.exec_at.time_since_epoch().count() -
+                                queries[qid].frontend_recv_ns;
+          qd[model_idx].push_back(queue_delay_ns);
+        }
         fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
                 model_idx, batch_size, exec_at, finish_at);
+      }
+    }
+
+    for (size_t model_idx = 0; model_idx < options_.models.size();
+         ++model_idx) {
+      auto& v = qd[model_idx];
+      std::sort(v.begin(), v.end());
+
+      fprintf(f, "QUEUE-DELAY %zu", model_idx);
+      if (v.size() == 0) {
+        fprintf(f, "\n");
+      } else if (v.size() == 1) {
+        fprintf(f, " %ld\n", v.back());
+      } else {
+        int bins = v.size() <= 1000 ? v.size() - 1 : 1000;
+        double inc = static_cast<double>(v.size()) / bins;
+        for (int i = 0; i < bins; ++i) {
+          auto idx = static_cast<int>(inc * i);
+          fprintf(f, " %ld", v[idx]);
+        }
+        fprintf(f, " %ld\n", v.back());
       }
     }
   }

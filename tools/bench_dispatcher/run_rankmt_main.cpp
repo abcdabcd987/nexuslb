@@ -428,6 +428,7 @@ class DispatcherRunner {
   }
 
   void DumpBatchplan(FILE* f) {
+    std::vector<std::vector<long>> qd(options_.models.size());
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
       int gpu_idx = backend_idx;
@@ -442,6 +443,12 @@ class DispatcherRunner {
         double exec_at = (p.exec_time_ns() - bench_start_ns) / 1e9;
         double finish_at = (p.expected_finish_time_ns() - bench_start_ns) / 1e9;
         if (exec_at < 0 || finish_at > l.bench_duration) continue;
+
+        for (const auto& q : p.queries()) {
+          const auto& c = q.query_without_input().clock();
+          auto queue_delay_ns = p.exec_time_ns() - c.frontend_recv_ns();
+          qd[model_idx].push_back(queue_delay_ns);
+        }
         fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
                 model_idx, batch_size, exec_at, finish_at);
       }
@@ -452,6 +459,27 @@ class DispatcherRunner {
             stats.rank_stats.cnt_matched_by_primary);
     fprintf(f, "SCHEDULER rank cnt_matched_by_secondary %ld\n",
             stats.rank_stats.cnt_matched_by_secondary);
+
+    for (size_t model_idx = 0; model_idx < options_.models.size();
+         ++model_idx) {
+      auto& v = qd[model_idx];
+      std::sort(v.begin(), v.end());
+
+      fprintf(f, "QUEUE-DELAY %zu", model_idx);
+      if (v.size() == 0) {
+        fprintf(f, "\n");
+      } else if (v.size() == 1) {
+        fprintf(f, " %ld\n", v.back());
+      } else {
+        int bins = v.size() <= 1000 ? v.size() - 1 : 1000;
+        double inc = static_cast<double>(v.size()) / bins;
+        for (int i = 0; i < bins; ++i) {
+          auto idx = static_cast<int>(inc * i);
+          fprintf(f, " %ld", v[idx]);
+        }
+        fprintf(f, " %ld\n", v.back());
+      }
+    }
   }
 
   struct LoadGenContext {

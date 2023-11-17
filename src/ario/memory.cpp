@@ -1,6 +1,7 @@
 #include "ario/memory.h"
 
 #include <stdexcept>
+#include <utility>
 
 namespace ario {
 

@@ -321,6 +321,17 @@ add_executable(run_nexus
 target_link_libraries(run_nexus PUBLIC bench_dispatcher_obj)
 
 
+###### tools/run_shepherd ######
+add_executable(run_shepherd
+    tools/shepherd/fake_shepherd_backend.cpp
+    tools/shepherd/fake_shepherd_frontend.cpp
+    tools/shepherd/flex_scheduler.cpp
+    tools/shepherd/run_shepherd_main.cpp
+)
+target_link_libraries(run_shepherd PUBLIC common Boost::boost)
+target_include_directories(run_shepherd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/tools)
+
+
 
 ###### tools/test_gpu_mem_sharing ######
 # if(USE_GPU AND USE_TENSORFLOW)

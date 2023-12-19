@@ -323,6 +323,7 @@ target_link_libraries(run_nexus PUBLIC bench_dispatcher_obj)
 
 ###### tools/run_shepherd ######
 add_executable(run_shepherd
+    tools/shepherd/common.cpp
     tools/shepherd/fake_shepherd_backend.cpp
     tools/shepherd/fake_shepherd_frontend.cpp
     tools/shepherd/flex_scheduler.cpp

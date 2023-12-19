@@ -15,13 +15,12 @@ namespace nexus::shepherd {
 
 class FlexScheduler {
  public:
-  FlexScheduler(boost::asio::io_context* io_context,
-                std::chrono::nanoseconds dctrl, std::chrono::nanoseconds ddata,
-                float preempt_lambda);
+  FlexScheduler(boost::asio::io_context* io_context, ShepherdConfig cfg);
 
   void AddModel(int model_id, int slo_ms, const ModelProfile* profile);
   void AddGpu(int gpu_id, BackendStub* backend_stub);
   void AddQuery(Query query, FrontendStub* frontend_stub);
+  void Stop();
 
  private:
   struct QueryContext {

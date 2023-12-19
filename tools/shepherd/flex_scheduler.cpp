@@ -18,13 +18,20 @@
 namespace nexus::shepherd {
 
 FlexScheduler::FlexScheduler(boost::asio::io_context* io_context,
-                             std::chrono::nanoseconds dctrl,
-                             std::chrono::nanoseconds ddata,
-                             float preempt_lambda)
+                             ShepherdConfig cfg)
     : io_context_(*CHECK_NOTNULL(io_context)),
-      dctrl_(dctrl),
-      ddata_(ddata),
-      preempt_lambda_(preempt_lambda) {}
+      dctrl_(cfg.ctrl_latency),
+      ddata_(cfg.data_latency),
+      preempt_lambda_(cfg.preempt_lambda) {}
+
+void FlexScheduler::Stop() {
+  for (auto& [_, gctx] : gpus_) {
+    gctx->free_timer.cancel();
+  }
+  for (auto& [_, qctx] : queries_) {
+    qctx->frontend_stub.MarkQueryDropped(qctx->query.query_id);
+  }
+}
 
 void FlexScheduler::AddModel(int model_id, int slo_ms,
                              const ModelProfile* profile) {
@@ -164,8 +171,10 @@ void FlexScheduler::AddQuery(Query query, FrontendStub* frontend_stub) {
   // Line 10: Enqueue r to corresponding queue
   auto mctx = models_.at(query.model_id);
   auto deadline = query.arrival_at + std::chrono::milliseconds(mctx->slo_ms);
-  mctx->queue.insert(std::make_shared<QueryContext>(
-      QueryContext{query, deadline, *CHECK_NOTNULL(frontend_stub)}));
+  auto qctx = std::make_shared<QueryContext>(
+      QueryContext{query, deadline, *CHECK_NOTNULL(frontend_stub)});
+  mctx->queue.insert(qctx);
+  queries_.emplace(query.query_id, qctx);
   auto sched_at = Clock::now();
 
   // NOTE: Added a outer loop to support the "go to Line 11".

@@ -1,5 +1,7 @@
 #include "shepherd/fake_shepherd_frontend.h"
 
+#include <glog/logging.h>
+
 namespace nexus::shepherd {
 
 FakeShepherdFrontend::FakeShepherdFrontend(int model_id, int slo_ms,
@@ -33,6 +35,8 @@ void FakeShepherdFrontend::GotBatchReply(const BatchPlan& plan) {
     if (plan.finish_at.time_since_epoch().count() < deadline_ns) {
       qctx.status = QueryStatus::kSuccess;
     } else {
+      VLOG(0) << "Query timeout query_id=" << query_id << " difference_nanos="
+              << plan.finish_at.time_since_epoch().count() - deadline_ns;
       qctx.status = QueryStatus::kTimeout;
       ++cnt_bad_;
     }

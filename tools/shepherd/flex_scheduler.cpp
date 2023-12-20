@@ -110,13 +110,19 @@ FlexScheduler::BatchGenResult FlexScheduler::BatchGen(
     // Line 13:     Break
     //
     // NOTE: I think Line 10 is a typo. Should be: |Bg(n,m)| + 1
+    //
+    // NOTE: I have another question about Line 10. Is it r's deadline that we
+    // care about or is it Bg(n,m)'s first request's deadline?
     BatchPlan candidate;
     candidate.model_id = model_id;
+    TimePoint earliest_deadline = TimePoint::max();
     for (auto qctx : reqs) {
-      auto exec_elapse = nanoseconds(static_cast<long>(
-          mctx->profile.GetForwardLatency(candidate.query_ids.size() + 1)));
-      auto finish_at = sched_at + dctrl_ + ddata_ + exec_elapse;
-      if (qctx->deadline >= finish_at) {
+      int bs = candidate.query_ids.size() + 1;
+      auto exec_elapse = nanoseconds(
+          static_cast<long>(mctx->profile.GetForwardLatency(bs) * 1000));
+      auto finish_at = sched_at + dctrl_ + ddata_ * bs + exec_elapse;
+      earliest_deadline = std::min(earliest_deadline, qctx->deadline);
+      if (earliest_deadline >= finish_at) {
         candidate.query_ids.push_back(qctx->query.query_id);
       } else {
         break;
@@ -124,6 +130,9 @@ FlexScheduler::BatchGenResult FlexScheduler::BatchGen(
     }
 
     // Line 14: Bg(n) ← Bg(n,m) with largest batch size among all models
+    if (candidate.query_ids.empty()) {
+      continue;
+    }
     if (!best.has_value() ||
         candidate.query_ids.size() > best->query_ids.size()) {
       candidate.exec_at =
@@ -140,6 +149,10 @@ FlexScheduler::BatchGenResult FlexScheduler::BatchGen(
 
 void FlexScheduler::OnGpuCompletion(int gpu_id) {
   // Remove finished batch
+  VLOG(0) << "OnGpuCompletion: "
+          << "GPU " << gpu_id << " gpus_.size()=" << gpus_.size()
+          << " models_.size()=" << models_.size()
+          << " queries_.size()=" << queries_.size();
   auto gctx = gpus_.at(gpu_id);
   CHECK(gctx->current_batch.has_value());
   for (auto query_id : gctx->current_batch->query_ids) {
@@ -228,6 +241,11 @@ void FlexScheduler::AddQuery(Query query, FrontendStub* frontend_stub) {
 
 void FlexScheduler::AssignBatchPlan(const BatchPlan& batch, int gpu_id,
                                     Preemption preempt) {
+  VLOG(0) << "AssignBatchPlan"
+          << " gpu_id=" << gpu_id
+          << " preempt=" << (preempt == Preemption::kYes)
+          << " batch.model_id=" << batch.model_id
+          << " batch.query_ids.size()=" << batch.query_ids.size();
   auto gctx = gpus_.at(gpu_id);
   if (preempt == Preemption::kYes) {
     CHECK(gctx->current_batch.has_value());
@@ -241,7 +259,15 @@ void FlexScheduler::AssignBatchPlan(const BatchPlan& batch, int gpu_id,
     gctx->current_batch.reset();
   }
 
-  CHECK(!gctx->current_batch.has_value());
+  CHECK(!gctx->current_batch.has_value())
+      << "old: exec_at="
+      << gctx->current_batch->exec_at.time_since_epoch().count()
+      << " finish_at="
+      << gctx->current_batch->finish_at.time_since_epoch().count()
+      << " bs=" << gctx->current_batch->query_ids.size()
+      << ", new: exec_at=" << batch.exec_at.time_since_epoch().count()
+      << " finish_at=" << batch.finish_at.time_since_epoch().count()
+      << " bs=" << batch.query_ids.size();
   auto mctx = models_.at(batch.model_id);
   for (auto query_id : batch.query_ids) {
     auto qctx = queries_.at(query_id);
@@ -251,8 +277,11 @@ void FlexScheduler::AssignBatchPlan(const BatchPlan& batch, int gpu_id,
   // Setup timer
   gctx->current_batch = batch;
   gctx->free_at = batch.finish_at;
-  gctx->free_timer.expires_at(gctx->free_at - dctrl_);
-  gctx->free_timer.async_wait([&] { OnGpuCompletion(gpu_id); });
+  gctx->free_timer.expires_at(gctx->free_at);
+  gctx->free_timer.async_wait([this, gpu_id](boost::system::error_code ec) {
+    if (ec) return;
+    OnGpuCompletion(gpu_id);
+  });
 
   // Send batch to backend
   gctx->backend_stub.RunBatch(batch, preempt);

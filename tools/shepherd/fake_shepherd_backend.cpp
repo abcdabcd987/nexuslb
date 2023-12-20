@@ -2,6 +2,9 @@
 
 #include <glog/logging.h>
 
+#include <algorithm>
+#include <type_traits>
+
 #include "shepherd/common.h"
 #include "shepherd/fake_shepherd_frontend.h"
 
@@ -44,27 +47,40 @@ void FakeShepherdBackend::RunBatch(BatchPlan request, Preemption preempt) {
       << "Incorrect finish time.";
   CHECK_LE(now_ns, request.exec_time_ns()) << "BatchPlan too late.";
 
-  std::lock_guard lock(mutex_);
   if (preempt == Preemption::kYes) {
     CHECK(!batchplans_.empty()) << "Cannot preempt. No current plan.";
-    auto old_plan = batchplans_.front();
-    CHECK_LE(now_ns, old_plan.expected_finish_time_ns())
-        << "Cannot preempt. Current plan is not running.";
-    std::pop_heap(batchplans_.begin(), batchplans_.end(),
-                  HeapOrderBatchPlanByExecTimeASC);
-    batchplans_.pop_back();
-  }
-
-  for (const auto& plan : batchplans_) {
-    CHECK(!BatchPlanIntersects(plan, request))
-        << "Batchplan intersects.\n"
-        << "existing plan: exec_time=base"
-        << " finish_time=base+"
-        << (plan.expected_finish_time_ns() - plan.exec_time_ns()) << "\n"
-        << "new plan: exec_time=base+"
-        << (request.exec_time_ns() - plan.exec_time_ns())
-        << " finish_time=base+"
-        << (request.expected_finish_time_ns() - plan.exec_time_ns());
+    int intersects = 0;
+    size_t intersect_idx = 0;
+    for (size_t i = 0; i < batchplans_.size(); ++i) {
+      if (BatchPlanIntersects(batchplans_[i], request)) {
+        ++intersects;
+        intersect_idx = i;
+      }
+    }
+    CHECK_LE(intersects, 1)
+        << "Cannot preempt. Intersects with " << intersects << " plans.";
+    if (intersects == 0 || intersect_idx == 0) {
+      std::pop_heap(batchplans_.begin(), batchplans_.end(),
+                    HeapOrderBatchPlanByExecTimeASC);
+      batchplans_.pop_back();
+    } else {
+      std::swap(batchplans_[intersect_idx], batchplans_.back());
+      batchplans_.pop_back();
+      std::make_heap(batchplans_.begin(), batchplans_.end(),
+                     HeapOrderBatchPlanByExecTimeASC);
+    }
+  } else {
+    for (const auto& plan : batchplans_) {
+      CHECK(!BatchPlanIntersects(plan, request))
+          << "Batchplan intersects.\n"
+          << "existing plan: exec_time=base"
+          << " finish_time=base+"
+          << (plan.expected_finish_time_ns() - plan.exec_time_ns()) << "\n"
+          << "new plan: exec_time=base+"
+          << (request.exec_time_ns() - plan.exec_time_ns())
+          << " finish_time=base+"
+          << (request.expected_finish_time_ns() - plan.exec_time_ns());
+    }
   }
   batchplans_.emplace_back(std::move(request));
   std::push_heap(batchplans_.begin(), batchplans_.end(),
@@ -73,12 +89,17 @@ void FakeShepherdBackend::RunBatch(BatchPlan request, Preemption preempt) {
 }
 
 void FakeShepherdBackend::SetupTimer() {
-  if (!batchplans_.empty()) {
-    auto finish_at = batchplans_[0].finish_at;
-    if (timer_.expiry() != finish_at) {
-      timer_.expires_at(finish_at);
-      timer_.async_wait([this](boost::system::error_code ec) { OnTimer(ec); });
-    }
+  if (batchplans_.empty()) {
+    timer_.cancel();
+    return;
+  }
+  auto finish_at = batchplans_[0].finish_at;
+  if (timer_.expiry() != finish_at) {
+    timer_.expires_at(finish_at);
+    timer_.async_wait([this](boost::system::error_code ec) {
+      if (ec) return;
+      OnTimer();
+    });
   }
 }
 
@@ -95,12 +116,10 @@ void FakeShepherdBackend::OnBatchFinish(const BatchPlan& plan) {
   frontend->GotBatchReply(plan);
 }
 
-void FakeShepherdBackend::OnTimer(boost::system::error_code ec) {
-  if (ec) return;
+void FakeShepherdBackend::OnTimer() {
   TimePoint now = Clock::now();
   auto now_ns = now.time_since_epoch().count();
   std::vector<BatchPlan> finished_plans;
-  std::unique_lock lock(mutex_);
   while (!batchplans_.empty()) {
     if (batchplans_[0].expected_finish_time_ns() > now_ns) {
       break;
@@ -111,7 +130,6 @@ void FakeShepherdBackend::OnTimer(boost::system::error_code ec) {
     batchplans_.pop_back();
   }
   SetupTimer();
-  lock.unlock();
   for (auto& plan : finished_plans) {
     OnBatchFinish(plan);
     SaveBatchPlan(std::move(plan));

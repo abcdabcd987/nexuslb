@@ -33,8 +33,8 @@ struct ShepherdConfig {
 
   static ShepherdConfig Default() {
     ShepherdConfig config;
-    config.ctrl_latency = std::chrono::microseconds(100);
-    config.data_latency = std::chrono::microseconds(50);
+    config.ctrl_latency = std::chrono::microseconds(25);
+    config.data_latency = std::chrono::microseconds(75);
     config.preempt_lambda = 3.03;
     return config;
   }

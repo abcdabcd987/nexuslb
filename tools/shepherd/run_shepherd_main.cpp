@@ -60,8 +60,8 @@ class ShepherdRunner {
     LOG(INFO) << "Preparing the benchmark";
     start_at_ = Clock::now() + std::chrono::seconds(2);
     BuildScheduler();
-    BuildFakeServers();
     BuildWorkloads();
+    BuildFakeServers();
   }
 
   int Run() {
@@ -222,7 +222,10 @@ class ShepherdRunner {
 
  private:
   void BuildWorkloads() {
-    loadgen_contexts_.resize(options_.models.size());
+    loadgen_contexts_.reserve(options_.models.size());
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      loadgen_contexts_.emplace_back(&io_context_, i, i);
+    }
     for (size_t i = 0; i < options_.models.size(); ++i) {
       InitLoadGen(i);
     }
@@ -254,7 +257,7 @@ class ShepherdRunner {
       scheduler_->AddModel(
           model_id, slo_ms,
           ModelDatabase::Singleton().GetModelProfile(
-              "FakeGPU", "FakeUUID", w.model_session.model_name()));
+              "FakeGPU", "FakeUUID", ModelSessionToProfileID(w.model_session)));
       frontends_.push_back(frontend);
       l.frontend = frontend.get();
     }

@@ -1,7 +1,6 @@
 #pragma once
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/system_timer.hpp>
-#include <boost/system/error_code.hpp>
 #include <deque>
 #include <vector>
 
@@ -26,7 +25,7 @@ class FakeShepherdBackend : public BackendStub {
 
  private:
   void OnBatchFinish(const BatchPlan& plan);
-  void OnTimer(boost::system::error_code ec);
+  void OnTimer();
   void SetupTimer();
   void SaveBatchPlan(BatchPlan plan);
 
@@ -35,7 +34,6 @@ class FakeShepherdBackend : public BackendStub {
   int gpu_id_;
   bool save_archive_;
   boost::asio::system_timer timer_;
-  std::mutex mutex_;
   std::vector<BatchPlan> batchplans_;
   std::deque<BatchPlan> batchplan_archive_;
 };

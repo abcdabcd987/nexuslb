@@ -2,6 +2,7 @@
 
 #include <glog/logging.h>
 
+#include <boost/asio/error.hpp>
 #include <boost/container/small_vector.hpp>
 #include <boost/iterator/iterator_categories.hpp>
 #include <boost/range.hpp>
@@ -44,7 +45,7 @@ void FlexScheduler::AddGpu(int gpu_id, BackendStub* backend_stub) {
   CHECK(gpus_.count(gpu_id) == 0);
   gpus_.emplace(gpu_id,
                 std::make_shared<GpuContext>(GpuContext{
-                    gpu_id, *CHECK_NOTNULL(backend_stub), TimePoint::min(),
+                    gpu_id, *CHECK_NOTNULL(backend_stub),
                     boost::asio::system_timer(io_context_), std::nullopt}));
 }
 
@@ -113,6 +114,15 @@ FlexScheduler::BatchGenResult FlexScheduler::BatchGen(
     //
     // NOTE: I have another question about Line 10. Is it r's deadline that we
     // care about or is it Bg(n,m)'s first request's deadline?
+    //
+    // NOTE: Communicated with Hong on 2023-12-19. He said that what he meant
+    // was that they first compute |Bg(n,m)|, i.e., the batch size, by sorting S
+    // by descending deadline. Then they include add requests by sorting S by
+    // ascending deadline. He acknowledged that the pseudocode is misaligned
+    // with their intention. But still, this scheme does not make sense to me.
+    // I'll just stick to the pseudocode with two fixes:
+    // 1. |Bg(n,m)| + 1
+    // 2. Use the earliest deadline in Bg(n,m)
     BatchPlan candidate;
     candidate.model_id = model_id;
     TimePoint earliest_deadline = TimePoint::max();
@@ -147,25 +157,28 @@ FlexScheduler::BatchGenResult FlexScheduler::BatchGen(
   return {best, std::move(timeouts)};
 }
 
-void FlexScheduler::OnGpuCompletion(int gpu_id) {
-  // Remove finished batch
-  VLOG(0) << "OnGpuCompletion: "
-          << "GPU " << gpu_id << " gpus_.size()=" << gpus_.size()
-          << " models_.size()=" << models_.size()
-          << " queries_.size()=" << queries_.size();
+void FlexScheduler::OnGpuCompletion(int gpu_id, int batch_id) {
   auto gctx = gpus_.at(gpu_id);
-  CHECK(gctx->current_batch.has_value());
+
+  // Guard against spurious wakeups, i.e., preempted.
+  if (!gctx->current_batch.has_value()) return;
+  if (gctx->current_batch->batch_id != batch_id) return;
+
+  // Remove finished batch
   for (auto query_id : gctx->current_batch->query_ids) {
     CHECK(queries_.erase(query_id) > 0);
   }
   gctx->current_batch.reset();
+  VLOG(0) << "OnGpuCompletion:"
+          << " gpu_id=" << gpu_id << " batch_id=" << batch_id
+          << " queries_.size()=" << queries_.size();
 
   // Line 5: Bg,n ←BATCHGEN(n) # Largest feasible batch across all Qm
   // Line 6: Execute Bg,n and dequeue requests in Bg,n from model queue
   auto sched_at = Clock::now();
   auto ret = BatchGen(sched_at, gpu_id, {});
   if (ret.batch.has_value()) {
-    AssignBatchPlan(ret.batch.value(), gpu_id, Preemption::kNo);
+    AssignBatchPlan(ret.batch.value(), gpu_id, std::nullopt);
   }
   SendDroppedQueries(ret.timeouts);
 
@@ -181,6 +194,8 @@ void FlexScheduler::OnGpuCompletion(int gpu_id) {
 }
 
 void FlexScheduler::AddQuery(Query query, FrontendStub* frontend_stub) {
+  VLOG(1) << "AddQuery query_id=" << query.query_id
+          << " model_id=" << query.model_id;
   // Line 10: Enqueue r to corresponding queue
   auto mctx = models_.at(query.model_id);
   auto deadline = query.arrival_at + std::chrono::milliseconds(mctx->slo_ms);
@@ -188,7 +203,6 @@ void FlexScheduler::AddQuery(Query query, FrontendStub* frontend_stub) {
       QueryContext{query, deadline, *CHECK_NOTNULL(frontend_stub)});
   mctx->queue.insert(qctx);
   queries_.emplace(query.query_id, qctx);
-  auto sched_at = Clock::now();
 
   // NOTE: Added a outer loop to support the "go to Line 11".
   std::unordered_set<int> changed_models;
@@ -214,6 +228,7 @@ void FlexScheduler::AddQuery(Query query, FrontendStub* frontend_stub) {
       }
 
       // Line 13:   Bg,n ←BATCHGEN(n)
+      auto sched_at = Clock::now();
       auto ret = BatchGen(sched_at, gpu_id, model_ids);
       auto new_bs = ret.batch.has_value() ? ret.batch->query_ids.size() : 0;
 
@@ -221,14 +236,15 @@ void FlexScheduler::AddQuery(Query query, FrontendStub* frontend_stub) {
         // Line 14:   if Bc = empty then
         // Line 15:     Execute Bg,n and dequeue requests in Bg,n
         if (new_bs > 0) {
-          AssignBatchPlan(ret.batch.value(), gpu_id, Preemption::kNo);
+          AssignBatchPlan(ret.batch.value(), gpu_id, std::nullopt);
         }
       } else if (new_bs >= preempt_lambda_ * old_bs && new_bs > 0) {
         // Line 16:   else if |Bg,n| ≥ λ×|Bc,n| then # Preemption rule
         // Line 17:     Preempt Bc,n
         // Line 18:     Execute Bg,n and dequeue requests in Bg,n
         // Line 19:     Treat requests in Bc,n as new arrivals (go to Line 11)
-        AssignBatchPlan(ret.batch.value(), gpu_id, Preemption::kYes);
+        AssignBatchPlan(ret.batch.value(), gpu_id,
+                        gctx->current_batch->batch_id);
         if (ret.batch->model_id != model_id) {
           changed_models.insert(ret.batch->model_id);
         }
@@ -239,16 +255,17 @@ void FlexScheduler::AddQuery(Query query, FrontendStub* frontend_stub) {
   }
 }
 
-void FlexScheduler::AssignBatchPlan(const BatchPlan& batch, int gpu_id,
-                                    Preemption preempt) {
+void FlexScheduler::AssignBatchPlan(BatchPlan batch, int gpu_id,
+                                    std::optional<int> preempt_batch_id) {
+  batch.batch_id = ++last_batch_id_;
   VLOG(0) << "AssignBatchPlan"
-          << " gpu_id=" << gpu_id
-          << " preempt=" << (preempt == Preemption::kYes)
-          << " batch.model_id=" << batch.model_id
-          << " batch.query_ids.size()=" << batch.query_ids.size();
+          << " batch_id=" << batch.batch_id << " gpu_id=" << gpu_id
+          << " preempt=" << (preempt_batch_id ? *preempt_batch_id : 0)
+          << " model_id=" << batch.model_id << " bs=" << batch.query_ids.size();
   auto gctx = gpus_.at(gpu_id);
-  if (preempt == Preemption::kYes) {
+  if (preempt_batch_id.has_value()) {
     CHECK(gctx->current_batch.has_value());
+    CHECK_EQ(gctx->current_batch->batch_id, preempt_batch_id.value());
     auto old_batch = gctx->current_batch.value();
     // Add preempted queries back to the queue
     auto old_mctx = models_.at(old_batch.model_id);
@@ -257,6 +274,7 @@ void FlexScheduler::AssignBatchPlan(const BatchPlan& batch, int gpu_id,
       old_mctx->queue.insert(qctx);
     }
     gctx->current_batch.reset();
+    gctx->free_timer.cancel();
   }
 
   CHECK(!gctx->current_batch.has_value())
@@ -275,16 +293,17 @@ void FlexScheduler::AssignBatchPlan(const BatchPlan& batch, int gpu_id,
   }
 
   // Setup timer
+  int batch_id = batch.batch_id;
   gctx->current_batch = batch;
-  gctx->free_at = batch.finish_at;
-  gctx->free_timer.expires_at(gctx->free_at);
-  gctx->free_timer.async_wait([this, gpu_id](boost::system::error_code ec) {
-    if (ec) return;
-    OnGpuCompletion(gpu_id);
-  });
+  gctx->free_timer.expires_at(batch.finish_at);
+  gctx->free_timer.async_wait(
+      [this, gpu_id, batch_id](boost::system::error_code ec) {
+        if (ec || ec == boost::asio::error::operation_aborted) return;
+        OnGpuCompletion(gpu_id, batch_id);
+      });
 
   // Send batch to backend
-  gctx->backend_stub.RunBatch(batch, preempt);
+  gctx->backend_stub.RunBatch(batch, preempt_batch_id);
 }
 
 void FlexScheduler::SendDroppedQueries(

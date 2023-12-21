@@ -1,5 +1,6 @@
 #pragma once
 #include <chrono>
+#include <optional>
 #include <vector>
 
 #include "nexus/common/time_util.h"
@@ -13,6 +14,7 @@ struct Query {
 };
 
 struct BatchPlan {
+  int batch_id;
   int model_id;
   std::vector<int> query_ids;
   TimePoint exec_at;
@@ -23,8 +25,6 @@ struct BatchPlan {
     return finish_at.time_since_epoch().count();
   }
 };
-
-enum class Preemption { kNo, kYes };
 
 struct ShepherdConfig {
   std::chrono::duration<long, std::nano> ctrl_latency;
@@ -44,7 +44,8 @@ struct ShepherdConfig {
 
 class BackendStub {
  public:
-  virtual void RunBatch(BatchPlan plan, Preemption preempt) = 0;
+  virtual void RunBatch(BatchPlan plan,
+                        std::optional<int> preempt_batch_id) = 0;
 };
 
 class FrontendStub {

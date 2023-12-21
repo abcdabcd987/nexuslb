@@ -9,8 +9,17 @@
 
 namespace nexus::shepherd {
 
-class FakeShepherdBackend : public BackendStub {
+class FakeShepherdBackend {
  public:
+  class Stub : public BackendStub {
+   public:
+    explicit Stub(FakeShepherdBackend* super) : super_(super) {}
+    void RunBatch(BatchPlan plan, std::optional<int> preempt_batch_id) override;
+
+   private:
+    FakeShepherdBackend* super_;
+  };
+
   FakeShepherdBackend(boost::asio::io_context* io_context,
                       FakeObjectAccessor* accessor, int gpu_id,
                       bool save_archive);
@@ -18,12 +27,13 @@ class FakeShepherdBackend : public BackendStub {
   const std::deque<BatchPlan>& batchplan_archive() const {
     return batchplan_archive_;
   }
+  Stub& stub() { return stub_; }
 
-  void RunBatch(BatchPlan plan, Preemption preempt) override;
   void DrainBatchPlans();
   void Stop();
 
  private:
+  void RunBatchInternal(BatchPlan plan, std::optional<int> preempt_batch_id);
   void OnBatchFinish(const BatchPlan& plan);
   void OnTimer();
   void SetupTimer();
@@ -34,6 +44,7 @@ class FakeShepherdBackend : public BackendStub {
   int gpu_id_;
   bool save_archive_;
   boost::asio::system_timer timer_;
+  Stub stub_;
   std::vector<BatchPlan> batchplans_;
   std::deque<BatchPlan> batchplan_archive_;
 };

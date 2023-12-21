@@ -243,7 +243,7 @@ class ShepherdRunner {
       auto backend = std::make_shared<FakeShepherdBackend>(
           &io_context_, &accessor_, backend_id, save_archive);
       backends_.push_back(backend);
-      scheduler_->AddGpu(backend_id, backend.get());
+      scheduler_->AddGpu(backend_id, &backend->stub());
     }
 
     for (size_t i = 0; i < options_.models.size(); ++i) {
@@ -252,7 +252,7 @@ class ShepherdRunner {
       int model_id = i;
       int slo_ms = w.model_session.latency_sla();
       auto frontend = std::make_shared<FakeShepherdFrontend>(
-          model_id, slo_ms, i, CalcReservedSize(i));
+          model_id, slo_ms, i, CalcReservedSize(i), l.global_id_offset);
       accessor_.AddFrontend(model_id, frontend);
       scheduler_->AddModel(
           model_id, slo_ms,
@@ -284,7 +284,7 @@ class ShepherdRunner {
     l.next_time = start_at_ + std::chrono::nanoseconds(l.start_offset_ns);
     l.ts_end_at = l.next_time;
 
-    l.last_global_id = 1000000000 * (workload_idx + 1);
+    l.global_id_offset = 10000000 * (workload_idx + 1);
     l.last_query_id = 0;
     l.model_session_id = ModelSessionToString(w.model_session);
   }
@@ -305,15 +305,14 @@ class ShepherdRunner {
     l.next_time += std::chrono::nanoseconds(gap_ns);
     auto next_time_ns = l.next_time.time_since_epoch().count();
     auto query_id = ++l.last_query_id;
-    auto global_id = ++l.last_global_id;
     CHECK_LT(query_id, l.frontend->reserved_size())
         << "Reserved size not big enough.";
 
-    l.query.query_id = query_id;
+    l.query.query_id = query_id + l.global_id_offset;
     l.query.model_id = l.model_id;
     l.query.arrival_at = l.next_time;
 
-    l.frontend->ReceivedQuery(query_id, next_time_ns);
+    l.frontend->ReceivedQuery(l.query.query_id, next_time_ns);
   }
 
   void PostNextRequest(size_t workload_idx) {
@@ -384,14 +383,13 @@ class ShepherdRunner {
   }
 
   void DumpBatchplan(FILE* f) {
-    int next_plan_id = 1;
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
       int gpu_idx = backend_idx;
       const auto& archive = backends_[backend_idx]->batchplan_archive();
       for (const auto& p : archive) {
         int model_idx = p.model_id;
-        int plan_id = next_plan_id++;
+        int plan_id = p.batch_id;
         int batch_size = p.query_ids.size();
         const auto& l = loadgen_contexts_[model_idx];
         auto bench_start_ns = start_at_.time_since_epoch().count() +
@@ -418,8 +416,8 @@ class ShepherdRunner {
     double cooldown_duration;
     long start_offset_ns;
 
-    uint64_t last_global_id;
-    uint64_t last_query_id;
+    int global_id_offset;
+    int last_query_id;
     int model_id;
 
     std::unique_ptr<GapGenerator> gap_gen;

@@ -22,7 +22,7 @@ class FakeShepherdFrontend : public FrontendStub {
   };
 
   FakeShepherdFrontend(int model_id, int slo_ms, size_t workload_idx,
-                       size_t reserved_size);
+                       size_t reserved_size, int global_id_offset);
   const QueryContext* queries() const { return queries_.get(); }
   size_t reserved_size() const { return reserved_size_; }
   size_t cnt_bad() const { return cnt_bad_; }
@@ -35,6 +35,7 @@ class FakeShepherdFrontend : public FrontendStub {
  private:
   int model_id_;
   int slo_ms_;
+  int global_id_offset_;
   size_t workload_idx_;
   size_t reserved_size_;
   std::unique_ptr<QueryContext[]> queries_;

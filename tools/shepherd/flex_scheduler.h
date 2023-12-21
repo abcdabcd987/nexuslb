@@ -49,7 +49,6 @@ class FlexScheduler {
   struct GpuContext {
     int gpu_id;
     BackendStub& backend_stub;
-    TimePoint free_at;
     boost::asio::system_timer free_timer;
     std::optional<BatchPlan> current_batch;
   };
@@ -61,8 +60,9 @@ class FlexScheduler {
 
   BatchGenResult BatchGen(TimePoint sched_at, int gpu_id,
                           boost::container::small_vector<int, 2> model_ids);
-  void OnGpuCompletion(int gpu_id);
-  void AssignBatchPlan(const BatchPlan& batch, int gpu_id, Preemption preempt);
+  void OnGpuCompletion(int gpu_id, int batch_id);
+  void AssignBatchPlan(BatchPlan batch, int gpu_id,
+                       std::optional<int> preempt_batch_id);
   void SendDroppedQueries(
       const std::vector<std::shared_ptr<QueryContext>>& dropped);
 
@@ -73,6 +73,7 @@ class FlexScheduler {
   std::unordered_map<int, std::shared_ptr<ModelContext>> models_;
   std::unordered_map<int, std::shared_ptr<GpuContext>> gpus_;
   std::unordered_map<int, std::shared_ptr<QueryContext>> queries_;
+  int last_batch_id_ = 0;
 };
 
 }  // namespace nexus::shepherd

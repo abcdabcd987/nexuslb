@@ -237,7 +237,7 @@ std::pair<uint32_t, double> ModelProfile::GetMaxThroughput(
 }
 
 ModelProfile ModelProfile::FromSleepProfile(const SleepProfile& profile) {
-  constexpr double kStdFactor = 0.01;
+  constexpr double kStdFactor = 0;
   ModelProfile p;
   for (uint32_t i = 1; i < 500; ++i) {
     double f = profile.forward_us(i);

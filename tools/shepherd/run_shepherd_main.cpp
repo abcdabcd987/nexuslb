@@ -383,6 +383,7 @@ class ShepherdRunner {
   }
 
   void DumpBatchplan(FILE* f) {
+    std::vector<std::vector<long>> queue_delay(options_.models.size());
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
       int gpu_idx = backend_idx;
@@ -399,7 +400,21 @@ class ShepherdRunner {
         if (exec_at < 0 || finish_at > l.bench_duration) continue;
         fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
                 model_idx, batch_size, exec_at, finish_at);
+
+        for (auto global_id : p.query_ids) {
+          auto query_id = global_id - l.global_id_offset;
+          auto& qctx = l.frontend->queries()[query_id];
+          queue_delay[model_idx].push_back(p.exec_time_ns() -
+                                           qctx.frontend_recv_ns);
+        }
       }
+    }
+    for (size_t i = 0; i < queue_delay.size(); ++i) {
+      fprintf(f, "QUEUE-DELAY %zu", i);
+      for (auto x : queue_delay[i]) {
+        fprintf(f, " %ld", x);
+      }
+      fprintf(f, "\n");
     }
   }
 

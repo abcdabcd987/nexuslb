@@ -103,6 +103,8 @@ class RankThread {
   void UpdateGpu(GpuContext* gctx, TimePoint free_at);
   void SetGpuTimer();
   void OnGpuTimer(GpuContext* gctx);
+  long GetPriority(const ExecutionCandidate& c, const ModelProfile& profile,
+                   TimePoint now) const;
 
   void Poll();
 
@@ -119,6 +121,7 @@ class RankThread {
   ValueRankedSplayMap<PerModelThreadData*, TimePoint> plans_rank_invalid_after_;
   ValueRankedSplayMap<PerModelThreadData*, std::chrono::nanoseconds>
       plans_rank_latency_;
+  ValueRankedSplayMap<PerModelThreadData*, long> plans_rank_priority_;
 };
 
 }  // namespace rankmt

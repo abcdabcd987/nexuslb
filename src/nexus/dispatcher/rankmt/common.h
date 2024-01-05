@@ -44,9 +44,37 @@ class SchedulableCondition {
   Value value_;
 };
 
+// Priority of a candidate when a GPU becomes free.
+class CandidatePriority {
+ public:
+  enum Value {
+    // Disabled
+    kDisabled = 1,
+    // Earliest (deadline - exec_elapse)
+    kInvalidAfter = 2,
+    // Pick the one with earliest deadline.
+    kDeadline = 3,
+    // Slack := exec_at - now
+    kSlack = 4,
+    // Efficiency := (current_bs/l(current_bs)) / (target_bs/l(target_bs))
+    kEfficiency = 5,
+  };
+
+  constexpr CandidatePriority() : value_(kInvalidAfter) {}
+  constexpr CandidatePriority(Value value) : value_(value) {}
+  constexpr operator Value() const { return value_; }
+  constexpr const char* ToString() const;
+  static constexpr const char* ToString(CandidatePriority c);
+  static constexpr std::optional<CandidatePriority> Parse(std::string_view s);
+
+ private:
+  Value value_;
+};
+
 struct RankmtConfig {
   SchedulableCondition schedulable;
   DropPolicy drop;
+  CandidatePriority priority;
 
   // Dispatcher -> Backend: Batchplan
   std::chrono::duration<long, std::nano> ctrl_latency;
@@ -82,8 +110,11 @@ struct ExecutionCandidate {
   TimePoint exec_at;
   TimePoint invalid_after;
 
+  TimePoint _dev_deadline;
+  float _dev_efficiency;
+
   static ExecutionCandidate Invalid() {
-    return {0, TimePoint::max(), TimePoint::min()};
+    return {0, TimePoint::max(), TimePoint::min(), TimePoint::min(), 0.0};
   }
 };
 

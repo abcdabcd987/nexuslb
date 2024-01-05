@@ -18,6 +18,10 @@ DEFINE_string(rankmt_schedulable,
 DEFINE_string(rankmt_drop, RankmtConfig::Default().drop.ToString(),
               "Rankmt: Whether to drop head of queue during batching. "
               "Options: kDropTimeout, kWindowDrop, kWindowFCFS");
+DEFINE_string(
+    rankmt_priority, RankmtConfig::Default().priority.ToString(),
+    "Rankmt: Priority of a candidate when a GPU becomes free."
+    "Options: kDisabled, kInvalidAfter, kDeadline, kSlack, kEfficiency");
 DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
               "Rankmt: control plane latency in microseconds.");
 DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
@@ -87,6 +91,36 @@ constexpr std::optional<SchedulableCondition> SchedulableCondition::Parse(
   return std::nullopt;
 }
 
+constexpr const char* CandidatePriority::ToString(CandidatePriority c) {
+  switch (c.value_) {
+    case kDisabled:
+      return "kDisabled";
+    case kInvalidAfter:
+      return "kInvalidAfter";
+    case kDeadline:
+      return "kDeadline";
+    case kSlack:
+      return "kSlack";
+    case kEfficiency:
+      return "kEfficiency";
+  }
+  CHECK(false) << "unreachable";
+}
+
+constexpr const char* CandidatePriority::ToString() const {
+  return ToString(*this);
+}
+
+constexpr std::optional<CandidatePriority> CandidatePriority::Parse(
+    std::string_view s) {
+  if (s == "kDisabled") return CandidatePriority::kDisabled;
+  if (s == "kInvalidAfter") return CandidatePriority::kInvalidAfter;
+  if (s == "kDeadline") return CandidatePriority::kDeadline;
+  if (s == "kSlack") return CandidatePriority::kSlack;
+  if (s == "kEfficiency") return CandidatePriority::kEfficiency;
+  return std::nullopt;
+}
+
 RankmtConfig RankmtConfig::FromFlags() {
   RankmtConfig rankmt;
   auto schedulable = SchedulableCondition::Parse(FLAGS_rankmt_schedulable);
@@ -97,8 +131,13 @@ RankmtConfig RankmtConfig::FromFlags() {
   if (!drop.has_value()) {
     LOG(FATAL) << "Invalid value for --rankmt_drop";
   }
+  auto priority = CandidatePriority::Parse(FLAGS_rankmt_priority);
+  if (!priority.has_value()) {
+    LOG(FATAL) << "Invalid value for --rankmt_priority";
+  }
   rankmt.schedulable = schedulable.value();
   rankmt.drop = drop.value();
+  rankmt.priority = priority.value();
   rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
   rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
   rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);

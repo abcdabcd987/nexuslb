@@ -10,6 +10,7 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/time_util.h"
 #include "nexus/common/typedef.h"
+#include "nexus/dispatcher/rankmt/common.h"
 #include "nexus/dispatcher/rankmt/model_thread.h"
 
 namespace nexus {
@@ -189,6 +190,23 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
   });
 }
 
+long RankThread::GetPriority(const ExecutionCandidate& c,
+                             const ModelProfile& profile, TimePoint now) const {
+  switch (config_.priority) {
+    case CandidatePriority::kDisabled:
+      return 0;
+    case CandidatePriority::kInvalidAfter:
+      return c.invalid_after.time_since_epoch().count();
+    case CandidatePriority::kDeadline:
+      return c._dev_deadline.time_since_epoch().count();
+    case CandidatePriority::kSlack:
+      return (c.exec_at - now).count();
+    case CandidatePriority::kEfficiency:
+      return static_cast<long>(-c._dev_efficiency * 1e9);
+  }
+  CHECK(false) << "unreachable";
+}
+
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   CHECK(mdata.candidate.has_value());
   const auto& candidate = mdata.candidate.value();
@@ -206,6 +224,7 @@ void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   });
   plans_rank_invalid_after_.Remove(&mdata);
   plans_rank_latency_.Remove(&mdata);
+  plans_rank_priority_.Remove(&mdata);
   SetGpuTimer();
 }
 
@@ -254,6 +273,8 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
   if (gctx->free_at > mdata.candidate->exec_at) {
     plans_rank_invalid_after_.Upsert(&mdata, mdata.candidate->invalid_after);
     plans_rank_latency_.Upsert(&mdata, latency);
+    plans_rank_priority_.Upsert(
+        &mdata, GetPriority(*mdata.candidate, mdata.profile, now));
     SetGpuTimer();
     return;
   }
@@ -280,6 +301,7 @@ void RankThread::GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx) {
   // Remove the candidate because it's no longer valid.
   plans_rank_invalid_after_.Remove(&mdata);
   plans_rank_latency_.Remove(&mdata);
+  plans_rank_priority_.Remove(&mdata);
 
   // Reject candidate updates until ModelThread picks up the granted backend.
   // Because after the backend is granted and before ModelThread picks it up,
@@ -308,13 +330,32 @@ void RankThread::OnGpuTimer(GpuContext* gctx) {
       // any future gctx2 because gctx2->free_at > gctx->free_at.
       plans_rank_invalid_after_.Remove(mdata);
       plans_rank_latency_.Remove(mdata);
+      plans_rank_priority_.Remove(mdata);
     } else {
       break;
     }
   }
-  if (plans_rank_invalid_after_.Size() != 0) {
-    auto* mdata = plans_rank_invalid_after_.GetByRank(0).key.get();
-    CHECK(mdata->candidate.has_value());
+  PerModelThreadData* mdata = nullptr;
+  if (config_.priority == CandidatePriority::kDisabled) {
+    if (plans_rank_invalid_after_.Size() > 0) {
+      mdata = plans_rank_invalid_after_.GetByRank(0).key.get();
+      CHECK(mdata->candidate.has_value());
+    }
+  } else {
+    while (plans_rank_priority_.Size() > 0) {
+      auto* d = plans_rank_priority_.GetByRank(0).key.get();
+      CHECK(d->candidate.has_value());
+      if (gctx->free_at > d->candidate->invalid_after) {
+        plans_rank_invalid_after_.Remove(d);
+        plans_rank_latency_.Remove(d);
+        plans_rank_priority_.Remove(d);
+      } else {
+        mdata = d;
+        break;
+      }
+    }
+  }
+  if (mdata) {
     GrantGpuToModel(*mdata, gctx);
   }
   SetGpuTimer();

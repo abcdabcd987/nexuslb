@@ -190,6 +190,8 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
   batch_policy_.Update(sched_at, gpu_free_at, target_batch_size_);
 
   TimePoint exec_at, invalid_after;
+  TimePoint _dev_deadline;
+  float _dev_efficiency;
   auto bs = batch_policy_.batch_size();
   if (bs > 0) {
     constexpr auto kTimerJitter = std::chrono::microseconds(100);
@@ -226,6 +228,12 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
         {earliest_exec_at, gpu_free_at, std::min(exec_at, latest_exec_at)});
     invalid_after = deadline - exec_elapse;
 
+    auto target_exec_elapse = EstimateExecElapse(profile_, target_batch_size_);
+    _dev_efficiency =
+        (static_cast<float>(bs) / exec_elapse.count()) /
+        (static_cast<float>(target_batch_size_) / target_exec_elapse.count());
+    _dev_deadline = deadline;
+
     drop_timer_.SetTimeout(deadline);
     drop_timer_.AsyncWait([this](ario::ErrorCode err) {
       if (err != ario::ErrorCode::kOk) return;
@@ -240,11 +248,14 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
   } else {
     exec_at = TimePoint::max();
     invalid_after = TimePoint::min();
+    _dev_efficiency = 0.0;
+    _dev_deadline = TimePoint::min();
     drop_timer_.CancelAll();
     invalidate_timer_.CancelAll();
   }
 
-  candidate_ = ExecutionCandidate{bs, exec_at, invalid_after};
+  candidate_ = ExecutionCandidate{bs, exec_at, invalid_after, _dev_deadline,
+                                  _dev_efficiency};
 
   // Send dropped queries
   if (batch_policy_.CountDrops() > 0) {

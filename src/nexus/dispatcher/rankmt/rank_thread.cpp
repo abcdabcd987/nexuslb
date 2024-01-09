@@ -190,23 +190,6 @@ void RankThread::PostRemoveBackend(NodeId backend_id) {
   });
 }
 
-long RankThread::GetPriority(const ExecutionCandidate& c,
-                             const ModelProfile& profile, TimePoint now) const {
-  switch (config_.priority) {
-    case CandidatePriority::kDisabled:
-      return 0;
-    case CandidatePriority::kInvalidAfter:
-      return c.invalid_after.time_since_epoch().count();
-    case CandidatePriority::kDeadline:
-      return c._dev_deadline.time_since_epoch().count();
-    case CandidatePriority::kSlack:
-      return (c.exec_at - now).count();
-    case CandidatePriority::kEfficiency:
-      return static_cast<long>(-c._dev_efficiency * 1e9);
-  }
-  CHECK(false) << "unreachable";
-}
-
 void RankThread::SetupActivePlan(PerModelThreadData& mdata) {
   CHECK(mdata.candidate.has_value());
   const auto& candidate = mdata.candidate.value();
@@ -268,26 +251,31 @@ void RankThread::OnPlanTimer(PerModelThreadData& mdata) {
   if (gpu_availability_pool_.Size() == 0) {
     return;
   }
+
+  // Find the earliest available GPU
   auto gpu_id = gpu_availability_pool_.GetByRank(0).key.get();
   auto& gctx = gpus_.at(gpu_id);
-  if (gctx->free_at > mdata.candidate->exec_at) {
+  if (config_.match.IsPrimaryEnabled() &&
+      gctx->free_at <= mdata.candidate->exec_at) {
+    // Primary matchmaking mechanism: Initiated by Model.
+    GrantGpuToModel(mdata, gctx.get(), ExecutionGrantedBy::kModel);
+  } else if (config_.match.IsSecondaryEnabled()) {
+    // Secondary matchmaking mechanism: Initiated by GPU.
     plans_rank_invalid_after_.Upsert(&mdata, mdata.candidate->invalid_after);
     plans_rank_latency_.Upsert(&mdata, latency);
-    plans_rank_priority_.Upsert(
-        &mdata, GetPriority(*mdata.candidate, mdata.profile, now));
+    plans_rank_priority_.Upsert(&mdata, mdata.candidate->priority);
     SetGpuTimer();
-    return;
   }
-
-  GrantGpuToModel(mdata, gctx.get());
 }
 
-void RankThread::GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx) {
+void RankThread::GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx,
+                                 ExecutionGrantedBy match_method) {
   // Let ModelThread send out the plan
   GrantedGpuMessage msg;
   msg.gpu_id = gctx->gpu_id;
   msg.plan_id = NextPlanId();
   msg.free_at = gctx->free_at;
+  msg.match_method = match_method;
   mdata.model_thread.PostGrantedGpu(msg);
   VLOG(1) << "GrantBackend " << mdata.model_thread.model_session().model_name()
           << " id=" << msg.plan_id.t << " gpu=" << gctx->gpu_id;
@@ -356,7 +344,7 @@ void RankThread::OnGpuTimer(GpuContext* gctx) {
     }
   }
   if (mdata) {
-    GrantGpuToModel(*mdata, gctx);
+    GrantGpuToModel(*mdata, gctx, ExecutionGrantedBy::kGpu);
   }
   SetGpuTimer();
 }

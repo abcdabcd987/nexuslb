@@ -99,12 +99,11 @@ class RankThread {
   PlanId NextPlanId();
   void SetupActivePlan(PerModelThreadData& mdata);
   void OnPlanTimer(PerModelThreadData& mdata);
-  void GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx);
+  void GrantGpuToModel(PerModelThreadData& mdata, GpuContext* gctx,
+                       ExecutionGrantedBy match_method);
   void UpdateGpu(GpuContext* gctx, TimePoint free_at);
   void SetGpuTimer();
   void OnGpuTimer(GpuContext* gctx);
-  long GetPriority(const ExecutionCandidate& c, const ModelProfile& profile,
-                   TimePoint now) const;
 
   void Poll();
 

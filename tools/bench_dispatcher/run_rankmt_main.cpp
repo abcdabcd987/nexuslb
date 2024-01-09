@@ -428,6 +428,8 @@ class DispatcherRunner {
   }
 
   void DumpBatchplan(FILE* f) {
+    std::vector<int> match_method(options_.models.size() * 2, 0);
+    std::vector<std::vector<long>> qd(options_.models.size());
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
       int gpu_idx = backend_idx;
@@ -444,7 +446,43 @@ class DispatcherRunner {
         if (exec_at < 0 || finish_at > l.bench_duration) continue;
         fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
                 model_idx, batch_size, exec_at, finish_at);
+
+        for (const auto& q : p.queries()) {
+          const auto& c = q.query_without_input().clock();
+          auto queue_delay_ns = p.exec_time_ns() - c.frontend_recv_ns();
+          qd[model_idx].push_back(queue_delay_ns);
+        }
+        CHECK(p.match_method() == 1 || p.match_method() == 2);
+        ++match_method[(model_idx << 1) | (p.match_method() - 1)];
       }
+    }
+
+    // QUEUE-DELAY model_idx percentiles...
+    for (size_t model_idx = 0; model_idx < options_.models.size();
+         ++model_idx) {
+      auto& v = qd[model_idx];
+      std::sort(v.begin(), v.end());
+
+      fprintf(f, "QUEUE-DELAY %zu", model_idx);
+      if (v.size() == 0) {
+        fprintf(f, "\n");
+      } else if (v.size() == 1) {
+        fprintf(f, " %ld\n", v.back());
+      } else {
+        int bins = v.size() <= 1000 ? v.size() - 1 : 1000;
+        double inc = static_cast<double>(v.size()) / bins;
+        for (int i = 0; i < bins; ++i) {
+          auto idx = static_cast<int>(inc * i);
+          fprintf(f, " %ld", v[idx]);
+        }
+        fprintf(f, " %ld\n", v.back());
+      }
+    }
+
+    // MATCH-METHOD model_idx cnt_primary cnt_secondary
+    for (size_t i = 0; i < options_.models.size(); ++i) {
+      fprintf(f, "MATCH-METHOD %zu %d %d\n", i, match_method[(i << 1) | 0],
+              match_method[(i << 1) | 1]);
     }
   }
 

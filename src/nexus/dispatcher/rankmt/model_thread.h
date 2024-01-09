@@ -91,6 +91,7 @@ class ModelThread {
   void OnDropTimer();
   void SendDroppedQueries(const SortedQueryList& drops);
   void OnRpsMeterTimer();
+  bool IsBetaLambdaSchedulable(uint32_t bs) const;
 
   RankmtConfig config_;
   ario::EpollExecutor& executor_;

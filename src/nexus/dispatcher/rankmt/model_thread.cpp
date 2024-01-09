@@ -160,6 +160,23 @@ CtrlStatus ModelThread::EnqueueQuery(DispatchRequest&& request) {
   return CtrlStatus::CTRL_OK;
 }
 
+bool ModelThread::IsBetaLambdaSchedulable(uint32_t bs) const {
+  auto rps = rps_meter_.Get();
+  if (!rps.has_value()) {
+    return false;
+  }
+  float lambda = rps->avg;
+
+  float x1 = bs != target_batch_size_ ? target_batch_size_ : bs + 1;
+  float l1 = profile_.GetForwardLatency(x1) * 1e-6;
+  float lb = profile_.GetForwardLatency(bs) * 1e-6;
+  float alpha = (l1 - lb) / (x1 - bs);
+  float beta = l1 - alpha * x1;
+
+  float beta_lambda = beta * lambda;
+  return bs >= beta_lambda;
+}
+
 void ModelThread::UpdateTargetBatchSize(const std::optional<AvgStd>& rps) {
   if (config_.drop == DropPolicy::kDropTimeout) {
     target_batch_size_ = 1;
@@ -190,8 +207,7 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
   batch_policy_.Update(sched_at, gpu_free_at, target_batch_size_);
 
   TimePoint exec_at, invalid_after;
-  TimePoint _dev_deadline;
-  float _dev_efficiency;
+  long priority;
   auto bs = batch_policy_.batch_size();
   if (bs > 0) {
     constexpr auto kTimerJitter = std::chrono::microseconds(100);
@@ -221,6 +237,11 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
       case SchedulableCondition::kLatest:
         exec_at = latest_exec_at;
         break;
+      case SchedulableCondition::kBetaLambda: {
+        bool b = IsBetaLambdaSchedulable(bs);
+        exec_at = b ? earliest_exec_at : frontrun_exec_at;
+        break;
+      }
       default:
         LOG(FATAL) << "Unreachable";
     }
@@ -228,11 +249,29 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
         {earliest_exec_at, gpu_free_at, std::min(exec_at, latest_exec_at)});
     invalid_after = deadline - exec_elapse;
 
-    auto target_exec_elapse = EstimateExecElapse(profile_, target_batch_size_);
-    _dev_efficiency =
-        (static_cast<float>(bs) / exec_elapse.count()) /
-        (static_cast<float>(target_batch_size_) / target_exec_elapse.count());
-    _dev_deadline = deadline;
+    switch (config_.priority) {
+      case CandidatePriority::kDisabled:
+        priority = 0;
+        break;
+      case CandidatePriority::kInvalidAfter:
+        priority = invalid_after.time_since_epoch().count();
+        break;
+      case CandidatePriority::kDeadline:
+        priority = deadline.time_since_epoch().count();
+        break;
+      case CandidatePriority::kSlack:
+        priority = (exec_at - sched_at).count();
+        break;
+      case CandidatePriority::kEfficiency: {
+        auto target_exec_elapse =
+            EstimateExecElapse(profile_, target_batch_size_);
+        auto efficiency = (static_cast<float>(bs) / exec_elapse.count()) /
+                          (static_cast<float>(target_batch_size_) /
+                           target_exec_elapse.count());
+        priority = static_cast<long>(-efficiency * 1e9);
+        break;
+      }
+    }
 
     drop_timer_.SetTimeout(deadline);
     drop_timer_.AsyncWait([this](ario::ErrorCode err) {
@@ -248,14 +287,12 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
   } else {
     exec_at = TimePoint::max();
     invalid_after = TimePoint::min();
-    _dev_efficiency = 0.0;
-    _dev_deadline = TimePoint::min();
+    priority = 0;
     drop_timer_.CancelAll();
     invalidate_timer_.CancelAll();
   }
 
-  candidate_ = ExecutionCandidate{bs, exec_at, invalid_after, _dev_deadline,
-                                  _dev_efficiency};
+  candidate_ = ExecutionCandidate{bs, exec_at, invalid_after, priority};
 
   // Send dropped queries
   if (batch_policy_.CountDrops() > 0) {
@@ -337,6 +374,7 @@ TimePoint ModelThread::DoGrantedGpuMessage(GrantedGpuMessage& cmd) {
     query->set_rdma_read_length(qctx->request.rdma_read_length());
     qctx->request.Clear();
   }
+  proto.set_match_method(static_cast<int>(cmd.match_method));
   VLOG(1) << "BatchPlan:  " << model_session_.model_name()
           << " id=" << cmd.plan_id.t << " gpu=" << delegate->backend_id() << "#"
           << delegate->gpu_idx() << "(" << cmd.gpu_id << ")"

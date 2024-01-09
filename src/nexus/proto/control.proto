@@ -220,4 +220,7 @@ message BatchPlanProto {
   int64 exec_time_ns = 4;
   int64 deadline_ns = 5;
   int64 expected_finish_time_ns = 6;
+
+  // Stats
+  int32 match_method = 10;
 }

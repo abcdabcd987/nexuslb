@@ -14,7 +14,7 @@ DEFINE_string(rankmt_schedulable,
               RankmtConfig::Default().schedulable.ToString(),
               "Rankmt: condition for a Candidate to become schedulable. "
               "Options: kImmediately, kTargetBatchSize, kTargetQueuingDelay, "
-              "kFrontrun, kLatest");
+              "kFrontrun, kLatest, kBetaLambda");
 DEFINE_string(rankmt_drop, RankmtConfig::Default().drop.ToString(),
               "Rankmt: Whether to drop head of queue during batching. "
               "Options: kDropTimeout, kWindowDrop, kWindowFCFS");
@@ -22,6 +22,9 @@ DEFINE_string(
     rankmt_priority, RankmtConfig::Default().priority.ToString(),
     "Rankmt: Priority of a candidate when a GPU becomes free."
     "Options: kDisabled, kInvalidAfter, kDeadline, kSlack, kEfficiency");
+DEFINE_string(rankmt_match_methods, RankmtConfig::Default().match.ToString(),
+              "Rankmt: Allowed Model-GPU matchmaking methods."
+              "Options: kPrimaryOnly, kSecondaryOnly, kBoth");
 DEFINE_uint32(rankmt_dctrl, RankmtConfig::Default().ctrl_latency.count() / 1000,
               "Rankmt: control plane latency in microseconds.");
 DEFINE_uint32(rankmt_ddata, RankmtConfig::Default().data_latency.count() / 1000,
@@ -72,6 +75,8 @@ constexpr const char* SchedulableCondition::ToString(SchedulableCondition c) {
       return "kFrontrun";
     case kLatest:
       return "kLatest";
+    case kBetaLambda:
+      return "kBetaLambda";
   }
   CHECK(false) << "unreachable";
 }
@@ -88,6 +93,7 @@ constexpr std::optional<SchedulableCondition> SchedulableCondition::Parse(
     return SchedulableCondition::kTargetQueuingDelay;
   if (s == "kFrontrun") return SchedulableCondition::kFrontrun;
   if (s == "kLatest") return SchedulableCondition::kLatest;
+  if (s == "kBetaLambda") return SchedulableCondition::kBetaLambda;
   return std::nullopt;
 }
 
@@ -121,6 +127,27 @@ constexpr std::optional<CandidatePriority> CandidatePriority::Parse(
   return std::nullopt;
 }
 
+constexpr const char* MatchMethods::ToString(MatchMethods c) {
+  switch (c.value_) {
+    case kPrimaryOnly:
+      return "kPrimaryOnly";
+    case kSecondaryOnly:
+      return "kSecondaryOnly";
+    case kBoth:
+      return "kBoth";
+  }
+  CHECK(false) << "unreachable";
+}
+
+constexpr const char* MatchMethods::ToString() const { return ToString(*this); }
+
+constexpr std::optional<MatchMethods> MatchMethods::Parse(std::string_view s) {
+  if (s == "kPrimaryOnly") return MatchMethods::kPrimaryOnly;
+  if (s == "kSecondaryOnly") return MatchMethods::kSecondaryOnly;
+  if (s == "kBoth") return MatchMethods::kBoth;
+  return std::nullopt;
+}
+
 RankmtConfig RankmtConfig::FromFlags() {
   RankmtConfig rankmt;
   auto schedulable = SchedulableCondition::Parse(FLAGS_rankmt_schedulable);
@@ -135,9 +162,14 @@ RankmtConfig RankmtConfig::FromFlags() {
   if (!priority.has_value()) {
     LOG(FATAL) << "Invalid value for --rankmt_priority";
   }
+  auto match = MatchMethods::Parse(FLAGS_rankmt_match_methods);
+  if (!match.has_value()) {
+    LOG(FATAL) << "Invalid value for --rankmt_match";
+  }
   rankmt.schedulable = schedulable.value();
   rankmt.drop = drop.value();
   rankmt.priority = priority.value();
+  rankmt.match = match.value();
   rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
   rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
   rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);

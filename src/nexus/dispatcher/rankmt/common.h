@@ -30,6 +30,9 @@ class SchedulableCondition {
     kFrontrun = 4,
     // Latest possible
     kLatest = 5,
+    // Comparing the current batch size with the product of target batch size
+    // and request rate.
+    kBetaLambda = 6,
   };
 
   constexpr SchedulableCondition() : value_(kFrontrun) {}
@@ -54,7 +57,7 @@ class CandidatePriority {
     kInvalidAfter = 2,
     // Pick the one with earliest deadline.
     kDeadline = 3,
-    // Slack := exec_at - now
+    // Slack := exec_at - sched_at. Note: this one does not make sense.
     kSlack = 4,
     // Efficiency := (current_bs/l(current_bs)) / (target_bs/l(target_bs))
     kEfficiency = 5,
@@ -71,10 +74,42 @@ class CandidatePriority {
   Value value_;
 };
 
+// Allowed Model-GPU matchmaking methods.
+class MatchMethods {
+ public:
+  enum Value {
+    // Model finding GPU
+    kPrimaryOnly = 1,
+    // GPU finding model
+    kSecondaryOnly = 2,
+    // First model finding GPU, then GPU finding model.
+    kBoth = 3,
+  };
+
+  constexpr MatchMethods() : value_(kBoth) {}
+  constexpr MatchMethods(Value value) : value_(value) {}
+  constexpr operator Value() const { return value_; }
+  constexpr const char* ToString() const;
+  static constexpr const char* ToString(MatchMethods c);
+  static constexpr std::optional<MatchMethods> Parse(std::string_view s);
+
+  bool IsPrimaryEnabled() const {
+    return value_ == kPrimaryOnly || value_ == kBoth;
+  }
+
+  bool IsSecondaryEnabled() const {
+    return value_ == kSecondaryOnly || value_ == kBoth;
+  }
+
+ private:
+  Value value_;
+};
+
 struct RankmtConfig {
   SchedulableCondition schedulable;
   DropPolicy drop;
   CandidatePriority priority;
+  MatchMethods match;
 
   // Dispatcher -> Backend: Batchplan
   std::chrono::duration<long, std::nano> ctrl_latency;
@@ -109,13 +144,16 @@ struct ExecutionCandidate {
   uint32_t batch_size;
   TimePoint exec_at;
   TimePoint invalid_after;
-
-  TimePoint _dev_deadline;
-  float _dev_efficiency;
+  long priority;
 
   static ExecutionCandidate Invalid() {
-    return {0, TimePoint::max(), TimePoint::min(), TimePoint::min(), 0.0};
+    return {0, TimePoint::max(), TimePoint::min(), 0};
   }
+};
+
+enum class ExecutionGrantedBy {
+  kModel = 1,
+  kGpu = 2,
 };
 
 // RankThread -> ModelThread
@@ -123,6 +161,9 @@ struct GrantedGpuMessage {
   GpuId gpu_id;
   PlanId plan_id;
   TimePoint free_at;
+
+  // Stats
+  ExecutionGrantedBy match_method;
 };
 
 // ModelThread -> RankThread

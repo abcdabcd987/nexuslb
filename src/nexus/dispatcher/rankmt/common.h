@@ -63,7 +63,7 @@ class CandidatePriority {
     kEfficiency = 5,
   };
 
-  constexpr CandidatePriority() : value_(kInvalidAfter) {}
+  constexpr CandidatePriority() : value_(kDisabled) {}
   constexpr CandidatePriority(Value value) : value_(value) {}
   constexpr operator Value() const { return value_; }
   constexpr const char* ToString() const;
@@ -86,7 +86,7 @@ class MatchMethods {
     kBoth = 3,
   };
 
-  constexpr MatchMethods() : value_(kBoth) {}
+  constexpr MatchMethods() : value_(kSecondaryOnly) {}
   constexpr MatchMethods(Value value) : value_(value) {}
   constexpr operator Value() const { return value_; }
   constexpr const char* ToString() const;

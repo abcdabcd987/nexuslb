@@ -427,9 +427,27 @@ class DispatcherRunner {
     }
   }
 
+  void DumpPercentiles(FILE* f, std::vector<long>* v) {
+    std::sort(v->begin(), v->end());
+    if (v->size() == 0) {
+      fprintf(f, "\n");
+    } else if (v->size() == 1) {
+      fprintf(f, " %ld\n", v->back());
+    } else {
+      int bins = v->size() <= 1000 ? v->size() - 1 : 1000;
+      double inc = static_cast<double>(v->size()) / bins;
+      for (int i = 0; i < bins; ++i) {
+        auto idx = static_cast<int>(inc * i);
+        fprintf(f, " %ld", (*v)[idx]);
+      }
+      fprintf(f, " %ld\n", v->back());
+    }
+  }
+
   void DumpBatchplan(FILE* f) {
     std::vector<int> match_method(options_.models.size() * 2, 0);
     std::vector<std::vector<long>> qd(options_.models.size());
+    std::vector<std::vector<long>> slack(options_.models.size());
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
       int gpu_idx = backend_idx;
@@ -449,8 +467,12 @@ class DispatcherRunner {
 
         for (const auto& q : p.queries()) {
           const auto& c = q.query_without_input().clock();
-          auto queue_delay_ns = p.exec_time_ns() - c.frontend_recv_ns();
-          qd[model_idx].push_back(queue_delay_ns);
+          qd[model_idx].push_back(p.exec_time_ns() - c.frontend_recv_ns());
+          slack[model_idx].push_back(
+              q.query_without_input().clock().frontend_recv_ns() +
+              options_.models[model_idx].model_session.latency_sla() *
+                  1000000L -
+              p.expected_finish_time_ns());
         }
         CHECK(p.match_method() == 1 || p.match_method() == 2);
         ++match_method[(model_idx << 1) | (p.match_method() - 1)];
@@ -460,23 +482,15 @@ class DispatcherRunner {
     // QUEUE-DELAY model_idx percentiles...
     for (size_t model_idx = 0; model_idx < options_.models.size();
          ++model_idx) {
-      auto& v = qd[model_idx];
-      std::sort(v.begin(), v.end());
-
       fprintf(f, "QUEUE-DELAY %zu", model_idx);
-      if (v.size() == 0) {
-        fprintf(f, "\n");
-      } else if (v.size() == 1) {
-        fprintf(f, " %ld\n", v.back());
-      } else {
-        int bins = v.size() <= 1000 ? v.size() - 1 : 1000;
-        double inc = static_cast<double>(v.size()) / bins;
-        for (int i = 0; i < bins; ++i) {
-          auto idx = static_cast<int>(inc * i);
-          fprintf(f, " %ld", v[idx]);
-        }
-        fprintf(f, " %ld\n", v.back());
-      }
+      DumpPercentiles(f, &qd[model_idx]);
+    }
+
+    // SLACK model_idx percentiles...
+    for (size_t model_idx = 0; model_idx < options_.models.size();
+         ++model_idx) {
+      fprintf(f, "SLACK %zu", model_idx);
+      DumpPercentiles(f, &slack[model_idx]);
     }
 
     // MATCH-METHOD model_idx cnt_primary cnt_secondary

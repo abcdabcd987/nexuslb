@@ -460,7 +460,26 @@ class NexusRunner {
     }
   }
 
+  void DumpPercentiles(FILE* f, std::vector<long>* v) {
+    std::sort(v->begin(), v->end());
+    if (v->size() == 0) {
+      fprintf(f, "\n");
+    } else if (v->size() == 1) {
+      fprintf(f, " %ld\n", v->back());
+    } else {
+      int bins = v->size() <= 1000 ? v->size() - 1 : 1000;
+      double inc = static_cast<double>(v->size()) / bins;
+      for (int i = 0; i < bins; ++i) {
+        auto idx = static_cast<int>(inc * i);
+        fprintf(f, " %ld", (*v)[idx]);
+      }
+      fprintf(f, " %ld\n", v->back());
+    }
+  }
+
   void DumpBatchplan(FILE* f) {
+    std::vector<std::vector<long>> qd(options_.models.size());
+    std::vector<std::vector<long>> slack(options_.models.size());
     int next_plan_id = 1;
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
@@ -469,7 +488,7 @@ class NexusRunner {
       for (const auto& p : archive) {
         int model_idx = p.model_idx;
         int plan_id = next_plan_id++;
-        int batch_size = p.batch_size;
+        int batch_size = static_cast<int>(p.query_ids.size());
         const auto& l = loadgen_contexts_[model_idx];
         auto bench_start_ns = start_at_.time_since_epoch().count() +
                               static_cast<long>(l.trace.warmup_duration * 1e9);
@@ -480,7 +499,33 @@ class NexusRunner {
         if (exec_at < 0 || finish_at > l.trace.bench_duration) continue;
         fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
                 model_idx, batch_size, exec_at, finish_at);
+
+        auto* queries = query_collector_.queries(model_idx);
+        for (auto q : p.query_ids) {
+          auto& qctx = queries[q];
+          qd[model_idx].push_back(p.exec_at.time_since_epoch().count() -
+                                  qctx.frontend_recv_ns);
+          slack[model_idx].push_back(
+              qctx.frontend_recv_ns +
+              options_.models[model_idx].model_session.latency_sla() *
+                  1000000L -
+              p.exec_at.time_since_epoch().count());
+        }
       }
+    }
+
+    // QUEUE-DELAY model_idx percentiles...
+    for (size_t model_idx = 0; model_idx < options_.models.size();
+         ++model_idx) {
+      fprintf(f, "QUEUE-DELAY %zu", model_idx);
+      DumpPercentiles(f, &qd[model_idx]);
+    }
+
+    // SLACK model_idx percentiles...
+    for (size_t model_idx = 0; model_idx < options_.models.size();
+         ++model_idx) {
+      fprintf(f, "SLACK %zu", model_idx);
+      DumpPercentiles(f, &slack[model_idx]);
     }
   }
 

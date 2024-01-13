@@ -89,11 +89,16 @@ void FakeNexusBackend::ContinueExecution() {
                                                    q.query_id);
       }
       if (!exec_->batch.inputs.empty()) {
+        std::vector<int> query_ids;
+        query_ids.reserve(exec_->batch.inputs.size());
+        for (const auto& q : exec_->batch.inputs) {
+          query_ids.push_back(q.query_id);
+        }
         exec_history_.push_back(ExecutionHistoryEntry{
             .model_idx = static_cast<int>(exec_->model_idx),
-            .batch_size = static_cast<int>(exec_->batch.inputs.size()),
             .exec_at = exec_at,
             .finish_at = finish_at,
+            .query_ids = std::move(query_ids),
         });
       }
 

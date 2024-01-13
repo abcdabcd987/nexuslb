@@ -14,9 +14,9 @@ namespace backend {
 
 struct ExecutionHistoryEntry {
   int model_idx;
-  int batch_size;
   TimePoint exec_at;
   TimePoint finish_at;
+  std::vector<int> query_ids;
 };
 
 class FakeNexusBackend {

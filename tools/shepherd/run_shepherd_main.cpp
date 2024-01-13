@@ -382,8 +382,26 @@ class ShepherdRunner {
     }
   }
 
+  void DumpPercentiles(FILE* f, std::vector<long>* v) {
+    std::sort(v->begin(), v->end());
+    if (v->size() == 0) {
+      fprintf(f, "\n");
+    } else if (v->size() == 1) {
+      fprintf(f, " %ld\n", v->back());
+    } else {
+      int bins = v->size() <= 1000 ? v->size() - 1 : 1000;
+      double inc = static_cast<double>(v->size()) / bins;
+      for (int i = 0; i < bins; ++i) {
+        auto idx = static_cast<int>(inc * i);
+        fprintf(f, " %ld", (*v)[idx]);
+      }
+      fprintf(f, " %ld\n", v->back());
+    }
+  }
+
   void DumpBatchplan(FILE* f) {
-    std::vector<std::vector<long>> queue_delay(options_.models.size());
+    std::vector<std::vector<long>> qd(options_.models.size());
+    std::vector<std::vector<long>> slack(options_.models.size());
     for (size_t backend_idx = 0; backend_idx < backends_.size();
          ++backend_idx) {
       int gpu_idx = backend_idx;
@@ -404,17 +422,28 @@ class ShepherdRunner {
         for (auto global_id : p.query_ids) {
           auto query_id = global_id - l.global_id_offset;
           auto& qctx = l.frontend->queries()[query_id];
-          queue_delay[model_idx].push_back(p.exec_time_ns() -
-                                           qctx.frontend_recv_ns);
+          qd[model_idx].push_back(p.exec_time_ns() - qctx.frontend_recv_ns);
+          slack[model_idx].push_back(
+              qctx.frontend_recv_ns +
+              options_.models[model_idx].model_session.latency_sla() *
+                  1000000L -
+              p.expected_finish_time_ns());
         }
       }
     }
-    for (size_t i = 0; i < queue_delay.size(); ++i) {
-      fprintf(f, "QUEUE-DELAY %zu", i);
-      for (auto x : queue_delay[i]) {
-        fprintf(f, " %ld", x);
-      }
-      fprintf(f, "\n");
+
+    // QUEUE-DELAY model_idx percentiles...
+    for (size_t model_idx = 0; model_idx < options_.models.size();
+         ++model_idx) {
+      fprintf(f, "QUEUE-DELAY %zu", model_idx);
+      DumpPercentiles(f, &qd[model_idx]);
+    }
+
+    // SLACK model_idx percentiles...
+    for (size_t model_idx = 0; model_idx < options_.models.size();
+         ++model_idx) {
+      fprintf(f, "SLACK %zu", model_idx);
+      DumpPercentiles(f, &slack[model_idx]);
     }
   }
 

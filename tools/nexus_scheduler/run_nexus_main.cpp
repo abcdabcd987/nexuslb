@@ -500,17 +500,18 @@ class NexusRunner {
         fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
                 model_idx, batch_size, exec_at, finish_at);
 
+        long earliest_recv_ns = std::numeric_limits<long>::max();
         auto* queries = query_collector_.queries(model_idx);
         for (auto q : p.query_ids) {
           auto& qctx = queries[q];
           qd[model_idx].push_back(p.exec_at.time_since_epoch().count() -
                                   qctx.frontend_recv_ns);
-          slack[model_idx].push_back(
-              qctx.frontend_recv_ns +
-              options_.models[model_idx].model_session.latency_sla() *
-                  1000000L -
-              p.exec_at.time_since_epoch().count());
+          earliest_recv_ns = std::min(earliest_recv_ns, qctx.frontend_recv_ns);
         }
+        slack[model_idx].push_back(
+            earliest_recv_ns +
+            options_.models[model_idx].model_session.latency_sla() * 1000000L -
+            p.finish_at.time_since_epoch().count());
       }
     }
 

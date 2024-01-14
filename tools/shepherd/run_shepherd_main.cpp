@@ -419,16 +419,17 @@ class ShepherdRunner {
         fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
                 model_idx, batch_size, exec_at, finish_at);
 
+        long earliest_recv_ns = std::numeric_limits<long>::max();
         for (auto global_id : p.query_ids) {
           auto query_id = global_id - l.global_id_offset;
           auto& qctx = l.frontend->queries()[query_id];
           qd[model_idx].push_back(p.exec_time_ns() - qctx.frontend_recv_ns);
-          slack[model_idx].push_back(
-              qctx.frontend_recv_ns +
-              options_.models[model_idx].model_session.latency_sla() *
-                  1000000L -
-              p.expected_finish_time_ns());
+          earliest_recv_ns = std::min(earliest_recv_ns, qctx.frontend_recv_ns);
         }
+        slack[model_idx].push_back(
+            earliest_recv_ns +
+            options_.models[model_idx].model_session.latency_sla() * 1000000L -
+            p.expected_finish_time_ns());
       }
     }
 

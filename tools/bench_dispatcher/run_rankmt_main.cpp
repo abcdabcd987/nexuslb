@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -465,15 +466,16 @@ class DispatcherRunner {
         fprintf(f, "BATCHPLAN %d %d %d %d %.9f %.9f\n", plan_id, gpu_idx,
                 model_idx, batch_size, exec_at, finish_at);
 
+        long earliest_recv_ns = std::numeric_limits<long>::max();
         for (const auto& q : p.queries()) {
           const auto& c = q.query_without_input().clock();
           qd[model_idx].push_back(p.exec_time_ns() - c.frontend_recv_ns());
-          slack[model_idx].push_back(
-              q.query_without_input().clock().frontend_recv_ns() +
-              options_.models[model_idx].model_session.latency_sla() *
-                  1000000L -
-              p.expected_finish_time_ns());
+          earliest_recv_ns = std::min(earliest_recv_ns, c.frontend_recv_ns());
         }
+        slack[model_idx].push_back(
+            earliest_recv_ns +
+            options_.models[model_idx].model_session.latency_sla() * 1000000L -
+            p.expected_finish_time_ns());
         CHECK(p.match_method() == 1 || p.match_method() == 2);
         ++match_method[(model_idx << 1) | (p.match_method() - 1)];
       }

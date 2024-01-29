@@ -14,7 +14,7 @@ DEFINE_string(rankmt_schedulable,
               RankmtConfig::Default().schedulable.ToString(),
               "Rankmt: condition for a Candidate to become schedulable. "
               "Options: kImmediately, kTargetBatchSize, kTargetQueuingDelay, "
-              "kFrontrun, kLatest, kBetaLambda");
+              "kFrontrun, kLatest, kBetaLambda, kTimeout");
 DEFINE_string(rankmt_drop, RankmtConfig::Default().drop.ToString(),
               "Rankmt: Whether to drop head of queue during batching. "
               "Options: kDropTimeout, kWindowDrop, kWindowFCFS");
@@ -22,6 +22,10 @@ DEFINE_string(
     rankmt_priority, RankmtConfig::Default().priority.ToString(),
     "Rankmt: Priority of a candidate when a GPU becomes free."
     "Options: kDisabled, kInvalidAfter, kDeadline, kSlack, kEfficiency");
+DEFINE_double(rankmt_schedulable_timeout_slopct,
+              RankmtConfig::Default().schedulable_timeout_slopct,
+              "Rankmt: timeout as percentage of SLO (0~100%) for "
+              "--rankmt_schedulable=kTimeout.");
 DEFINE_string(rankmt_match_methods, RankmtConfig::Default().match.ToString(),
               "Rankmt: Allowed Model-GPU matchmaking methods."
               "Options: kPrimaryOnly, kSecondaryOnly, kBoth");
@@ -77,6 +81,8 @@ constexpr const char* SchedulableCondition::ToString(SchedulableCondition c) {
       return "kLatest";
     case kBetaLambda:
       return "kBetaLambda";
+    case kTimeout:
+      return "kTimeout";
   }
   CHECK(false) << "unreachable";
 }
@@ -94,6 +100,7 @@ constexpr std::optional<SchedulableCondition> SchedulableCondition::Parse(
   if (s == "kFrontrun") return SchedulableCondition::kFrontrun;
   if (s == "kLatest") return SchedulableCondition::kLatest;
   if (s == "kBetaLambda") return SchedulableCondition::kBetaLambda;
+  if (s == "kTimeout") return SchedulableCondition::kTimeout;
   return std::nullopt;
 }
 
@@ -170,6 +177,7 @@ RankmtConfig RankmtConfig::FromFlags() {
   rankmt.drop = drop.value();
   rankmt.priority = priority.value();
   rankmt.match = match.value();
+  rankmt.schedulable_timeout_slopct = FLAGS_rankmt_schedulable_timeout_slopct;
   rankmt.ctrl_latency = std::chrono::microseconds(FLAGS_rankmt_dctrl);
   rankmt.data_latency = std::chrono::microseconds(FLAGS_rankmt_ddata);
   rankmt.resp_latency = std::chrono::microseconds(FLAGS_rankmt_dresp);

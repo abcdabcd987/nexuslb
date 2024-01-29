@@ -33,6 +33,8 @@ class SchedulableCondition {
     // Comparing the current batch size with the product of target batch size
     // and request rate.
     kBetaLambda = 6,
+    // Wait for a fixed timeout, given by `--rankmt_schedulable_timeout_slopct`.
+    kTimeout = 7,
   };
 
   constexpr SchedulableCondition() : value_(kFrontrun) {}
@@ -86,7 +88,7 @@ class MatchMethods {
     kBoth = 3,
   };
 
-  constexpr MatchMethods() : value_(kSecondaryOnly) {}
+  constexpr MatchMethods() : value_(kBoth) {}
   constexpr MatchMethods(Value value) : value_(value) {}
   constexpr operator Value() const { return value_; }
   constexpr const char* ToString() const;
@@ -110,6 +112,7 @@ struct RankmtConfig {
   DropPolicy drop;
   CandidatePriority priority;
   MatchMethods match;
+  double schedulable_timeout_slopct;
 
   // Dispatcher -> Backend: Batchplan
   std::chrono::duration<long, std::nano> ctrl_latency;
@@ -126,6 +129,7 @@ struct RankmtConfig {
 
   static RankmtConfig Default() {
     RankmtConfig config;
+    config.schedulable_timeout_slopct = 0;
     config.ctrl_latency = std::chrono::microseconds(100);
     config.data_latency = std::chrono::microseconds(50);
     config.resp_latency = std::chrono::microseconds(2000);

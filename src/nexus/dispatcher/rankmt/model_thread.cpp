@@ -210,7 +210,7 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
   long priority;
   auto bs = batch_policy_.batch_size();
   if (bs > 0) {
-    constexpr auto kTimerJitter = std::chrono::microseconds(100);
+    constexpr auto kTimerJitter = std::chrono::microseconds(20);
     auto data_latency = config_.data_latency * bs;
     auto deadline = batch_policy_.deadline();
     auto exec_elapse = EstimateExecElapse(profile_, bs);
@@ -242,11 +242,18 @@ void ModelThread::UpdateCandidate(TimePoint gpu_free_at) {
         exec_at = b ? earliest_exec_at : frontrun_exec_at;
         break;
       }
+      case SchedulableCondition::kTimeout: {
+        auto arrival = deadline + config_.resp_latency -
+                       std::chrono::milliseconds(model_session_.latency_sla());
+        auto ns = model_session_.latency_sla() * 1e4 *
+                  config_.schedulable_timeout_slopct;
+        exec_at = arrival + std::chrono::nanoseconds(static_cast<long>(ns));
+        break;
+      }
       default:
         LOG(FATAL) << "Unreachable";
     }
-    exec_at = std::max(
-        {earliest_exec_at, gpu_free_at, std::min(exec_at, latest_exec_at)});
+    exec_at = std::max({earliest_exec_at, gpu_free_at, exec_at});
     invalid_after = deadline - exec_elapse;
 
     switch (config_.priority) {
